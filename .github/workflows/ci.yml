@@ -1,0 +1,103 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          # 10.0.x is the current SDK (builds everything); 8.0.x supplies the LTS
+          # runtime so the net8.0 leg runs on the real .NET 8, not a roll-forward
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - name: Build (both TFMs, warnings are errors)
+        run: dotnet build tests/Tests.csproj -c Release
+      - name: Tests (net10.0)
+        run: dotnet run -c Release --project tests/Tests.csproj -f net10.0 --no-build
+      - name: Tests (net8.0, the LTS leg)
+        run: dotnet run -c Release --project tests/Tests.csproj -f net8.0 --no-build
+      # no test framework, so the runner's exit code is the whole verdict; these
+      # keep the remaining executables compiling (compat is exercised for real in
+      # the cpp-interop job, redteam runs are manual)
+      - name: Build the compat harness
+        run: dotnet build compat/Compat.csproj -c Release
+      - name: Build the red team harness
+        run: dotnet build redteam/RedTeam.csproj -c Release
+
+  cpp-interop:
+    name: C++ wire compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check out the C++ serialize library (pinned release)
+        uses: actions/checkout@v7
+        with:
+          # the family-wide pin: the Go and Rust ports build their interop gates
+          # against this same tag. Bump deliberately, in its own commit.
+          repository: mas-bandwidth/serialize
+          ref: v1.4.3
+          path: cpp-serialize
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      # CXX=clang++ pins the compiler ubuntu's `c++` alias would otherwise leave
+      # to g++. -ffp-contract=off inside the script is MANDATORY: strict IEEE
+      # evaluation is the normative wire, and the compat sequence carries a value
+      # (0.005f in [0,10] res 0.01) sitting exactly on an FMA rounding boundary,
+      # so a contracted C++ build fails the byte-identity cmp instead of passing
+      # silently. Both sides write, the files must be byte identical, and each
+      # side reads the other's.
+      - name: Interop gate (byte identity + cross reads, both directions)
+        run: CXX=clang++ scripts/interop.sh cpp-serialize
+
+  spec-sync:
+    name: STANDARD.md matches upstream
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      # STANDARD.md here is a VERBATIM VENDORED COPY of the wire-format
+      # specification that lives in mas-bandwidth/serialize. This job fails if the
+      # two have diverged.
+      #
+      # Why vendor rather than link: an implementer wants the normative text
+      # beside the implementation, at the revision they are reading. Why check:
+      # a duplicated normative document is the same failure as a duplicated
+      # constant, except it drifts silently and the ports are what break.
+      #
+      # Diffed against upstream main, not the interop tag: drift detection is the
+      # point, and v1.4.3 predates STANDARD.md anyway. If this fails, the
+      # upstream spec changed. Read the diff, port whatever it implies, then copy
+      # the new file across in the same commit.
+      - name: Compare against mas-bandwidth/serialize
+        run: |
+          curl -fsSL -o /tmp/upstream-STANDARD.md \
+            https://raw.githubusercontent.com/mas-bandwidth/serialize/main/STANDARD.md
+          if ! diff -u /tmp/upstream-STANDARD.md STANDARD.md; then
+            echo "::error::STANDARD.md has diverged from mas-bandwidth/serialize"
+            exit 1
+          fi
+          echo "STANDARD.md matches upstream"

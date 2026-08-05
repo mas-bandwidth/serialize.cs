@@ -12,19 +12,21 @@
 # boundaries; the compat sequence contains a value pinned on such a boundary so a
 # contracted build fails this gate instead of passing silently.
 #
-# When CI is created, pin the C++ clone to a release tag (the Go/Rust ports pin
-# v1.4.3) rather than tracking HEAD.
+# CI pins the C++ clone to the family-wide release tag v1.4.3 (same as the Go and
+# Rust ports) and runs this script with CXX=clang++; locally the default compiler
+# is fine (Apple clang on macOS) and the clone may track HEAD.
 
 set -e
 
 cd "$(dirname "$0")/.."
 
+CXX="${CXX:-c++}"
 CPP_SERIALIZE="${1:-../serialize}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 echo "== building C++ compat harness against $CPP_SERIALIZE"
-c++ -O2 -std=c++17 -ffp-contract=off -Wall -I "$CPP_SERIALIZE" -o "$WORK/compat-cpp" compat/cpp/compat.cpp
+"$CXX" -O2 -std=c++17 -ffp-contract=off -Wall -I "$CPP_SERIALIZE" -o "$WORK/compat-cpp" compat/cpp/compat.cpp
 
 echo "== both sides write"
 dotnet run -c Release --project compat/Compat.csproj -- write "$WORK/cs.bin"
