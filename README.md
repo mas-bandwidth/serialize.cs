@@ -97,4 +97,4 @@ Two further rules:
 
 ## License
 
-License is pending the owner's decision; no license file is included yet.
+AGPL-3.0. See [LICENSE](LICENSE).
