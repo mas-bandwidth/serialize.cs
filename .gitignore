@@ -1,0 +1,4 @@
+bin/
+obj/
+compat-cpp
+*.bin

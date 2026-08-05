@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- both library TFMs are tested: run with -f net8.0 / -f net10.0.
+         (on a machine with only the .NET 10 runtime, run the net8.0 leg with
+         DOTNET_ROLL_FORWARD=LatestMajor.) -->
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <RootNamespace>Serialize.Tests</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../src/Serialize.csproj" />
+  </ItemGroup>
+
+  <!-- family value: zero third-party dependencies, including test frameworks.
+       this is a plain console runner: exit code is the verdict. -->
+
+</Project>

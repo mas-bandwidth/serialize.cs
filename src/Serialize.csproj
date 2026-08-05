@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- net8.0 (LTS) is the floor so game servers on .NET 8 can reference the
+         library; net10.0 is the current SDK. netstandard2.1 (Unity-class runtimes)
+         is an open deliverable: it needs shims for BitOperations, the unsigned
+         BitConverter bit casts, Rune enumeration and Utf8.IsValid, each proven
+         wire-neutral by the golden test per TFM before shipping. -->
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <!-- family value: zero third-party dependencies. no package references, ever. -->
+
+</Project>
