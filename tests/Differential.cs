@@ -51,6 +51,9 @@ internal enum ValueKind
     Align,
     String,
     IntRelative,
+    UInt128,
+    Int128,
+    Fixed,
 }
 
 internal sealed class Value
@@ -67,13 +70,37 @@ internal sealed class Value
     public byte[] Bytes = Array.Empty<byte>();
     public string Str = "";
     public int Previous, Current;
+    public UInt128 U128;
+    public Int128 I128, I128Min, I128Max; // I128 doubles as the raw carrier for Fixed
+    public int FixedConfig;
 }
 
 internal static partial class Program
 {
+    // the fixed point configurations the differential draws from: every storage
+    // width, both signednesses, and every wire group structure (single group, two
+    // group, three group, four group / full width)
+    private static readonly (FixedStorage Storage, int IntegerBits, int FractionBits, long Min, long Max)[] FixedConfigs =
+    {
+        (FixedStorage.I16, 8, 8, -100, +100),
+        (FixedStorage.U16, 16, 0, 0, 60000),
+        (FixedStorage.I32, 16, 16, -30000, +30000),
+        (FixedStorage.U32, 16, 16, 0, 60000),
+        (FixedStorage.I64, 48, 16, -100000000000, +100000000000),
+        (FixedStorage.U64, 48, 16, 0, 1000000000),
+        (FixedStorage.I128, 112, 16, -1152921504606846976, +1152921504606846976),
+        (FixedStorage.I128, 64, 64, long.MinValue, long.MaxValue),
+        (FixedStorage.U128, 112, 16, 0, 2305843009213693952),
+    };
+
+    private static UInt128 Next128(Rng rng)
+    {
+        return ((UInt128)rng.Next() << 64) | rng.Next();
+    }
+
     private static Value RandomValue(Rng rng)
     {
-        switch (rng.Range(11))
+        switch (rng.Range(14))
         {
             case 0:
             {
@@ -168,7 +195,7 @@ internal static partial class Program
                 }
                 return new Value { Kind = ValueKind.String, Str = new string(chars) };
             }
-            default:
+            case 10:
             {
                 int previous = (int)(uint)rng.Next();
                 uint gap = (uint)rng.Range(1 << 20) + 1;
@@ -180,6 +207,48 @@ internal static partial class Program
                     return new Value { Kind = ValueKind.IntRelative, Previous = previous, Current = current };
                 }
                 return new Value { Kind = ValueKind.IntRelative, Previous = 0, Current = (int)gap };
+            }
+            case 11:
+                return new Value { Kind = ValueKind.UInt128, U128 = Next128(rng) };
+            case 12:
+            {
+                Int128 a = (Int128)Next128(rng);
+                Int128 b = (Int128)Next128(rng);
+                Int128 min, max;
+                if (a < b)
+                {
+                    (min, max) = (a, b);
+                }
+                else if (a > b)
+                {
+                    (min, max) = (b, a);
+                }
+                else if (a == Int128.MaxValue)
+                {
+                    (min, max) = (a - 1, a);
+                }
+                else
+                {
+                    (min, max) = (a, a + 1);
+                }
+                // pick a value in [min,max] in the unsigned domain so ranges wider
+                // than 2^127 cannot overflow
+                UInt128 span = (UInt128)max - (UInt128)min + 1;
+                UInt128 offset = span == 0 ? Next128(rng) : Next128(rng) % span;
+                Int128 value = (Int128)((UInt128)min + offset);
+                return new Value { Kind = ValueKind.Int128, I128 = value, I128Min = min, I128Max = max };
+            }
+            default:
+            {
+                int config = (int)rng.Range((ulong)FixedConfigs.Length);
+                (_, _, int fractionBits, long min, long max) = FixedConfigs[config];
+                // a raw value uniformly inside the raw bounds, in the unsigned domain
+                UInt128 rawMin = (UInt128)(Int128)min << fractionBits;
+                UInt128 rawMax = (UInt128)(Int128)max << fractionBits;
+                UInt128 span = rawMax - rawMin + 1;
+                UInt128 offset = span == 0 ? Next128(rng) : Next128(rng) % span;
+                Int128 raw = (Int128)(rawMin + offset);
+                return new Value { Kind = ValueKind.Fixed, FixedConfig = config, I128 = raw };
             }
         }
     }
@@ -198,7 +267,14 @@ internal static partial class Program
             case ValueKind.Bytes: return stream.SerializeBytes(value.Bytes);
             case ValueKind.Align: return stream.SerializeAlign();
             case ValueKind.String: return stream.SerializeString(ref value.Str, 16);
-            default: return stream.SerializeIntRelative(value.Previous, ref value.Current);
+            case ValueKind.IntRelative: return stream.SerializeIntRelative(value.Previous, ref value.Current);
+            case ValueKind.UInt128: return stream.SerializeUInt128(ref value.U128);
+            case ValueKind.Int128: return stream.SerializeInt128(ref value.I128, value.I128Min, value.I128Max);
+            default:
+            {
+                (FixedStorage storage, int integerBits, int fractionBits, long min, long max) = FixedConfigs[value.FixedConfig];
+                return SerializeFixedAs(storage, stream, ref value.I128, integerBits, fractionBits, min, max);
+            }
         }
     }
 
@@ -216,7 +292,15 @@ internal static partial class Program
             case ValueKind.Bytes: return new Value { Kind = ValueKind.Bytes, Bytes = new byte[value.Bytes.Length] };
             case ValueKind.Align: return new Value { Kind = ValueKind.Align };
             case ValueKind.String: return new Value { Kind = ValueKind.String, Str = "" };
-            default: return new Value { Kind = ValueKind.IntRelative, Previous = value.Previous, Current = 0 };
+            case ValueKind.IntRelative: return new Value { Kind = ValueKind.IntRelative, Previous = value.Previous, Current = 0 };
+            case ValueKind.UInt128: return new Value { Kind = ValueKind.UInt128, U128 = 0 };
+            case ValueKind.Int128: return new Value { Kind = ValueKind.Int128, I128 = value.I128Min, I128Min = value.I128Min, I128Max = value.I128Max };
+            default:
+            {
+                (_, _, int fractionBits, long min, _) = FixedConfigs[value.FixedConfig];
+                Int128 rawMin = (Int128)((UInt128)(Int128)min << fractionBits);
+                return new Value { Kind = ValueKind.Fixed, FixedConfig = value.FixedConfig, I128 = rawMin };
+            }
         }
     }
 
@@ -242,7 +326,10 @@ internal static partial class Program
             case ValueKind.Bytes: return written.Bytes.AsSpan().SequenceEqual(read.Bytes);
             case ValueKind.Align: return true;
             case ValueKind.String: return written.Str == read.Str;
-            default: return written.Current == read.Current;
+            case ValueKind.IntRelative: return written.Current == read.Current;
+            case ValueKind.UInt128: return written.U128 == read.U128;
+            case ValueKind.Int128: return written.I128 == read.I128;
+            default: return written.FixedConfig == read.FixedConfig && written.I128 == read.I128;
         }
     }
 
@@ -318,6 +405,11 @@ internal static partial class Program
             Str = value.Str,
             Previous = value.Previous,
             Current = value.Current,
+            U128 = value.U128,
+            I128 = value.I128,
+            I128Min = value.I128Min,
+            I128Max = value.I128Max,
+            FixedConfig = value.FixedConfig,
         };
     }
 

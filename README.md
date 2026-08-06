@@ -41,8 +41,9 @@ dotnet run --project tests/Tests.csproj -f net10.0 -- golden   # run only tests 
 The library targets `net8.0` (LTS game servers) and `net10.0`. A
 `netstandard2.1` target for Unity-class runtimes is an open deliverable: it needs
 shims for `BitOperations`, the unsigned `BitConverter` bit casts, `Rune`
-enumeration and `Utf8.IsValid`, each proven wire-neutral by the golden test per
-TFM before it ships.
+enumeration and `Utf8.IsValid`, plus an emulated 128 bit pair standing in for
+`Int128`/`UInt128` (mirroring the C++ emulated types' two's complement
+semantics), each proven wire-neutral by the golden test per TFM before it ships.
 
 ## Interop gate (head-to-head vs C++)
 
@@ -73,6 +74,41 @@ When CI is created, pin the C++ clone to one release tag — the Go and Rust por
 pin `v1.4.3`; the sibling clone here is currently at a later head — and pick one
 tag for both the interop job and the spec-sync job.
 
+## Fixed point and 128 bit integers
+
+The fixed point + 128 bit additions to the C++ library (its `fixed-point` branch)
+are ported in full, on the native `Int128`/`UInt128` — both TFMs are net7.0+, so
+the C++ native/emulated distinction does not exist here; there is exactly one
+representation:
+
+- `SerializeUInt128` — raw, always 128 bits on the wire: the low 64 bit half
+  first, then the high half. When the stream is byte aligned the result is the 16
+  bytes of the value in little endian order.
+- `SerializeInt128` — the ranged counterpart of `SerializeInt64`:
+  `SerializeUtil.BitsRequired128(min,max)` bits, computed and offset encoded in
+  the unsigned domain (ranges wider than 2^127 are exact), written in 32 bit
+  groups from least significant upward. Where the range fits 64 bits or fewer the
+  bytes are identical to `SerializeInt64` over the same bounds, so a field can be
+  widened from 64 to 128 bits without a wire change.
+- `SerializeFixed` — Q format fixed point, one overload per integer storage type
+  from 16 to 128 bits, signed and unsigned. The whole unit bounds are shifted to
+  raw integer-exact bounds and the raw value is offset encoded in the minimal
+  bits for the range; the codec touches no floats, so unlike
+  `SerializeCompressedFloat` the round trip is exact and identical on every
+  platform. For storage of 64 bits or fewer the wire is byte identical to
+  `SerializeInt64` of the raw value over the raw bounds, and `fractionBits = 0`
+  is a ranged integer.
+
+Offsets smuggled into the bit headroom past the top of a range are rejected on
+read, never clamped. The Q format and bounds are trusted parameters validated as
+API misuse (see below), like every other range in the library.
+
+The wire pins for all three operations were derived from STANDARD.md's text by an
+independent oracle and cross-checked byte for byte against the pins in the C++
+fixed-point test suite; `test_fixed_wire_format` pins the byte aligned fixed
+point tail of the C++ 112 byte golden message, leaving the original 72 byte
+golden pin untouched.
+
 ## Reading untrusted data
 
 Errors are sticky: the first failure latches on the stream and later serialize calls
@@ -85,7 +121,8 @@ previous packet's count in place.
 
 Two further rules:
 
-- **Ranges are trusted inputs.** `min`, `max`, `resolution` and `bufferSize`
+- **Ranges are trusted inputs.** `min`, `max`, `resolution`, `bufferSize` and
+  fixed point Q format (`integerBits`, `fractionBits`, whole unit bounds)
   parameters are validated as API misuse and throw `ArgumentException` — even on a
   stream with a latched error. If you compute a range from previously decoded packet
   data, validate it before passing it in, or one malicious packet becomes an
