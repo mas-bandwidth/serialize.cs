@@ -414,6 +414,7 @@ public sealed class BitWriter
     /// <summary>Points the bit writer at a buffer and clears all write state, allowing
     /// a single writer to be reused without allocation. The buffer size must be a
     /// multiple of 8 bytes.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Reset(byte[] buffer)
     {
         if (buffer.Length % 8 != 0)
@@ -469,6 +470,7 @@ public sealed class BitWriter
     /// IMPORTANT: When you have finished writing, call FlushBits, otherwise the last
     /// word of data will not get flushed to memory!
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteBits(uint value, int bits)
     {
         if (bits < 1 || bits > 32)
@@ -485,6 +487,7 @@ public sealed class BitWriter
     /// <summary>Pads the bit stream with zeros so the bit index becomes a multiple
     /// of 8. If the current bit index is already a multiple of 8, nothing is
     /// written.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteAlign()
     {
         int remainderBits = (int)(_bitsWritten % 8);
@@ -560,6 +563,7 @@ public sealed class BitWriter
     /// FlushBits ends the write: writing more bits after a mid-stream flush corrupts
     /// the stream, because the flushed partial word cannot be resumed.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void FlushBits()
     {
         if (_scratchBits != 0)
@@ -633,6 +637,7 @@ public sealed class BitReader
 
     /// <summary>Points the bit reader at a buffer and clears all read state, allowing a
     /// single reader to be reused without allocation.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Reset(byte[] buffer, int bytes)
     {
         if (bytes < 0 || bytes > buffer.Length)
@@ -681,6 +686,7 @@ public sealed class BitReader
 
     /// <summary>True if reading the given number of bits would read past the end of the
     /// data.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool WouldReadPastEnd(int bits)
     {
         return _bitsRead + bits > _numBits;
@@ -690,6 +696,7 @@ public sealed class BitReader
     /// [0,(1&lt;&lt;bits)-1]. bits must be in [1,32]. Throws if the read would go past the
     /// end of the data: check WouldReadPastEnd first when reading untrusted data, or
     /// use ReadStream, which performs all checks and latches errors instead.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public uint ReadBits(int bits)
     {
         if (bits < 1 || bits > 32)
@@ -707,6 +714,7 @@ public sealed class BitReader
     /// written, and skips ahead to the next byte boundary. As a safety check, it
     /// verifies that the padding bits are zero and returns false if they are not; this
     /// typically aborts the packet read.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool ReadAlign()
     {
         int remainderBits = (int)(_bitsRead % 8);
@@ -783,6 +791,7 @@ public sealed class WriteStream : IBitStream
     /// <summary>Points the stream at a buffer and clears all write state including any
     /// latched error, allowing a single stream to be reused without allocation. The
     /// context is kept.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Reset(byte[] buffer)
     {
         _writer.Reset(buffer);
@@ -828,6 +837,7 @@ public sealed class WriteStream : IBitStream
     }
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeBits(ref uint value, int bits)
     {
         if (bits < 1 || bits > 32)
@@ -838,6 +848,7 @@ public sealed class WriteStream : IBitStream
     }
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeBits64(ref ulong value, int bits)
     {
         if (bits < 1 || bits > 64)
@@ -863,6 +874,7 @@ public sealed class WriteStream : IBitStream
     }
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt(ref int value, int min, int max)
     {
         if (min >= max)
@@ -884,6 +896,7 @@ public sealed class WriteStream : IBitStream
     }
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt64(ref long value, long min, long max)
     {
         if (min >= max)
@@ -917,15 +930,19 @@ public sealed class WriteStream : IBitStream
     }
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeByte(ref byte value) => WriteBits(value, 8);
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeUInt16(ref ushort value) => WriteBits(value, 16);
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeUInt32(ref uint value) => WriteBits(value, 32);
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeUInt64(ref ulong value)
     {
         if (_error != SerializeError.None)
@@ -942,15 +959,18 @@ public sealed class WriteStream : IBitStream
     }
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeBool(ref bool value) => WriteBool(value);
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeFloat(ref float value)
     {
         return WriteBits(BitConverter.SingleToUInt32Bits(value), 32);
     }
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeDouble(ref double value)
     {
         ulong bits = BitConverter.DoubleToUInt64Bits(value);
@@ -958,6 +978,7 @@ public sealed class WriteStream : IBitStream
     }
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeCompressedFloat(ref float value, float min, float max, float resolution)
     {
         SerializeInternal.CompressedFloatParams(min, max, resolution,
@@ -1072,6 +1093,7 @@ public sealed class WriteStream : IBitStream
     }
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeAlign()
     {
         if (_error != SerializeError.None)
@@ -1159,6 +1181,7 @@ public sealed class WriteStream : IBitStream
     /// <summary>Flushes the last word of bits to memory. Always call this after you
     /// finish writing and before you use Data, or you risk truncating the last word of
     /// data. The flush ends the write: do not serialize more values after it.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Flush()
     {
         _writer.FlushBits();
@@ -1221,6 +1244,7 @@ public sealed class ReadStream : IBitStream
     /// <summary>Points the stream at a buffer and clears all read state including any
     /// latched error, allowing a single stream to be reused without allocation. The
     /// context is kept.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Reset(byte[] buffer, int bytes)
     {
         _reader.Reset(buffer, bytes);
@@ -1266,6 +1290,7 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeBits(ref uint value, int bits)
     {
         if (bits < 1 || bits > 32)
@@ -1276,6 +1301,7 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeBits64(ref ulong value, int bits)
     {
         if (bits < 1 || bits > 64)
@@ -1303,6 +1329,7 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt(ref int value, int min, int max)
     {
         if (min >= max)
@@ -1329,6 +1356,7 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt64(ref long value, long min, long max)
     {
         if (min >= max)
@@ -1366,6 +1394,7 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeByte(ref byte value)
     {
         uint v = 0;
@@ -1378,6 +1407,7 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeUInt16(ref ushort value)
     {
         uint v = 0;
@@ -1390,9 +1420,11 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeUInt32(ref uint value) => ReadBits(ref value, 32);
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeUInt64(ref ulong value)
     {
         if (_error != SerializeError.None)
@@ -1410,6 +1442,7 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeBool(ref bool value)
     {
         uint v = 0;
@@ -1422,6 +1455,7 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeFloat(ref float value)
     {
         uint v = 0;
@@ -1434,6 +1468,7 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeDouble(ref double value)
     {
         ulong v = 0;
@@ -1446,6 +1481,7 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeCompressedFloat(ref float value, float min, float max, float resolution)
     {
         SerializeInternal.CompressedFloatParams(min, max, resolution,
@@ -1544,6 +1580,7 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeAlign()
     {
         if (_error != SerializeError.None)
