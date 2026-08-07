@@ -2,3 +2,6 @@ bin/
 obj/
 compat-cpp
 *.bin
+
+# local tooling logs, never library content
+tending/
