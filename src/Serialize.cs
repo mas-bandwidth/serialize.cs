@@ -3198,6 +3198,7 @@ public ref struct WriteBatch
     /// <summary>Serializes an array of bytes, aligning first. Delegated: syncs state
     /// down, runs WriteStream.SerializeBytes, recaptures — byte identical to the
     /// stream call.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeBytes(Span<byte> data)
     {
         Sync();
@@ -3208,6 +3209,7 @@ public ref struct WriteBatch
 
     /// <summary>Serializes a string of fewer than bufferSize UTF-8 bytes. Delegated:
     /// syncs state down, runs WriteStream.SerializeString, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeString(ref string value, int bufferSize)
     {
         Sync();
@@ -3218,6 +3220,7 @@ public ref struct WriteBatch
 
     /// <summary>Serializes a string as 32 bits per code point. Delegated: syncs state
     /// down, runs WriteStream.SerializeWideString, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeWideString(ref string value, int bufferSize)
     {
         Sync();
@@ -3229,6 +3232,7 @@ public ref struct WriteBatch
     /// <summary>Serializes an object that implements ISerializer. Delegated: the
     /// object's Serialize function runs against the underlying stream. For struct
     /// implementers use the generic overload, which does not box.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeObject(ISerializer obj)
     {
         Sync();
@@ -3240,6 +3244,7 @@ public ref struct WriteBatch
     /// <summary>Serializes an object that implements ISerializer, by ref, without
     /// boxing. Delegated: the object's Serialize function runs against the underlying
     /// stream.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeObject<T>(ref T obj) where T : ISerializer
     {
         Sync();
@@ -3250,6 +3255,7 @@ public ref struct WriteBatch
 
     /// <summary>Serializes an integer relative to a previous integer. Delegated:
     /// syncs state down, runs WriteStream.SerializeIntRelative, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeIntRelative(int previous, ref int current)
     {
         Sync();
@@ -3658,6 +3664,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes an array of bytes, aligning first. Delegated: syncs state
     /// down, runs ReadStream.SerializeBytes, recaptures — identical decode.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeBytes(Span<byte> data)
     {
         Sync();
@@ -3668,6 +3675,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes a string of fewer than bufferSize UTF-8 bytes. Delegated:
     /// syncs state down, runs ReadStream.SerializeString, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeString(ref string value, int bufferSize)
     {
         Sync();
@@ -3678,6 +3686,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes a string as 32 bits per code point. Delegated: syncs state
     /// down, runs ReadStream.SerializeWideString, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeWideString(ref string value, int bufferSize)
     {
         Sync();
@@ -3689,6 +3698,7 @@ public ref struct ReadBatch
     /// <summary>Serializes an object that implements ISerializer. Delegated: the
     /// object's Serialize function runs against the underlying stream. For struct
     /// implementers use the generic overload, which does not box.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeObject(ISerializer obj)
     {
         Sync();
@@ -3700,6 +3710,7 @@ public ref struct ReadBatch
     /// <summary>Serializes an object that implements ISerializer, by ref, without
     /// boxing. Delegated: the object's Serialize function runs against the underlying
     /// stream.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeObject<T>(ref T obj) where T : ISerializer
     {
         Sync();
@@ -3710,6 +3721,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes an integer relative to a previous integer. Delegated:
     /// syncs state down, runs ReadStream.SerializeIntRelative, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeIntRelative(int previous, ref int current)
     {
         Sync();
