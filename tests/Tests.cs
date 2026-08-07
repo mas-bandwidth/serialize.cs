@@ -397,6 +397,13 @@ internal static partial class Program
         RunTest("test_stream_reset", TestStreamReset);
         RunTest("test_differential_round_trip", TestDifferentialRoundTrip);
         RunTest("test_hostile_read", TestHostileRead);
+        RunTest("test_write_batch_golden_wire", TestWriteBatchGoldenWire);
+        RunTest("test_write_batch_differential", TestWriteBatchDifferential);
+        RunTest("test_read_batch_differential", TestReadBatchDifferential);
+        RunTest("test_batch_error_latch", TestBatchErrorLatch);
+        RunTest("test_batch_end_idempotent", TestBatchEndIdempotent);
+        RunTest("test_batch_allocation", TestBatchAllocation);
+        RunTest("test_batch_properties", TestBatchProperties);
         if (!shortMode)
         {
             RunTest("test_large_buffer", TestLargeBuffer);
