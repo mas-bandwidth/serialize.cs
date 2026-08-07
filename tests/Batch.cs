@@ -3,12 +3,13 @@
 
     Tests for the batch layer: WriteBatch and ReadBatch, the register-resident views
     of WriteStream and ReadStream. The wire law is proven three ways: the batch write
-    of the golden sequence must produce the pinned golden bytes exactly, a randomized
-    differential pass must be byte identical to the class path with batches begun and
-    ended at arbitrary points (including direct stream calls between batches), and the
-    delegated operations (bytes, strings, objects, int relative) ride the class path
-    inside those sequences. Error latching, End idempotence and the zero-allocation
-    invariant are pinned separately.
+    of the golden sequences (the golden message and the fixed point section) must
+    produce the pinned golden bytes exactly, a randomized differential pass must be
+    byte identical to the class path with batches begun and ended at arbitrary points
+    (including direct stream calls between batches), and the delegated operations
+    (bytes, strings, objects, int relative, the 128 bit integers and fixed point)
+    ride the class path inside those sequences. Error latching, End idempotence and
+    the zero-allocation invariant are pinned separately.
 */
 
 using System;
@@ -72,8 +73,172 @@ internal static partial class Program
         return stream.Error == SerializeError.None;
     }
 
+    // The fixed point golden serialize mirrored onto the batch surface: the exact
+    // same calls as FixedWireData.Serialize, method for method — the fixed point and
+    // wide integer section of the wire law, proven through the batch layer too.
+    private static bool SerializeFixedWireBatch(ref WriteBatch stream, FixedWireData data)
+    {
+        stream.SerializeFixed(ref data.FixedQ8_8, 8, 8, -100, +100);
+        stream.SerializeFixed(ref data.FixedQ16_16, 16, 16, -2000, +2000);
+        stream.SerializeFixed(ref data.FixedQ48_16, 48, 16, -100000, +100000);
+        stream.SerializeFixed(ref data.FixedQ16_16Unsigned, 16, 16, 0, 30000);
+        stream.SerializeAlign();                                    // the wide fixed section starts byte aligned
+        stream.SerializeFixed(ref data.FixedQ112_16Wide, 112, 16, -144115188075855872, +144115188075855872);
+        stream.SerializeFixed(ref data.FixedQ64_64Wide, 64, 64, long.MinValue, long.MaxValue);
+        return stream.Error == SerializeError.None;
+    }
+
+    private static bool SerializeFixedWireBatch(ref ReadBatch stream, FixedWireData data)
+    {
+        stream.SerializeFixed(ref data.FixedQ8_8, 8, 8, -100, +100);
+        stream.SerializeFixed(ref data.FixedQ16_16, 16, 16, -2000, +2000);
+        stream.SerializeFixed(ref data.FixedQ48_16, 48, 16, -100000, +100000);
+        stream.SerializeFixed(ref data.FixedQ16_16Unsigned, 16, 16, 0, 30000);
+        stream.SerializeAlign();                                    // the wide fixed section starts byte aligned
+        stream.SerializeFixed(ref data.FixedQ112_16Wide, 112, 16, -144115188075855872, +144115188075855872);
+        stream.SerializeFixed(ref data.FixedQ64_64Wide, 64, 64, long.MinValue, long.MaxValue);
+        return stream.Error == SerializeError.None;
+    }
+
+    /// <summary>Drives the WriteBatch SerializeFixed overload selected by storage:
+    /// the batch counterpart of SerializeFixedAs(FixedStorage, IBitStream, ...) in
+    /// FixedPoint.cs. Ref structs cannot implement IBitStream, so the dispatch is
+    /// mirrored onto each batch surface.</summary>
+    private static bool SerializeFixedAs(
+        FixedStorage storage, ref WriteBatch batch, ref Int128 carrier,
+        int integerBits, int fractionBits, long min, long max)
+    {
+        switch (storage)
+        {
+            case FixedStorage.I16:
+            {
+                short value = (short)carrier;
+                bool ok = batch.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+                carrier = value;
+                return ok;
+            }
+            case FixedStorage.U16:
+            {
+                ushort value = (ushort)carrier;
+                bool ok = batch.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+                carrier = value;
+                return ok;
+            }
+            case FixedStorage.I32:
+            {
+                int value = (int)carrier;
+                bool ok = batch.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+                carrier = value;
+                return ok;
+            }
+            case FixedStorage.U32:
+            {
+                uint value = (uint)carrier;
+                bool ok = batch.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+                carrier = value;
+                return ok;
+            }
+            case FixedStorage.I64:
+            {
+                long value = (long)carrier;
+                bool ok = batch.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+                carrier = value;
+                return ok;
+            }
+            case FixedStorage.U64:
+            {
+                ulong value = (ulong)carrier;
+                bool ok = batch.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+                carrier = value;
+                return ok;
+            }
+            case FixedStorage.I128:
+            {
+                Int128 value = carrier;
+                bool ok = batch.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+                carrier = value;
+                return ok;
+            }
+            default:
+            {
+                UInt128 value = (UInt128)carrier;
+                bool ok = batch.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+                carrier = (Int128)value;
+                return ok;
+            }
+        }
+    }
+
+    /// <summary>The ReadBatch counterpart of the WriteBatch SerializeFixedAs above.</summary>
+    private static bool SerializeFixedAs(
+        FixedStorage storage, ref ReadBatch batch, ref Int128 carrier,
+        int integerBits, int fractionBits, long min, long max)
+    {
+        switch (storage)
+        {
+            case FixedStorage.I16:
+            {
+                short value = (short)carrier;
+                bool ok = batch.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+                carrier = value;
+                return ok;
+            }
+            case FixedStorage.U16:
+            {
+                ushort value = (ushort)carrier;
+                bool ok = batch.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+                carrier = value;
+                return ok;
+            }
+            case FixedStorage.I32:
+            {
+                int value = (int)carrier;
+                bool ok = batch.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+                carrier = value;
+                return ok;
+            }
+            case FixedStorage.U32:
+            {
+                uint value = (uint)carrier;
+                bool ok = batch.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+                carrier = value;
+                return ok;
+            }
+            case FixedStorage.I64:
+            {
+                long value = (long)carrier;
+                bool ok = batch.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+                carrier = value;
+                return ok;
+            }
+            case FixedStorage.U64:
+            {
+                ulong value = (ulong)carrier;
+                bool ok = batch.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+                carrier = value;
+                return ok;
+            }
+            case FixedStorage.I128:
+            {
+                Int128 value = carrier;
+                bool ok = batch.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+                carrier = value;
+                return ok;
+            }
+            default:
+            {
+                UInt128 value = (UInt128)carrier;
+                bool ok = batch.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+                carrier = (Int128)value;
+                return ok;
+            }
+        }
+    }
+
     // The differential value dispatch mirrored onto the batch surfaces: the same
-    // switch as SerializeValue(IBitStream, Value).
+    // switch as SerializeValue(IBitStream, Value), case for case. A new ValueKind
+    // must be added here explicitly — a default bucket that aliases another kind's
+    // operation silently miswires the batch side of the differential.
     private static bool SerializeValueBatch(ref WriteBatch batch, Value value)
     {
         switch (value.Kind)
@@ -88,7 +253,14 @@ internal static partial class Program
             case ValueKind.Bytes: return batch.SerializeBytes(value.Bytes);
             case ValueKind.Align: return batch.SerializeAlign();
             case ValueKind.String: return batch.SerializeString(ref value.Str, 16);
-            default: return batch.SerializeIntRelative(value.Previous, ref value.Current);
+            case ValueKind.IntRelative: return batch.SerializeIntRelative(value.Previous, ref value.Current);
+            case ValueKind.UInt128: return batch.SerializeUInt128(ref value.U128);
+            case ValueKind.Int128: return batch.SerializeInt128(ref value.I128, value.I128Min, value.I128Max);
+            default:
+            {
+                (FixedStorage storage, int integerBits, int fractionBits, long min, long max) = FixedConfigs[value.FixedConfig];
+                return SerializeFixedAs(storage, ref batch, ref value.I128, integerBits, fractionBits, min, max);
+            }
         }
     }
 
@@ -106,7 +278,14 @@ internal static partial class Program
             case ValueKind.Bytes: return batch.SerializeBytes(value.Bytes);
             case ValueKind.Align: return batch.SerializeAlign();
             case ValueKind.String: return batch.SerializeString(ref value.Str, 16);
-            default: return batch.SerializeIntRelative(value.Previous, ref value.Current);
+            case ValueKind.IntRelative: return batch.SerializeIntRelative(value.Previous, ref value.Current);
+            case ValueKind.UInt128: return batch.SerializeUInt128(ref value.U128);
+            case ValueKind.Int128: return batch.SerializeInt128(ref value.I128, value.I128Min, value.I128Max);
+            default:
+            {
+                (FixedStorage storage, int integerBits, int fractionBits, long min, long max) = FixedConfigs[value.FixedConfig];
+                return SerializeFixedAs(storage, ref batch, ref value.I128, integerBits, fractionBits, min, max);
+            }
         }
     }
 
@@ -154,6 +333,41 @@ internal static partial class Program
                 && data.Str == expected.Str
                 && data.WStr == expected.WStr,
                 "batch read of the golden bytes decoded the wrong values");
+        }
+
+        // write side, fixed point section: the batch fixed point and wide integer
+        // ops must produce exactly the pinned fixed golden bytes
+        {
+            byte[] buffer = new byte[64];
+            WriteStream stream = new WriteStream(buffer);
+            FixedWireData data = FixedWireData.Init();
+            WriteBatch batch = stream.BeginBatch();
+            Check(SerializeFixedWireBatch(ref batch, data), $"batch fixed write failed: {batch.Error}");
+            batch.End();
+            stream.Flush();
+            Check(stream.BytesProcessed == FixedWireBytes.Length,
+                $"expected {FixedWireBytes.Length} bytes, got {stream.BytesProcessed}");
+            Check(stream.Data.SequenceEqual(FixedWireBytes),
+                $"batch fixed golden mismatch:\nexpected {Convert.ToHexString(FixedWireBytes)}\ngot      {Convert.ToHexString(stream.Data)}");
+        }
+
+        // read side, fixed point section: a batch read of the pinned fixed bytes
+        // must decode the expected values exactly — fixed point has no quantization
+        {
+            ReadStream stream = new ReadStream(FixedWireBytes);
+            FixedWireData data = new FixedWireData();
+            ReadBatch batch = stream.BeginBatch();
+            Check(SerializeFixedWireBatch(ref batch, data), $"batch fixed read failed: {batch.Error}");
+            batch.End();
+
+            FixedWireData expected = FixedWireData.Init();
+            Check(data.FixedQ8_8 == expected.FixedQ8_8
+                && data.FixedQ16_16 == expected.FixedQ16_16
+                && data.FixedQ48_16 == expected.FixedQ48_16
+                && data.FixedQ16_16Unsigned == expected.FixedQ16_16Unsigned
+                && data.FixedQ112_16Wide == expected.FixedQ112_16Wide
+                && data.FixedQ64_64Wide == expected.FixedQ64_64Wide,
+                "batch read of the fixed golden bytes decoded the wrong values");
         }
     }
 

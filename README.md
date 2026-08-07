@@ -67,9 +67,11 @@ batch.End();                              // always, on every path out
 The contract is small: the batch owns the stream between `BeginBatch` and `End`
 (stream calls or `Reset` while a batch is open are API misuse); always call `End`
 on every path out — it is idempotent, and it is what publishes the batch's work
-back to the stream. Fixed-size scalar operations run register-resident; bulk and
-variable-size operations (`SerializeBytes`, strings, objects, `SerializeIntRelative`)
-delegate to the class path and recapture, byte identical. Batches are additive:
+back to the stream. Fixed-size scalar operations up to 64 bits run
+register-resident; everything else — bulk and variable-size operations
+(`SerializeBytes`, strings, objects, `SerializeIntRelative`) and the 128 bit and
+fixed point operations (`SerializeInt128`, `SerializeUInt128`, `SerializeFixed`) —
+delegates to the class path and recaptures, byte identical. Batches are additive:
 code that never begins one behaves exactly as before. `IBitStream`-based unified
 serialize functions are unchanged — batches are for per-direction hot paths
 (e.g. generated code) where tiny-message throughput matters.

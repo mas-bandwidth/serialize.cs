@@ -2877,10 +2877,12 @@ public sealed class MeasureStream : IBitStream
 ///     the next. Stream and batch calls can be interleaved freely at batch
 ///     granularity.
 ///
-/// The fixed-size scalar operations are the register-resident hot path. Bulk,
-/// variable-size and object operations (SerializeBytes, the strings,
-/// SerializeObject, SerializeIntRelative) sync the state down, run through the
-/// underlying stream, and recapture — byte identical, at class-path speed.
+/// The fixed-size scalar operations up to 64 bits are the register-resident hot
+/// path. Everything else — bulk, variable-size and object operations
+/// (SerializeBytes, the strings, SerializeObject, SerializeIntRelative) and the
+/// 128 bit and fixed point operations (SerializeInt128, SerializeUInt128, the
+/// SerializeFixed overloads) — syncs the state down, runs through the underlying
+/// stream, and recaptures — byte identical, at class-path speed.
 ///
 /// Two measured rules for using batches well (Apple M2, schema harness):
 ///   - Only pass a batch by ref to helpers the JIT will inline
@@ -3271,6 +3273,117 @@ public ref struct WriteBatch
     {
         Sync();
         bool ok = _stream.SerializeIntRelative(previous, ref current);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes a signed 128 bit integer in [min,max]. Delegated: syncs
+    /// state down, runs WriteStream.SerializeInt128, recaptures — byte identical to
+    /// the stream call.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeInt128(ref Int128 value, Int128 min, Int128 max)
+    {
+        Sync();
+        bool ok = _stream.SerializeInt128(ref value, min, max);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes an unsigned 128 bit integer as a full 128 bits. Delegated:
+    /// syncs state down, runs WriteStream.SerializeUInt128, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeUInt128(ref UInt128 value)
+    {
+        Sync();
+        bool ok = _stream.SerializeUInt128(ref value);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes a fixed point value with signed 64 bit storage. Delegated:
+    /// syncs state down, runs the WriteStream overload, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeFixed(ref long value, int integerBits, int fractionBits, long min, long max)
+    {
+        Sync();
+        bool ok = _stream.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes a fixed point value with unsigned 64 bit storage. Delegated:
+    /// syncs state down, runs the WriteStream overload, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeFixed(ref ulong value, int integerBits, int fractionBits, long min, long max)
+    {
+        Sync();
+        bool ok = _stream.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes a fixed point value with signed 32 bit storage. Delegated:
+    /// syncs state down, runs the WriteStream overload, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeFixed(ref int value, int integerBits, int fractionBits, long min, long max)
+    {
+        Sync();
+        bool ok = _stream.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes a fixed point value with unsigned 32 bit storage. Delegated:
+    /// syncs state down, runs the WriteStream overload, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeFixed(ref uint value, int integerBits, int fractionBits, long min, long max)
+    {
+        Sync();
+        bool ok = _stream.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes a fixed point value with signed 16 bit storage. Delegated:
+    /// syncs state down, runs the WriteStream overload, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeFixed(ref short value, int integerBits, int fractionBits, long min, long max)
+    {
+        Sync();
+        bool ok = _stream.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes a fixed point value with unsigned 16 bit storage. Delegated:
+    /// syncs state down, runs the WriteStream overload, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeFixed(ref ushort value, int integerBits, int fractionBits, long min, long max)
+    {
+        Sync();
+        bool ok = _stream.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes a fixed point value with signed 128 bit storage. Delegated:
+    /// syncs state down, runs the WriteStream overload, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeFixed(ref Int128 value, int integerBits, int fractionBits, long min, long max)
+    {
+        Sync();
+        bool ok = _stream.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes a fixed point value with unsigned 128 bit storage. Delegated:
+    /// syncs state down, runs the WriteStream overload, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeFixed(ref UInt128 value, int integerBits, int fractionBits, long min, long max)
+    {
+        Sync();
+        bool ok = _stream.SerializeFixed(ref value, integerBits, fractionBits, min, max);
         Recapture();
         return ok;
     }
@@ -3737,6 +3850,116 @@ public ref struct ReadBatch
     {
         Sync();
         bool ok = _stream.SerializeIntRelative(previous, ref current);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes a signed 128 bit integer in [min,max]. Delegated: syncs
+    /// state down, runs ReadStream.SerializeInt128, recaptures — identical decode.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeInt128(ref Int128 value, Int128 min, Int128 max)
+    {
+        Sync();
+        bool ok = _stream.SerializeInt128(ref value, min, max);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes an unsigned 128 bit integer as a full 128 bits. Delegated:
+    /// syncs state down, runs ReadStream.SerializeUInt128, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeUInt128(ref UInt128 value)
+    {
+        Sync();
+        bool ok = _stream.SerializeUInt128(ref value);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes a fixed point value with signed 64 bit storage. Delegated:
+    /// syncs state down, runs the ReadStream overload, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeFixed(ref long value, int integerBits, int fractionBits, long min, long max)
+    {
+        Sync();
+        bool ok = _stream.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes a fixed point value with unsigned 64 bit storage. Delegated:
+    /// syncs state down, runs the ReadStream overload, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeFixed(ref ulong value, int integerBits, int fractionBits, long min, long max)
+    {
+        Sync();
+        bool ok = _stream.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes a fixed point value with signed 32 bit storage. Delegated:
+    /// syncs state down, runs the ReadStream overload, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeFixed(ref int value, int integerBits, int fractionBits, long min, long max)
+    {
+        Sync();
+        bool ok = _stream.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes a fixed point value with unsigned 32 bit storage. Delegated:
+    /// syncs state down, runs the ReadStream overload, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeFixed(ref uint value, int integerBits, int fractionBits, long min, long max)
+    {
+        Sync();
+        bool ok = _stream.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes a fixed point value with signed 16 bit storage. Delegated:
+    /// syncs state down, runs the ReadStream overload, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeFixed(ref short value, int integerBits, int fractionBits, long min, long max)
+    {
+        Sync();
+        bool ok = _stream.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes a fixed point value with unsigned 16 bit storage. Delegated:
+    /// syncs state down, runs the ReadStream overload, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeFixed(ref ushort value, int integerBits, int fractionBits, long min, long max)
+    {
+        Sync();
+        bool ok = _stream.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes a fixed point value with signed 128 bit storage. Delegated:
+    /// syncs state down, runs the ReadStream overload, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeFixed(ref Int128 value, int integerBits, int fractionBits, long min, long max)
+    {
+        Sync();
+        bool ok = _stream.SerializeFixed(ref value, integerBits, fractionBits, min, max);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes a fixed point value with unsigned 128 bit storage. Delegated:
+    /// syncs state down, runs the ReadStream overload, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeFixed(ref UInt128 value, int integerBits, int fractionBits, long min, long max)
+    {
+        Sync();
+        bool ok = _stream.SerializeFixed(ref value, integerBits, fractionBits, min, max);
         Recapture();
         return ok;
     }
