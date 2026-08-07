@@ -131,6 +131,16 @@ public interface IBitStream
     /// required to represent the range. The full 64 bit range is supported.</summary>
     bool SerializeInt64(ref long value, long min, long max);
 
+    /// <summary>Serializes a signed 128 bit integer in [min,max], using only the bits
+    /// required to represent the range. The full 128 bit range is supported: the bit
+    /// count and offset arithmetic run in the unsigned domain, so ranges wider than
+    /// 2^127 are exact. The offset is written in 32 bit groups from least significant
+    /// upward, so where the range fits 64 bits or fewer the bytes are identical to
+    /// SerializeInt64 over the same bounds — a field can be widened from 64 to 128
+    /// bits without changing the wire, provided the bounds do not change. On read the
+    /// value is guaranteed to be in [min,max] if the call succeeds.</summary>
+    bool SerializeInt128(ref Int128 value, Int128 min, Int128 max);
+
     /// <summary>Serializes a byte (an unsigned 8 bit integer). Wire compatible with
     /// serialize_uint8 in the C++ library; the name follows the C# type vocabulary, as
     /// each port uses its own (Go SerializeUint8, Rust serialize_u8).</summary>
@@ -144,6 +154,13 @@ public interface IBitStream
 
     /// <summary>Serializes an unsigned 64 bit integer (low dword first).</summary>
     bool SerializeUInt64(ref ulong value);
+
+    /// <summary>Serializes an unsigned 128 bit integer. Always 128 bits on the wire:
+    /// the low 64 bit half first, then the high half, each half low dword first —
+    /// when the stream is byte aligned the result is the 16 bytes of the value in
+    /// little endian order. Not ranged: do not confuse this with SerializeInt128,
+    /// which uses only the bits the range requires.</summary>
+    bool SerializeUInt128(ref UInt128 value);
 
     /// <summary>Serializes a boolean value with one bit.</summary>
     bool SerializeBool(ref bool value);
@@ -163,6 +180,59 @@ public interface IBitStream
     /// inherited from the C++ library for wire fidelity. min, max and resolution are
     /// trusted parameters: choose ranges with a finite difference.</summary>
     bool SerializeCompressedFloat(ref float value, float min, float max, float resolution);
+
+    /// <summary>Serializes a fixed point value held in signed 64 bit storage as
+    /// Q integerBits.fractionBits, where the raw integer is the real value scaled by
+    /// 2^fractionBits and the sign bit counts toward integerBits (Q48.16 in a long is
+    /// (48, 16)). min and max are bounds in whole real units; integerBits +
+    /// fractionBits must equal the storage width, and all four parameters are part of
+    /// the wire format, exactly like a ranged integer's bounds — they are trusted
+    /// inputs, validated as API misuse. The raw value is serialized as an offset from
+    /// min &lt;&lt; fractionBits in the minimal number of bits for the raw range; for
+    /// storage of 64 bits or fewer the bytes are identical to SerializeInt64 of the
+    /// raw value over the raw bounds, and with fractionBits = 0 the operation is a
+    /// ranged integer. No float is ever involved, so unlike SerializeCompressedFloat
+    /// the round trip is exact and deterministic on every platform. On read the raw
+    /// value is guaranteed to be within the bounds if the call succeeds — out of
+    /// range offsets are rejected, never clamped.</summary>
+    bool SerializeFixed(ref long value, int integerBits, int fractionBits, long min, long max);
+
+    /// <summary>Serializes a fixed point value held in unsigned 64 bit storage as
+    /// Q integerBits.fractionBits. See the signed 64 bit overload for the
+    /// contract.</summary>
+    bool SerializeFixed(ref ulong value, int integerBits, int fractionBits, long min, long max);
+
+    /// <summary>Serializes a fixed point value held in signed 32 bit storage as
+    /// Q integerBits.fractionBits (Q16.16 in an int is (16, 16)). See the signed
+    /// 64 bit overload for the contract.</summary>
+    bool SerializeFixed(ref int value, int integerBits, int fractionBits, long min, long max);
+
+    /// <summary>Serializes a fixed point value held in unsigned 32 bit storage as
+    /// Q integerBits.fractionBits. See the signed 64 bit overload for the
+    /// contract.</summary>
+    bool SerializeFixed(ref uint value, int integerBits, int fractionBits, long min, long max);
+
+    /// <summary>Serializes a fixed point value held in signed 16 bit storage as
+    /// Q integerBits.fractionBits (Q8.8 in a short is (8, 8)). See the signed 64 bit
+    /// overload for the contract.</summary>
+    bool SerializeFixed(ref short value, int integerBits, int fractionBits, long min, long max);
+
+    /// <summary>Serializes a fixed point value held in unsigned 16 bit storage as
+    /// Q integerBits.fractionBits. See the signed 64 bit overload for the
+    /// contract.</summary>
+    bool SerializeFixed(ref ushort value, int integerBits, int fractionBits, long min, long max);
+
+    /// <summary>Serializes a fixed point value held in signed 128 bit storage as
+    /// Q integerBits.fractionBits (Q112.16 in an Int128 is (112, 16), Q64.64 is
+    /// (64, 64)). The offset is written in 32 bit groups from least significant
+    /// upward, up to four groups. See the signed 64 bit overload for the rest of the
+    /// contract.</summary>
+    bool SerializeFixed(ref Int128 value, int integerBits, int fractionBits, long min, long max);
+
+    /// <summary>Serializes a fixed point value held in unsigned 128 bit storage as
+    /// Q integerBits.fractionBits. See the 128 bit signed overload for the
+    /// contract.</summary>
+    bool SerializeFixed(ref UInt128 value, int integerBits, int fractionBits, long min, long max);
 
     /// <summary>Serializes an array of bytes. The stream aligns to a byte boundary
     /// first, then block copies the data. Both sides must know the length: it is not
@@ -251,6 +321,22 @@ public static class SerializeUtil
         return min == max ? 0 : 64 - BitOperations.LeadingZeroCount(max - min);
     }
 
+    /// <summary>Returns the number of bits required to serialize a 128 bit integer in
+    /// range [min,max]. The result is in [0,128]. The subtraction is performed in the
+    /// unsigned domain, so ranges wider than 2^127 are exact.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int BitsRequired128(UInt128 min, UInt128 max)
+    {
+        if (min == max)
+        {
+            return 0;
+        }
+        // subtract in the unsigned domain: the range may be wider than 2^127
+        UInt128 diff = max - min;
+        ulong high = (ulong)(diff >> 64);
+        return high != 0 ? 64 + BitsRequired64(0, high) : BitsRequired64(0, (ulong)diff);
+    }
+
     /// <summary>Converts a signed integer to an unsigned integer with zig-zag encoding.
     /// 0,-1,+1,-2,+2... becomes 0,1,2,3,4...</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -323,6 +409,10 @@ internal static class SerializeInternal
     internal const string NotAlignedMessage = "byte array serialization requires byte alignment";
     internal const string BufferBytesMessage = "bit writer buffer size must be a multiple of 8 bytes";
     internal const string ReaderBytesMessage = "bytes must be in [0, buffer.Length]";
+    internal const string FixedIntegerBitsMessage = "fixed point needs at least one integer bit (the sign bit counts for signed storage)";
+    internal const string FixedFractionBitsMessage = "fixed point fraction bits can't be negative";
+    internal const string FixedWidthMessage = "fixed point integer bits plus fraction bits must equal the number of bits in the storage type";
+    internal const string FixedBoundsMessage = "fixed point bounds in whole units do not fit the Q format";
 
     /// <summary>
     /// The difference buckets used by SerializeIntRelative. Each bucket costs one
@@ -381,6 +471,98 @@ internal static class SerializeInternal
         {
             throw new ArgumentException(BufferSizeMessage, nameof(bufferSize));
         }
+    }
+
+    /// <summary>
+    /// Validates a fixed point Q format against its storage and bounds. Everything
+    /// here is a trusted parameter of the call site — part of the wire format like a
+    /// ranged integer's bounds — so a violation is API misuse and throws, the C#
+    /// analog of the static_asserts in the C++ library. The whole unit capacity math
+    /// runs in the unsigned domain so the widest formats (Q64.0 and friends) cannot
+    /// overflow signed arithmetic.
+    /// </summary>
+    private static void ValidateFixedPointFormat(
+        int storageBits, bool storageSigned, int integerBits, int fractionBits,
+        long minUnits, long maxUnits)
+    {
+        if (integerBits < 1)
+        {
+            throw new ArgumentException(FixedIntegerBitsMessage, nameof(integerBits));
+        }
+        if (fractionBits < 0)
+        {
+            throw new ArgumentException(FixedFractionBitsMessage, nameof(fractionBits));
+        }
+        if (integerBits + fractionBits != storageBits)
+        {
+            throw new ArgumentException(FixedWidthMessage);
+        }
+        if (minUnits >= maxUnits)
+        {
+            throw new ArgumentException(MinMaxMessage);
+        }
+
+        // the whole unit capacity of the Q format, in the 64 bit domain: with 65 or
+        // more integer bits (128 bit storage) the capacity covers any long bound
+        long minRepresentableUnits;
+        long maxRepresentableUnits;
+        if (storageSigned)
+        {
+            minRepresentableUnits = integerBits >= 65
+                ? long.MinValue
+                : (long)(0UL - (1UL << (integerBits - 1)));
+            maxRepresentableUnits = integerBits >= 64
+                ? long.MaxValue
+                : (long)((1UL << (integerBits - 1)) - 1);
+        }
+        else
+        {
+            minRepresentableUnits = 0;
+            maxRepresentableUnits = integerBits >= 64
+                ? long.MaxValue
+                : (long)((1UL << integerBits) - 1);
+        }
+        if (minUnits < minRepresentableUnits || maxUnits > maxRepresentableUnits)
+        {
+            throw new ArgumentException(FixedBoundsMessage);
+        }
+    }
+
+    /// <summary>
+    /// Validates a fixed point Q format with storage of 64 bits or fewer and computes
+    /// the raw wire parameters shared by the write, read and measure implementations
+    /// of SerializeFixed. The whole unit bounds are shifted into raw fixed point
+    /// units in the unsigned domain, so negative bounds wrap two's complement — no
+    /// float is ever involved.
+    /// </summary>
+    internal static void FixedPointParams(
+        int storageBits, bool storageSigned, int integerBits, int fractionBits,
+        long minUnits, long maxUnits,
+        out ulong rawMin, out ulong rawMax, out int bits)
+    {
+        ValidateFixedPointFormat(storageBits, storageSigned, integerBits, fractionBits, minUnits, maxUnits);
+        rawMin = (ulong)minUnits << fractionBits;
+        rawMax = (ulong)maxUnits << fractionBits;
+        bits = SerializeUtil.BitsRequired64(rawMin, rawMax);
+    }
+
+    /// <summary>
+    /// The 128 bit storage counterpart of FixedPointParams: raw bounds in the
+    /// unsigned 128 bit domain, where two's complement wrap is exact for signed
+    /// storage. The wire cost comes from the 64 bit domain: the range in whole units
+    /// is exact in a ulong, and shifting it left by fractionBits adds exactly
+    /// fractionBits to its bit length.
+    /// </summary>
+    internal static void FixedPointParams128(
+        bool storageSigned, int integerBits, int fractionBits,
+        long minUnits, long maxUnits,
+        out UInt128 rawMin, out UInt128 rawMax, out int bits)
+    {
+        ValidateFixedPointFormat(128, storageSigned, integerBits, fractionBits, minUnits, maxUnits);
+        // the Int128 conversion sign extends the whole unit bounds before the shift
+        rawMin = (UInt128)(Int128)minUnits << fractionBits;
+        rawMax = (UInt128)(Int128)maxUnits << fractionBits;
+        bits = SerializeUtil.BitsRequired64((ulong)minUnits, (ulong)maxUnits) + fractionBits;
     }
 }
 
@@ -929,6 +1111,63 @@ public sealed class WriteStream : IBitStream
         return true;
     }
 
+    /// <summary>Writes a value in 32 bit groups, least significant group first: full
+    /// 32 bit groups from the bottom with the final group carrying the remainder —
+    /// the shared group structure of the 128 bit paths. bits must be in [1,128] and
+    /// already bounds checked.</summary>
+    private void WriteGroups128(UInt128 value, int bits)
+    {
+        if (bits <= 32)
+        {
+            _writer.WriteBitsUnchecked((uint)value, bits);
+        }
+        else if (bits <= 64)
+        {
+            _writer.WriteBitsUnchecked((uint)value, 32);
+            _writer.WriteBitsUnchecked((uint)(value >> 32), bits - 32);
+        }
+        else if (bits <= 96)
+        {
+            _writer.WriteBitsUnchecked((uint)value, 32);
+            _writer.WriteBitsUnchecked((uint)(value >> 32), 32);
+            _writer.WriteBitsUnchecked((uint)(value >> 64), bits - 64);
+        }
+        else
+        {
+            _writer.WriteBitsUnchecked((uint)value, 32);
+            _writer.WriteBitsUnchecked((uint)(value >> 32), 32);
+            _writer.WriteBitsUnchecked((uint)(value >> 64), 32);
+            _writer.WriteBitsUnchecked((uint)(value >> 96), bits - 96);
+        }
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeInt128(ref Int128 value, Int128 min, Int128 max)
+    {
+        if (min >= max)
+        {
+            throw new ArgumentException(SerializeInternal.MinMaxMessage);
+        }
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        Int128 v = value;
+        if (v < min || v > max)
+        {
+            return Fail(SerializeError.ValueOutOfRange);
+        }
+        int bits = SerializeUtil.BitsRequired128((UInt128)min, (UInt128)max);
+        // subtract in the unsigned domain: the range may be wider than 2^127
+        UInt128 unsigned = (UInt128)v - (UInt128)min;
+        if (_writer.BitsWritten + bits > _writer.NumBits)
+        {
+            return Fail(SerializeError.Overflow);
+        }
+        WriteGroups128(unsigned, bits);
+        return true;
+    }
+
     /// <inheritdoc/>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeByte(ref byte value) => WriteBits(value, 8);
@@ -955,6 +1194,22 @@ public sealed class WriteStream : IBitStream
         }
         _writer.WriteBitsUnchecked((uint)value, 32);
         _writer.WriteBitsUnchecked((uint)(value >> 32), 32);
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeUInt128(ref UInt128 value)
+    {
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        if (_writer.BitsWritten + 128 > _writer.NumBits)
+        {
+            return Fail(SerializeError.Overflow);
+        }
+        // the low 64 bit half first, then the high half, each half low dword first
+        WriteGroups128(value, 128);
         return true;
     }
 
@@ -998,6 +1253,125 @@ public sealed class WriteStream : IBitStream
         }
         uint integerValue = (uint)Math.Floor((double)(normalizedValue * maxIntegerValue + 0.5f));
         return WriteBits(integerValue, bits);
+    }
+
+    /// <summary>The shared write path of the fixed point overloads with storage of 64
+    /// bits or fewer: raw value, bounds and offset all live in the unsigned 64 bit
+    /// domain, where two's complement wrap is exact for signed storage. The wire is
+    /// byte identical to SerializeInt64 of the raw value over the raw bounds.</summary>
+    private bool WriteFixed(ulong raw, ulong rawMin, ulong rawMax, int bits)
+    {
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        // subtract in the unsigned domain: the raw range may be wider than 2^63
+        ulong offset = raw - rawMin;
+        if (offset > rawMax - rawMin)
+        {
+            return Fail(SerializeError.ValueOutOfRange);
+        }
+        if (_writer.BitsWritten + bits > _writer.NumBits)
+        {
+            return Fail(SerializeError.Overflow);
+        }
+        if (bits <= 32)
+        {
+            _writer.WriteBitsUnchecked((uint)offset, bits);
+        }
+        else
+        {
+            // low dword first, then the high remainder: same convention as SerializeInt64
+            _writer.WriteBitsUnchecked((uint)offset, 32);
+            _writer.WriteBitsUnchecked((uint)(offset >> 32), bits - 32);
+        }
+        return true;
+    }
+
+    /// <summary>The 128 bit storage counterpart of WriteFixed: the offset is written
+    /// in 32 bit groups, least significant group first.</summary>
+    private bool WriteFixed128(UInt128 raw, UInt128 rawMin, UInt128 rawMax, int bits)
+    {
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        // subtract in the unsigned domain: the raw range may be wider than 2^127
+        UInt128 offset = raw - rawMin;
+        if (offset > rawMax - rawMin)
+        {
+            return Fail(SerializeError.ValueOutOfRange);
+        }
+        if (_writer.BitsWritten + bits > _writer.NumBits)
+        {
+            return Fail(SerializeError.Overflow);
+        }
+        WriteGroups128(offset, bits);
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeFixed(ref long value, int integerBits, int fractionBits, long min, long max)
+    {
+        SerializeInternal.FixedPointParams(64, true, integerBits, fractionBits, min, max,
+            out ulong rawMin, out ulong rawMax, out int bits);
+        return WriteFixed((ulong)value, rawMin, rawMax, bits);
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeFixed(ref ulong value, int integerBits, int fractionBits, long min, long max)
+    {
+        SerializeInternal.FixedPointParams(64, false, integerBits, fractionBits, min, max,
+            out ulong rawMin, out ulong rawMax, out int bits);
+        return WriteFixed(value, rawMin, rawMax, bits);
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeFixed(ref int value, int integerBits, int fractionBits, long min, long max)
+    {
+        SerializeInternal.FixedPointParams(32, true, integerBits, fractionBits, min, max,
+            out ulong rawMin, out ulong rawMax, out int bits);
+        return WriteFixed((ulong)value, rawMin, rawMax, bits);
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeFixed(ref uint value, int integerBits, int fractionBits, long min, long max)
+    {
+        SerializeInternal.FixedPointParams(32, false, integerBits, fractionBits, min, max,
+            out ulong rawMin, out ulong rawMax, out int bits);
+        return WriteFixed(value, rawMin, rawMax, bits);
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeFixed(ref short value, int integerBits, int fractionBits, long min, long max)
+    {
+        SerializeInternal.FixedPointParams(16, true, integerBits, fractionBits, min, max,
+            out ulong rawMin, out ulong rawMax, out int bits);
+        return WriteFixed((ulong)value, rawMin, rawMax, bits);
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeFixed(ref ushort value, int integerBits, int fractionBits, long min, long max)
+    {
+        SerializeInternal.FixedPointParams(16, false, integerBits, fractionBits, min, max,
+            out ulong rawMin, out ulong rawMax, out int bits);
+        return WriteFixed(value, rawMin, rawMax, bits);
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeFixed(ref Int128 value, int integerBits, int fractionBits, long min, long max)
+    {
+        SerializeInternal.FixedPointParams128(true, integerBits, fractionBits, min, max,
+            out UInt128 rawMin, out UInt128 rawMax, out int bits);
+        return WriteFixed128((UInt128)value, rawMin, rawMax, bits);
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeFixed(ref UInt128 value, int integerBits, int fractionBits, long min, long max)
+    {
+        SerializeInternal.FixedPointParams128(false, integerBits, fractionBits, min, max,
+            out UInt128 rawMin, out UInt128 rawMax, out int bits);
+        return WriteFixed128(value, rawMin, rawMax, bits);
     }
 
     /// <inheritdoc/>
@@ -1393,6 +1767,64 @@ public sealed class ReadStream : IBitStream
         return true;
     }
 
+    /// <summary>Reads a value written in 32 bit groups, least significant group
+    /// first: full 32 bit groups from the bottom with the final group carrying the
+    /// remainder — the shared group structure of the 128 bit paths. bits must be in
+    /// [1,128] and already bounds checked.</summary>
+    private UInt128 ReadGroups128(int bits)
+    {
+        if (bits <= 32)
+        {
+            return _reader.ReadBitsUnchecked(bits);
+        }
+        if (bits <= 64)
+        {
+            uint g0 = _reader.ReadBitsUnchecked(32);
+            uint g1 = _reader.ReadBitsUnchecked(bits - 32);
+            return (ulong)g1 << 32 | g0;
+        }
+        if (bits <= 96)
+        {
+            uint g0 = _reader.ReadBitsUnchecked(32);
+            uint g1 = _reader.ReadBitsUnchecked(32);
+            uint g2 = _reader.ReadBitsUnchecked(bits - 64);
+            return (UInt128)g2 << 64 | ((ulong)g1 << 32 | g0);
+        }
+        {
+            uint g0 = _reader.ReadBitsUnchecked(32);
+            uint g1 = _reader.ReadBitsUnchecked(32);
+            uint g2 = _reader.ReadBitsUnchecked(32);
+            uint g3 = _reader.ReadBitsUnchecked(bits - 96);
+            return (UInt128)g3 << 96 | (UInt128)g2 << 64 | ((ulong)g1 << 32 | g0);
+        }
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeInt128(ref Int128 value, Int128 min, Int128 max)
+    {
+        if (min >= max)
+        {
+            throw new ArgumentException(SerializeInternal.MinMaxMessage);
+        }
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        int bits = SerializeUtil.BitsRequired128((UInt128)min, (UInt128)max);
+        if (_reader.BitsRead + bits > _reader.NumBits)
+        {
+            return Fail(SerializeError.Overflow);
+        }
+        UInt128 unsigned = ReadGroups128(bits);
+        // compare and add in the unsigned domain: the range may be wider than 2^127
+        if (unsigned > (UInt128)max - (UInt128)min)
+        {
+            return Fail(SerializeError.ValueOutOfRange);
+        }
+        value = (Int128)(unsigned + (UInt128)min);
+        return true;
+    }
+
     /// <inheritdoc/>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeByte(ref byte value)
@@ -1438,6 +1870,22 @@ public sealed class ReadStream : IBitStream
         uint lo = _reader.ReadBitsUnchecked(32);
         uint hi = _reader.ReadBitsUnchecked(32);
         value = (ulong)hi << 32 | lo;
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeUInt128(ref UInt128 value)
+    {
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        if (_reader.BitsRead + 128 > _reader.NumBits)
+        {
+            return Fail(SerializeError.Overflow);
+        }
+        // the low 64 bit half first, then the high half, each half low dword first
+        value = ReadGroups128(128);
         return true;
     }
 
@@ -1497,6 +1945,174 @@ public sealed class ReadStream : IBitStream
         }
         float normalizedValue = (float)integerValue / maxIntegerValue;
         value = normalizedValue * delta + min;
+        return true;
+    }
+
+    /// <summary>The shared read path of the fixed point overloads with storage of 64
+    /// bits or fewer. On success raw holds the reconstructed raw fixed point value,
+    /// guaranteed within [rawMin,rawMax]; offsets smuggled into the bit headroom are
+    /// rejected, never clamped.</summary>
+    private bool ReadFixed(ref ulong raw, ulong rawMin, ulong rawMax, int bits)
+    {
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        if (_reader.BitsRead + bits > _reader.NumBits)
+        {
+            return Fail(SerializeError.Overflow);
+        }
+        ulong offset;
+        if (bits <= 32)
+        {
+            offset = _reader.ReadBitsUnchecked(bits);
+        }
+        else
+        {
+            // low dword first, then the high remainder: same convention as SerializeInt64
+            uint lo = _reader.ReadBitsUnchecked(32);
+            uint hi = _reader.ReadBitsUnchecked(bits - 32);
+            offset = (ulong)hi << 32 | lo;
+        }
+        // compare and add in the unsigned domain: the raw range may be wider than 2^63
+        if (offset > rawMax - rawMin)
+        {
+            return Fail(SerializeError.ValueOutOfRange);
+        }
+        raw = rawMin + offset;
+        return true;
+    }
+
+    /// <summary>The 128 bit storage counterpart of ReadFixed.</summary>
+    private bool ReadFixed128(ref UInt128 raw, UInt128 rawMin, UInt128 rawMax, int bits)
+    {
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        if (_reader.BitsRead + bits > _reader.NumBits)
+        {
+            return Fail(SerializeError.Overflow);
+        }
+        UInt128 offset = ReadGroups128(bits);
+        // compare and add in the unsigned domain: the raw range may be wider than 2^127
+        if (offset > rawMax - rawMin)
+        {
+            return Fail(SerializeError.ValueOutOfRange);
+        }
+        raw = rawMin + offset;
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeFixed(ref long value, int integerBits, int fractionBits, long min, long max)
+    {
+        SerializeInternal.FixedPointParams(64, true, integerBits, fractionBits, min, max,
+            out ulong rawMin, out ulong rawMax, out int bits);
+        ulong raw = 0;
+        if (!ReadFixed(ref raw, rawMin, rawMax, bits))
+        {
+            return false;
+        }
+        value = (long)raw;
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeFixed(ref ulong value, int integerBits, int fractionBits, long min, long max)
+    {
+        SerializeInternal.FixedPointParams(64, false, integerBits, fractionBits, min, max,
+            out ulong rawMin, out ulong rawMax, out int bits);
+        ulong raw = 0;
+        if (!ReadFixed(ref raw, rawMin, rawMax, bits))
+        {
+            return false;
+        }
+        value = raw;
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeFixed(ref int value, int integerBits, int fractionBits, long min, long max)
+    {
+        SerializeInternal.FixedPointParams(32, true, integerBits, fractionBits, min, max,
+            out ulong rawMin, out ulong rawMax, out int bits);
+        ulong raw = 0;
+        if (!ReadFixed(ref raw, rawMin, rawMax, bits))
+        {
+            return false;
+        }
+        value = (int)raw;
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeFixed(ref uint value, int integerBits, int fractionBits, long min, long max)
+    {
+        SerializeInternal.FixedPointParams(32, false, integerBits, fractionBits, min, max,
+            out ulong rawMin, out ulong rawMax, out int bits);
+        ulong raw = 0;
+        if (!ReadFixed(ref raw, rawMin, rawMax, bits))
+        {
+            return false;
+        }
+        value = (uint)raw;
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeFixed(ref short value, int integerBits, int fractionBits, long min, long max)
+    {
+        SerializeInternal.FixedPointParams(16, true, integerBits, fractionBits, min, max,
+            out ulong rawMin, out ulong rawMax, out int bits);
+        ulong raw = 0;
+        if (!ReadFixed(ref raw, rawMin, rawMax, bits))
+        {
+            return false;
+        }
+        value = (short)raw;
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeFixed(ref ushort value, int integerBits, int fractionBits, long min, long max)
+    {
+        SerializeInternal.FixedPointParams(16, false, integerBits, fractionBits, min, max,
+            out ulong rawMin, out ulong rawMax, out int bits);
+        ulong raw = 0;
+        if (!ReadFixed(ref raw, rawMin, rawMax, bits))
+        {
+            return false;
+        }
+        value = (ushort)raw;
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeFixed(ref Int128 value, int integerBits, int fractionBits, long min, long max)
+    {
+        SerializeInternal.FixedPointParams128(true, integerBits, fractionBits, min, max,
+            out UInt128 rawMin, out UInt128 rawMax, out int bits);
+        UInt128 raw = 0;
+        if (!ReadFixed128(ref raw, rawMin, rawMax, bits))
+        {
+            return false;
+        }
+        value = (Int128)raw;
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeFixed(ref UInt128 value, int integerBits, int fractionBits, long min, long max)
+    {
+        SerializeInternal.FixedPointParams128(false, integerBits, fractionBits, min, max,
+            out UInt128 rawMin, out UInt128 rawMax, out int bits);
+        UInt128 raw = 0;
+        if (!ReadFixed128(ref raw, rawMin, rawMax, bits))
+        {
+            return false;
+        }
+        value = raw;
         return true;
     }
 
@@ -1821,6 +2437,24 @@ public sealed class MeasureStream : IBitStream
     }
 
     /// <inheritdoc/>
+    public bool SerializeInt128(ref Int128 value, Int128 min, Int128 max)
+    {
+        if (min >= max)
+        {
+            throw new ArgumentException(SerializeInternal.MinMaxMessage);
+        }
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        if (value < min || value > max)
+        {
+            return Fail(SerializeError.ValueOutOfRange);
+        }
+        return Measure(SerializeUtil.BitsRequired128((UInt128)min, (UInt128)max));
+    }
+
+    /// <inheritdoc/>
     public bool SerializeByte(ref byte value) => Measure(8);
 
     /// <inheritdoc/>
@@ -1831,6 +2465,9 @@ public sealed class MeasureStream : IBitStream
 
     /// <inheritdoc/>
     public bool SerializeUInt64(ref ulong value) => Measure(64);
+
+    /// <inheritdoc/>
+    public bool SerializeUInt128(ref UInt128 value) => Measure(128);
 
     /// <inheritdoc/>
     public bool SerializeBool(ref bool value) => Measure(1);
@@ -1847,6 +2484,103 @@ public sealed class MeasureStream : IBitStream
         SerializeInternal.CompressedFloatParams(min, max, resolution,
             out _, out int bits, out _);
         return Measure(bits);
+    }
+
+    /// <summary>The shared measure path of the fixed point overloads with storage of
+    /// 64 bits or fewer: the value is range checked like the write stream, then the
+    /// exact bit cost of the range is counted — fixed point involves no alignment, so
+    /// the measurement is exact, not just conservative.</summary>
+    private bool MeasureFixed(ulong raw, ulong rawMin, ulong rawMax, int bits)
+    {
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        // compare in the unsigned domain: the raw range may be wider than 2^63
+        if (raw - rawMin > rawMax - rawMin)
+        {
+            return Fail(SerializeError.ValueOutOfRange);
+        }
+        return Measure(bits);
+    }
+
+    /// <summary>The 128 bit storage counterpart of MeasureFixed.</summary>
+    private bool MeasureFixed128(UInt128 raw, UInt128 rawMin, UInt128 rawMax, int bits)
+    {
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        // compare in the unsigned domain: the raw range may be wider than 2^127
+        if (raw - rawMin > rawMax - rawMin)
+        {
+            return Fail(SerializeError.ValueOutOfRange);
+        }
+        return Measure(bits);
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeFixed(ref long value, int integerBits, int fractionBits, long min, long max)
+    {
+        SerializeInternal.FixedPointParams(64, true, integerBits, fractionBits, min, max,
+            out ulong rawMin, out ulong rawMax, out int bits);
+        return MeasureFixed((ulong)value, rawMin, rawMax, bits);
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeFixed(ref ulong value, int integerBits, int fractionBits, long min, long max)
+    {
+        SerializeInternal.FixedPointParams(64, false, integerBits, fractionBits, min, max,
+            out ulong rawMin, out ulong rawMax, out int bits);
+        return MeasureFixed(value, rawMin, rawMax, bits);
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeFixed(ref int value, int integerBits, int fractionBits, long min, long max)
+    {
+        SerializeInternal.FixedPointParams(32, true, integerBits, fractionBits, min, max,
+            out ulong rawMin, out ulong rawMax, out int bits);
+        return MeasureFixed((ulong)value, rawMin, rawMax, bits);
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeFixed(ref uint value, int integerBits, int fractionBits, long min, long max)
+    {
+        SerializeInternal.FixedPointParams(32, false, integerBits, fractionBits, min, max,
+            out ulong rawMin, out ulong rawMax, out int bits);
+        return MeasureFixed(value, rawMin, rawMax, bits);
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeFixed(ref short value, int integerBits, int fractionBits, long min, long max)
+    {
+        SerializeInternal.FixedPointParams(16, true, integerBits, fractionBits, min, max,
+            out ulong rawMin, out ulong rawMax, out int bits);
+        return MeasureFixed((ulong)value, rawMin, rawMax, bits);
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeFixed(ref ushort value, int integerBits, int fractionBits, long min, long max)
+    {
+        SerializeInternal.FixedPointParams(16, false, integerBits, fractionBits, min, max,
+            out ulong rawMin, out ulong rawMax, out int bits);
+        return MeasureFixed(value, rawMin, rawMax, bits);
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeFixed(ref Int128 value, int integerBits, int fractionBits, long min, long max)
+    {
+        SerializeInternal.FixedPointParams128(true, integerBits, fractionBits, min, max,
+            out UInt128 rawMin, out UInt128 rawMax, out int bits);
+        return MeasureFixed128((UInt128)value, rawMin, rawMax, bits);
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeFixed(ref UInt128 value, int integerBits, int fractionBits, long min, long max)
+    {
+        SerializeInternal.FixedPointParams128(false, integerBits, fractionBits, min, max,
+            out UInt128 rawMin, out UInt128 rawMax, out int bits);
+        return MeasureFixed128(value, rawMin, rawMax, bits);
     }
 
     /// <inheritdoc/>

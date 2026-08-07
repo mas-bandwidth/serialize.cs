@@ -4,8 +4,9 @@
     <!-- net8.0 (LTS) is the floor so game servers on .NET 8 can reference the
          library; net10.0 is the current SDK. netstandard2.1 (Unity-class runtimes)
          is an open deliverable: it needs shims for BitOperations, the unsigned
-         BitConverter bit casts, Rune enumeration and Utf8.IsValid, each proven
-         wire-neutral by the golden test per TFM before shipping. -->
+         BitConverter bit casts, Rune enumeration, Utf8.IsValid and an emulated
+         128 bit pair standing in for Int128/UInt128, each proven wire-neutral by
+         the golden test per TFM before shipping. -->
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>

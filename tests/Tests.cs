@@ -361,6 +361,7 @@ internal static partial class Program
         RunTest("test_bitpacker", TestBitpacker);
         RunTest("test_bits_required", TestBitsRequired);
         RunTest("test_bits_required64", TestBitsRequired64);
+        RunTest("test_bits_required128", TestBitsRequired128);
         RunTest("test_zigzag", TestZigZag);
         RunTest("test_serialize", TestSerialize);
         RunTest("test_read_write", TestReadWrite);
@@ -373,8 +374,15 @@ internal static partial class Program
         RunTest("test_wstring_validation", TestWStringValidation);
         RunTest("test_int_relative_validation", TestIntRelativeValidation);
         RunTest("test_compressed_float_validation", TestCompressedFloatValidation);
+        RunTest("test_serialize_fixed", TestSerializeFixed);
+        RunTest("test_serialize_fixed_validation", TestSerializeFixedValidation);
+        RunTest("test_serialize_fixed_matches_int64", TestSerializeFixedMatchesInt64);
+        RunTest("test_serialize_fixed_wide", TestSerializeFixedWide);
+        RunTest("test_serialize_uint128", TestSerializeUInt128);
+        RunTest("test_serialize_int128", TestSerializeInt128);
         RunTest("test_golden_wire_format", TestGoldenWireFormat);
         RunTest("test_extended_wire_format", TestExtendedWireFormat);
+        RunTest("test_fixed_wire_format", TestFixedWireFormat);
         RunTest("test_write_bytes_qword_phases", TestWriteBytesQwordPhases);
         RunTest("test_write_overflow", TestWriteOverflow);
         RunTest("test_align_validation", TestAlignValidation);
@@ -1304,6 +1312,14 @@ internal static partial class Program
             stream.SerializeCompressedFloat(ref f, 0, 10, 0.01f);
             int relative = 105;
             stream.SerializeIntRelative(100, ref relative);
+            UInt128 u128 = ((UInt128)0x0123456789ABCDEF << 64) | 0xFEDCBA9876543210;
+            stream.SerializeUInt128(ref u128);
+            Int128 i128 = -((Int128)1 << 99);
+            stream.SerializeInt128(ref i128, -((Int128)1 << 100), (Int128)1 << 100);
+            long fixedValue = -(54321L * 65536 + 12345);
+            stream.SerializeFixed(ref fixedValue, 48, 16, -100000, +100000);
+            Int128 fixedWide = -(98765432109L * 65536 + 4321);
+            stream.SerializeFixed(ref fixedWide, 112, 16, -144115188075855872, +144115188075855872);
             Check(stream.Error == SerializeError.None, "serialize failed");
         }
 
