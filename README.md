@@ -74,6 +74,13 @@ code that never begins one behaves exactly as before. `IBitStream`-based unified
 serialize functions are unchanged — batches are for per-direction hot paths
 (e.g. generated code) where tiny-message throughput matters.
 
+Two measured rules (Apple M2, schema harness): pass a batch by ref only to
+helpers marked `AggressiveInlining` — a real call taking `ref WriteBatch`
+address-exposes the struct and kills enregistration for the whole scope,
+measured slower than no batch at all; and batch scalar-dense bodies only — a
+body dominated by one bulk op (length int + `SerializeBytes`) pays the batch
+capture/restore without winning it back.
+
 ## Interop gate (head-to-head vs C++)
 
 ```sh

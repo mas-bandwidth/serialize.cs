@@ -2882,6 +2882,17 @@ public sealed class MeasureStream : IBitStream
 /// SerializeObject, SerializeIntRelative) sync the state down, run through the
 /// underlying stream, and recapture — byte identical, at class-path speed.
 ///
+/// Two measured rules for using batches well (Apple M2, schema harness):
+///   - Only pass a batch by ref to helpers the JIT will inline
+///     (MethodImplOptions.AggressiveInlining). A real call taking
+///     <c>ref WriteBatch</c> address-exposes the struct and enregistration dies
+///     for the whole calling scope — measured SLOWER than no batch at all
+///     (probe_header write 0.71x vs 1.28x with the helper inlined).
+///   - Batch scalar-dense serialize bodies. A body dominated by one bulk op
+///     (a length int plus SerializeBytes, like a chat message) pays the batch
+///     capture/restore without enough scalar traffic to win it back — measured
+///     0.91x. Leave such types on the stream.
+///
 /// The batch is additive API: nothing about the streams changes, and code that
 /// never begins a batch behaves exactly as before. Unified serialize functions
 /// keep taking IBitStream; a batch is what generated or hand-tuned per-direction
