@@ -18,7 +18,8 @@ are reserved for API misuse); no unsafe code; zero allocation on serialization p
 
 - `src/Serialize.cs` — the whole library, one file (mirrors the C++ single header):
   `BitWriter`, `BitReader`, `IBitStream`, `WriteStream`, `ReadStream`, `MeasureStream`,
-  `SerializeUtil`, `ISerializer`.
+  `SerializeUtil`, `ISerializer`, plus the C#-only batch layer `WriteBatch` /
+  `ReadBatch` (see below).
 - `tests/` — console test runner, no test framework: prints each test name, exit code
   is the verdict. Includes the golden wire test, an extended wire test pinning the
   64-bit paths, and deterministic differential/hostile seeded tests.
@@ -44,6 +45,34 @@ shims for `BitOperations`, the unsigned `BitConverter` bit casts, `Rune`
 enumeration and `Utf8.IsValid`, plus an emulated 128 bit pair standing in for
 `Int128`/`UInt128` (mirroring the C++ emulated types' two's complement
 semantics), each proven wire-neutral by the golden test per TFM before it ships.
+
+## Batches: the hot path for tiny messages
+
+The streams are heap objects, so even with the serialize methods inlined the JIT
+reloads and stores the packer state (`scratch`, scratch bits, bits written) around
+every call — heap fields cannot live in registers across calls, and on tiny
+messages that traffic dominates. A batch lifts the state into the fields of a
+`ref struct` at `BeginBatch`, serializes against locals with the same wire logic,
+the same validation and the same latched error model — byte-for-byte identical
+output, proven by a batch golden-wire test and randomized differential tests —
+and stores the state back once at `End`:
+
+```csharp
+WriteBatch batch = stream.BeginBatch();   // ReadStream: ReadBatch
+batch.SerializeBits(ref value, 8);
+// ... the same serialize surface as the stream ...
+batch.End();                              // always, on every path out
+```
+
+The contract is small: the batch owns the stream between `BeginBatch` and `End`
+(stream calls or `Reset` while a batch is open are API misuse); always call `End`
+on every path out — it is idempotent, and it is what publishes the batch's work
+back to the stream. Fixed-size scalar operations run register-resident; bulk and
+variable-size operations (`SerializeBytes`, strings, objects, `SerializeIntRelative`)
+delegate to the class path and recapture, byte identical. Batches are additive:
+code that never begins one behaves exactly as before. `IBitStream`-based unified
+serialize functions are unchanged — batches are for per-direction hot paths
+(e.g. generated code) where tiny-message throughput matters.
 
 ## Interop gate (head-to-head vs C++)
 

@@ -27,7 +27,8 @@
 
     This file mirrors the single-header layout of the C++ original:
     error model / utilities / BitWriter / BitReader / stream interface / WriteStream /
-    ReadStream / MeasureStream.
+    ReadStream / MeasureStream, followed by the C#-only batch layer:
+    WriteBatch / ReadBatch (register-resident hot paths over the same streams).
 */
 
 using System;
@@ -614,6 +615,37 @@ public sealed class BitWriter
     internal long NumBits => _numBits;
 
     /// <summary>
+    /// Lifts the packer state out into locals for a WriteBatch, which serializes
+    /// against register-resident copies of these fields and stores them back once
+    /// via RestoreState. See WriteBatch.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void CaptureState(out byte[] data, out ulong scratch, out long numBits,
+        out long bitsWritten, out long wordIndex, out int scratchBits)
+    {
+        data = _data;
+        scratch = _scratch;
+        numBits = _numBits;
+        bitsWritten = _bitsWritten;
+        wordIndex = _wordIndex;
+        scratchBits = _scratchBits;
+    }
+
+    /// <summary>
+    /// Stores batch-held packer state back into the writer. The buffer and its bit
+    /// capacity cannot change while a batch is open (Reset mid-batch is API misuse),
+    /// so only the mutable write state comes back.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void RestoreState(ulong scratch, long bitsWritten, long wordIndex, int scratchBits)
+    {
+        _scratch = scratch;
+        _bitsWritten = bitsWritten;
+        _wordIndex = wordIndex;
+        _scratchBits = scratchBits;
+    }
+
+    /// <summary>
     /// The unchecked hot path shared by WriteBits and WriteStream, which perform their
     /// own validation before calling it. bits must be in [1,32] and the write must fit
     /// in the buffer.
@@ -832,6 +864,30 @@ public sealed class BitReader
     }
 
     internal long NumBits => _numBits;
+
+    /// <summary>
+    /// Lifts the reader state out into locals for a ReadBatch, which reads against
+    /// register-resident copies of these fields and stores the cursor back once via
+    /// RestoreState. See ReadBatch.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void CaptureState(out byte[] data, out long numBits, out long bitsRead)
+    {
+        data = _data;
+        numBits = _numBits;
+        bitsRead = _bitsRead;
+    }
+
+    /// <summary>
+    /// Stores a batch-held read cursor back into the reader. The buffer and its bit
+    /// length cannot change while a batch is open (Reset mid-batch is API misuse),
+    /// so only the cursor comes back.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void RestoreState(long bitsRead)
+    {
+        _bitsRead = bitsRead;
+    }
 
     /// <summary>
     /// The unchecked hot path shared by ReadBits and ReadStream, which perform their
@@ -1559,6 +1615,34 @@ public sealed class WriteStream : IBitStream
     public void Flush()
     {
         _writer.FlushBits();
+    }
+
+    /// <summary>
+    /// Begins a batch: a register-resident view of this stream for hot serialize
+    /// paths. The batch owns the stream until its End is called — always call End,
+    /// on every path out. See WriteBatch for the contract and the reason it is
+    /// faster.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public WriteBatch BeginBatch()
+    {
+        return new WriteBatch(this);
+    }
+
+    /// <summary>The bit writer, for batch state capture and delegated calls.</summary>
+    internal BitWriter Writer => _writer;
+
+    /// <summary>
+    /// The latched error, batch transfer form: an open batch carries the error
+    /// itself (seeded from the stream at BeginBatch) and preserves first-error
+    /// latching internally, so storing it back is a plain assignment.
+    /// </summary>
+    internal SerializeError BatchError
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => _error;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        set => _error = value;
     }
 
     /// <summary>The written portion of the buffer: the packet you should send.
@@ -2309,6 +2393,34 @@ public sealed class ReadStream : IBitStream
     /// <inheritdoc/>
     public long BytesProcessed => (_reader.BitsRead + 7) / 8;
 
+    /// <summary>
+    /// Begins a batch: a register-resident view of this stream for hot serialize
+    /// paths. The batch owns the stream until its End is called — always call End,
+    /// on every path out. See ReadBatch for the contract and the reason it is
+    /// faster.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public ReadBatch BeginBatch()
+    {
+        return new ReadBatch(this);
+    }
+
+    /// <summary>The bit reader, for batch state capture and delegated calls.</summary>
+    internal BitReader Reader => _reader;
+
+    /// <summary>
+    /// The latched error, batch transfer form: an open batch carries the error
+    /// itself (seeded from the stream at BeginBatch) and preserves first-error
+    /// latching internally, so storing it back is a plain assignment.
+    /// </summary>
+    internal SerializeError BatchError
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => _error;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        set => _error = value;
+    }
+
     /// <summary>The number of bits still available to read, so callers can preflight a
     /// read without dropping to the BitReader layer.</summary>
     public long BitsRemaining => _reader.BitsRemaining;
@@ -2731,4 +2843,906 @@ public sealed class MeasureStream : IBitStream
 
     /// <inheritdoc/>
     public object? Context { get; set; }
+}
+
+/// <summary>
+/// A register-resident view of a WriteStream for hot serialize paths.
+///
+/// The streams are heap objects, so the JIT reloads and stores the packer state
+/// (scratch, scratch bit count, bits written) around every serialize call even
+/// after inlining: heap fields cannot live in registers across calls. A batch
+/// lifts that state into the fields of a ref struct at BeginBatch, serializes
+/// against the locals — the same wire logic, the same validation, the same
+/// latched error model, byte-for-byte identical output — and stores the state
+/// back exactly once at End.
+///
+/// <code>
+/// WriteBatch batch = stream.BeginBatch();
+/// batch.SerializeBits(ref value, 8);
+/// ...
+/// batch.End();
+/// </code>
+///
+/// Contract:
+///   - The batch owns the stream between BeginBatch and End. Calling serialize
+///     methods or Reset on the underlying stream, or beginning a second batch,
+///     while a batch is open is API misuse, exactly like writing after
+///     FlushBits.
+///   - Always call End, on every path out of the serialize code, including
+///     early aborts. End is idempotent, and it is what stores the packer state
+///     and the latched error back to the stream: a batch dropped without End
+///     silently loses its writes. Serialize calls on an ended batch are API
+///     misuse.
+///   - Batches nest by sequence, not by scope: End one batch before beginning
+///     the next. Stream and batch calls can be interleaved freely at batch
+///     granularity.
+///
+/// The fixed-size scalar operations are the register-resident hot path. Bulk,
+/// variable-size and object operations (SerializeBytes, the strings,
+/// SerializeObject, SerializeIntRelative) sync the state down, run through the
+/// underlying stream, and recapture — byte identical, at class-path speed.
+///
+/// The batch is additive API: nothing about the streams changes, and code that
+/// never begins a batch behaves exactly as before. Unified serialize functions
+/// keep taking IBitStream; a batch is what generated or hand-tuned per-direction
+/// code targets when tiny-message throughput matters.
+/// </summary>
+public ref struct WriteBatch
+{
+    private readonly WriteStream _stream;
+    private byte[] _data;
+    private ulong _scratch;
+    private long _numBits;
+    private long _bitsWritten;
+    private long _wordIndex;
+    private int _scratchBits;
+    private SerializeError _error;
+    private bool _ended;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal WriteBatch(WriteStream stream)
+    {
+        _stream = stream;
+        stream.Writer.CaptureState(out _data, out _scratch, out _numBits,
+            out _bitsWritten, out _wordIndex, out _scratchBits);
+        _error = stream.BatchError;
+        _ended = false;
+    }
+
+    /// <summary>True: a batch over a WriteStream writes values.</summary>
+    public bool IsWriting => true;
+
+    /// <summary>False: a batch over a WriteStream never reads.</summary>
+    public bool IsReading => false;
+
+    /// <summary>
+    /// Ends the batch, storing the packer state and the latched error back to the
+    /// stream. Idempotent. Always call this on every path out; the batch's writes
+    /// are not visible to the stream until it runs.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void End()
+    {
+        if (_ended)
+        {
+            return;
+        }
+        _ended = true;
+        Sync();
+    }
+
+    /// <summary>Stores the batch state down to the stream so a class-path call can
+    /// run against current state.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void Sync()
+    {
+        _stream.Writer.RestoreState(_scratch, _bitsWritten, _wordIndex, _scratchBits);
+        _stream.BatchError = _error;
+    }
+
+    /// <summary>Recaptures the stream state after a delegated class-path call.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void Recapture()
+    {
+        _stream.Writer.CaptureState(out _data, out _scratch, out _numBits,
+            out _bitsWritten, out _wordIndex, out _scratchBits);
+        _error = _stream.BatchError;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool Fail(SerializeError error)
+    {
+        if (_error == SerializeError.None)
+        {
+            _error = error;
+        }
+        return false;
+    }
+
+    /// <summary>The BitWriter hot path against batch-local state: bit-identical logic
+    /// to BitWriter.WriteBitsUnchecked.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void WriteBitsUnchecked(uint value, int bits)
+    {
+        value &= (uint)((1UL << bits) - 1);
+
+        _scratch |= (ulong)value << _scratchBits;
+
+        int newScratchBits = _scratchBits + bits;
+
+        if (newScratchBits >= 64)
+        {
+            BinaryPrimitives.WriteUInt64LittleEndian(_data.AsSpan((int)(_wordIndex * 8)), _scratch);
+            _wordIndex++;
+            // recover the bits that spilled past 64. newScratchBits >= 64 with
+            // bits <= 32 implies the shift is in [1,32]
+            _scratch = (ulong)value >> (64 - _scratchBits);
+            _scratchBits = newScratchBits - 64;
+        }
+        else
+        {
+            _scratchBits = newScratchBits;
+        }
+
+        _bitsWritten += bits;
+    }
+
+    /// <summary>Bounds checks and writes bits that have already been validated to [1,32].</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool WriteBits(uint value, int bits)
+    {
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        if (_bitsWritten + bits > _numBits)
+        {
+            return Fail(SerializeError.Overflow);
+        }
+        WriteBitsUnchecked(value, bits);
+        return true;
+    }
+
+    /// <summary>Serializes the low order bits of an unsigned integer. bits must be in
+    /// [1,32]. Identical semantics to WriteStream.SerializeBits.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeBits(ref uint value, int bits)
+    {
+        if (bits < 1 || bits > 32)
+        {
+            throw new ArgumentOutOfRangeException(nameof(bits), SerializeInternal.BitsRangeMessage);
+        }
+        return WriteBits(value, bits);
+    }
+
+    /// <summary>Serializes the low order bits of a 64 bit unsigned integer. bits must
+    /// be in [1,64]. Identical semantics to WriteStream.SerializeBits64.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeBits64(ref ulong value, int bits)
+    {
+        if (bits < 1 || bits > 64)
+        {
+            throw new ArgumentOutOfRangeException(nameof(bits), SerializeInternal.BitsRange64Message);
+        }
+        if (bits <= 32)
+        {
+            return WriteBits((uint)value, bits);
+        }
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        if (_bitsWritten + bits > _numBits)
+        {
+            return Fail(SerializeError.Overflow);
+        }
+        // low dword first, then the high remainder
+        WriteBitsUnchecked((uint)value, 32);
+        WriteBitsUnchecked((uint)(value >> 32), bits - 32);
+        return true;
+    }
+
+    /// <summary>Serializes a signed integer in [min,max]. Identical semantics to
+    /// WriteStream.SerializeInt.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeInt(ref int value, int min, int max)
+    {
+        if (min >= max)
+        {
+            throw new ArgumentException(SerializeInternal.MinMaxMessage);
+        }
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        int v = value;
+        if (v < min || v > max)
+        {
+            return Fail(SerializeError.ValueOutOfRange);
+        }
+        int bits = SerializeUtil.BitsRequired((uint)min, (uint)max);
+        // subtract in the unsigned domain: the range may be wider than 2^31
+        return WriteBits((uint)v - (uint)min, bits);
+    }
+
+    /// <summary>Serializes a signed 64 bit integer in [min,max]. Identical semantics
+    /// to WriteStream.SerializeInt64.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeInt64(ref long value, long min, long max)
+    {
+        if (min >= max)
+        {
+            throw new ArgumentException(SerializeInternal.MinMaxMessage);
+        }
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        long v = value;
+        if (v < min || v > max)
+        {
+            return Fail(SerializeError.ValueOutOfRange);
+        }
+        int bits = SerializeUtil.BitsRequired64((ulong)min, (ulong)max);
+        // subtract in the unsigned domain: the range may be wider than 2^63
+        ulong unsigned = (ulong)v - (ulong)min;
+        if (bits <= 32)
+        {
+            return WriteBits((uint)unsigned, bits);
+        }
+        if (_bitsWritten + bits > _numBits)
+        {
+            return Fail(SerializeError.Overflow);
+        }
+        // low dword first, then the high remainder: same convention as SerializeBits64
+        WriteBitsUnchecked((uint)unsigned, 32);
+        WriteBitsUnchecked((uint)(unsigned >> 32), bits - 32);
+        return true;
+    }
+
+    /// <summary>Serializes a byte. Identical semantics to WriteStream.SerializeByte.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeByte(ref byte value) => WriteBits(value, 8);
+
+    /// <summary>Serializes an unsigned 16 bit integer. Identical semantics to
+    /// WriteStream.SerializeUInt16.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeUInt16(ref ushort value) => WriteBits(value, 16);
+
+    /// <summary>Serializes an unsigned 32 bit integer. Identical semantics to
+    /// WriteStream.SerializeUInt32.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeUInt32(ref uint value) => WriteBits(value, 32);
+
+    /// <summary>Serializes an unsigned 64 bit integer (low dword first). Identical
+    /// semantics to WriteStream.SerializeUInt64.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeUInt64(ref ulong value)
+    {
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        if (_bitsWritten + 64 > _numBits)
+        {
+            return Fail(SerializeError.Overflow);
+        }
+        WriteBitsUnchecked((uint)value, 32);
+        WriteBitsUnchecked((uint)(value >> 32), 32);
+        return true;
+    }
+
+    /// <summary>Serializes a boolean value with one bit. Identical semantics to
+    /// WriteStream.SerializeBool.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeBool(ref bool value) => WriteBits(value ? 1u : 0u, 1);
+
+    /// <summary>Serializes an uncompressed 32 bit floating point value. Identical
+    /// semantics to WriteStream.SerializeFloat.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeFloat(ref float value)
+    {
+        return WriteBits(BitConverter.SingleToUInt32Bits(value), 32);
+    }
+
+    /// <summary>Serializes an uncompressed 64 bit floating point value. Identical
+    /// semantics to WriteStream.SerializeDouble.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeDouble(ref double value)
+    {
+        ulong bits = BitConverter.DoubleToUInt64Bits(value);
+        return SerializeUInt64(ref bits);
+    }
+
+    /// <summary>Serializes a floating point value in [min,max] with the given
+    /// resolution. Identical semantics to WriteStream.SerializeCompressedFloat.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeCompressedFloat(ref float value, float min, float max, float resolution)
+    {
+        SerializeInternal.CompressedFloatParams(min, max, resolution,
+            out uint maxIntegerValue, out int bits, out float delta);
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        float normalizedValue = (value - min) / delta;
+        if (!(normalizedValue >= 0.0f))
+        {
+            normalizedValue = 0.0f; // the !>= form of the clamp forces NaN into range too
+        }
+        else if (!(normalizedValue <= 1.0f))
+        {
+            normalizedValue = 1.0f;
+        }
+        uint integerValue = (uint)Math.Floor((double)(normalizedValue * maxIntegerValue + 0.5f));
+        return WriteBits(integerValue, bits);
+    }
+
+    /// <summary>Pads the stream with zero bits to the next byte boundary. Identical
+    /// semantics to WriteStream.SerializeAlign.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeAlign()
+    {
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        int alignBits = (int)((8 - _bitsWritten % 8) % 8);
+        if (alignBits == 0)
+        {
+            return true;
+        }
+        return WriteBits(0, alignBits);
+    }
+
+    /// <summary>Serializes an array of bytes, aligning first. Delegated: syncs state
+    /// down, runs WriteStream.SerializeBytes, recaptures — byte identical to the
+    /// stream call.</summary>
+    public bool SerializeBytes(Span<byte> data)
+    {
+        Sync();
+        bool ok = _stream.SerializeBytes(data);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes a string of fewer than bufferSize UTF-8 bytes. Delegated:
+    /// syncs state down, runs WriteStream.SerializeString, recaptures.</summary>
+    public bool SerializeString(ref string value, int bufferSize)
+    {
+        Sync();
+        bool ok = _stream.SerializeString(ref value, bufferSize);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes a string as 32 bits per code point. Delegated: syncs state
+    /// down, runs WriteStream.SerializeWideString, recaptures.</summary>
+    public bool SerializeWideString(ref string value, int bufferSize)
+    {
+        Sync();
+        bool ok = _stream.SerializeWideString(ref value, bufferSize);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes an object that implements ISerializer. Delegated: the
+    /// object's Serialize function runs against the underlying stream. For struct
+    /// implementers use the generic overload, which does not box.</summary>
+    public bool SerializeObject(ISerializer obj)
+    {
+        Sync();
+        bool ok = _stream.SerializeObject(obj);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes an object that implements ISerializer, by ref, without
+    /// boxing. Delegated: the object's Serialize function runs against the underlying
+    /// stream.</summary>
+    public bool SerializeObject<T>(ref T obj) where T : ISerializer
+    {
+        Sync();
+        bool ok = _stream.SerializeObject(ref obj);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes an integer relative to a previous integer. Delegated:
+    /// syncs state down, runs WriteStream.SerializeIntRelative, recaptures.</summary>
+    public bool SerializeIntRelative(int previous, ref int current)
+    {
+        Sync();
+        bool ok = _stream.SerializeIntRelative(previous, ref current);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>The number of bits required to align to the next byte boundary, in
+    /// [0,7], from the batch's current position.</summary>
+    public int AlignBits => (int)((8 - _bitsWritten % 8) % 8);
+
+    /// <summary>The number of bits written, counting the batch's own writes.</summary>
+    public long BitsProcessed => _bitsWritten;
+
+    /// <summary>The number of bits written rounded up to the next byte, counting the
+    /// batch's own writes.</summary>
+    public long BytesProcessed => (_bitsWritten + 7) / 8;
+
+    /// <summary>The number of bits still available to write.</summary>
+    public long BitsAvailable => _numBits - _bitsWritten;
+
+    /// <summary>The first error latched on the batch or carried in from the stream,
+    /// or SerializeError.None.</summary>
+    public SerializeError Error => _error;
+
+    /// <summary>True while no error is latched.</summary>
+    public bool Ok => _error == SerializeError.None;
+
+    /// <summary>The context value of the underlying stream.</summary>
+    public object? Context
+    {
+        get => _stream.Context;
+        set => _stream.Context = value;
+    }
+}
+
+/// <summary>
+/// A register-resident view of a ReadStream for hot serialize paths: the read-side
+/// counterpart of WriteBatch, lifting the read cursor into a ref struct so the JIT
+/// can keep it in registers across calls. Same wire logic, same validation and
+/// hostile-data guarantees, same latched error model, identical decode results.
+/// The contract is WriteBatch's: the batch owns the stream between BeginBatch and
+/// End; always call End on every path out; End is idempotent.
+/// </summary>
+public ref struct ReadBatch
+{
+    private readonly ReadStream _stream;
+    private byte[] _data;
+    private long _numBits;
+    private long _bitsRead;
+    private SerializeError _error;
+    private bool _ended;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal ReadBatch(ReadStream stream)
+    {
+        _stream = stream;
+        stream.Reader.CaptureState(out _data, out _numBits, out _bitsRead);
+        _error = stream.BatchError;
+        _ended = false;
+    }
+
+    /// <summary>False: a batch over a ReadStream never writes.</summary>
+    public bool IsWriting => false;
+
+    /// <summary>True: a batch over a ReadStream reads values.</summary>
+    public bool IsReading => true;
+
+    /// <summary>
+    /// Ends the batch, storing the read cursor and the latched error back to the
+    /// stream. Idempotent. Always call this on every path out; the batch's reads
+    /// are not visible to the stream until it runs.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void End()
+    {
+        if (_ended)
+        {
+            return;
+        }
+        _ended = true;
+        Sync();
+    }
+
+    /// <summary>Stores the batch state down to the stream so a class-path call can
+    /// run against current state.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void Sync()
+    {
+        _stream.Reader.RestoreState(_bitsRead);
+        _stream.BatchError = _error;
+    }
+
+    /// <summary>Recaptures the stream state after a delegated class-path call.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void Recapture()
+    {
+        _stream.Reader.CaptureState(out _data, out _numBits, out _bitsRead);
+        _error = _stream.BatchError;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool Fail(SerializeError error)
+    {
+        if (_error == SerializeError.None)
+        {
+            _error = error;
+        }
+        return false;
+    }
+
+    /// <summary>The BitReader hot path against batch-local state: bit-identical logic
+    /// to BitReader.ReadBitsUnchecked, including the slack-free window assembly near
+    /// the end of the buffer.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private uint ReadBitsUnchecked(int bits)
+    {
+        int byteIndex = (int)(_bitsRead >> 3);
+
+        ulong window;
+        if (byteIndex + 8 <= _data.Length)
+        {
+            window = BinaryPrimitives.ReadUInt64LittleEndian(_data.AsSpan(byteIndex));
+        }
+        else
+        {
+            // near the end of a buffer with no slack past the data: assemble the
+            // window from the remaining bytes
+            window = 0;
+            for (int i = _data.Length - byteIndex - 1; i >= 0; i--)
+            {
+                window = window << 8 | _data[byteIndex + i];
+            }
+        }
+
+        uint output = (uint)(window >> (int)(_bitsRead & 7)) & (uint)((1UL << bits) - 1);
+
+        _bitsRead += bits;
+
+        return output;
+    }
+
+    /// <summary>Bounds checks and reads bits that have already been validated to [1,32].</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool ReadBits(ref uint value, int bits)
+    {
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        if (_bitsRead + bits > _numBits)
+        {
+            return Fail(SerializeError.Overflow);
+        }
+        value = ReadBitsUnchecked(bits);
+        return true;
+    }
+
+    /// <summary>Serializes the low order bits of an unsigned integer. bits must be in
+    /// [1,32]. Identical semantics to ReadStream.SerializeBits.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeBits(ref uint value, int bits)
+    {
+        if (bits < 1 || bits > 32)
+        {
+            throw new ArgumentOutOfRangeException(nameof(bits), SerializeInternal.BitsRangeMessage);
+        }
+        return ReadBits(ref value, bits);
+    }
+
+    /// <summary>Serializes the low order bits of a 64 bit unsigned integer. bits must
+    /// be in [1,64]. Identical semantics to ReadStream.SerializeBits64.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeBits64(ref ulong value, int bits)
+    {
+        if (bits < 1 || bits > 64)
+        {
+            throw new ArgumentOutOfRangeException(nameof(bits), SerializeInternal.BitsRange64Message);
+        }
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        if (_bitsRead + bits > _numBits)
+        {
+            return Fail(SerializeError.Overflow);
+        }
+        if (bits <= 32)
+        {
+            value = ReadBitsUnchecked(bits);
+            return true;
+        }
+        // low dword first, then the high remainder
+        uint lo = ReadBitsUnchecked(32);
+        uint hi = ReadBitsUnchecked(bits - 32);
+        value = (ulong)hi << 32 | lo;
+        return true;
+    }
+
+    /// <summary>Serializes a signed integer in [min,max]. Identical semantics to
+    /// ReadStream.SerializeInt: on success the value is guaranteed in range.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeInt(ref int value, int min, int max)
+    {
+        if (min >= max)
+        {
+            throw new ArgumentException(SerializeInternal.MinMaxMessage);
+        }
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        int bits = SerializeUtil.BitsRequired((uint)min, (uint)max);
+        if (_bitsRead + bits > _numBits)
+        {
+            return Fail(SerializeError.Overflow);
+        }
+        uint unsigned = ReadBitsUnchecked(bits);
+        // compare and add in the unsigned domain: the range may be wider than 2^31
+        if (unsigned > (uint)max - (uint)min)
+        {
+            return Fail(SerializeError.ValueOutOfRange);
+        }
+        value = (int)(unsigned + (uint)min);
+        return true;
+    }
+
+    /// <summary>Serializes a signed 64 bit integer in [min,max]. Identical semantics
+    /// to ReadStream.SerializeInt64: on success the value is guaranteed in range.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeInt64(ref long value, long min, long max)
+    {
+        if (min >= max)
+        {
+            throw new ArgumentException(SerializeInternal.MinMaxMessage);
+        }
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        int bits = SerializeUtil.BitsRequired64((ulong)min, (ulong)max);
+        if (_bitsRead + bits > _numBits)
+        {
+            return Fail(SerializeError.Overflow);
+        }
+        ulong unsigned;
+        if (bits <= 32)
+        {
+            unsigned = ReadBitsUnchecked(bits);
+        }
+        else
+        {
+            // low dword first, then the high remainder: same convention as SerializeBits64
+            uint lo = ReadBitsUnchecked(32);
+            uint hi = ReadBitsUnchecked(bits - 32);
+            unsigned = (ulong)hi << 32 | lo;
+        }
+        // compare and add in the unsigned domain: the range may be wider than 2^63
+        if (unsigned > (ulong)max - (ulong)min)
+        {
+            return Fail(SerializeError.ValueOutOfRange);
+        }
+        value = (long)(unsigned + (ulong)min);
+        return true;
+    }
+
+    /// <summary>Serializes a byte. Identical semantics to ReadStream.SerializeByte.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeByte(ref byte value)
+    {
+        uint v = 0;
+        if (!ReadBits(ref v, 8))
+        {
+            return false;
+        }
+        value = (byte)v;
+        return true;
+    }
+
+    /// <summary>Serializes an unsigned 16 bit integer. Identical semantics to
+    /// ReadStream.SerializeUInt16.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeUInt16(ref ushort value)
+    {
+        uint v = 0;
+        if (!ReadBits(ref v, 16))
+        {
+            return false;
+        }
+        value = (ushort)v;
+        return true;
+    }
+
+    /// <summary>Serializes an unsigned 32 bit integer. Identical semantics to
+    /// ReadStream.SerializeUInt32.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeUInt32(ref uint value) => ReadBits(ref value, 32);
+
+    /// <summary>Serializes an unsigned 64 bit integer (low dword first). Identical
+    /// semantics to ReadStream.SerializeUInt64.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeUInt64(ref ulong value)
+    {
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        if (_bitsRead + 64 > _numBits)
+        {
+            return Fail(SerializeError.Overflow);
+        }
+        uint lo = ReadBitsUnchecked(32);
+        uint hi = ReadBitsUnchecked(32);
+        value = (ulong)hi << 32 | lo;
+        return true;
+    }
+
+    /// <summary>Serializes a boolean value with one bit. Identical semantics to
+    /// ReadStream.SerializeBool.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeBool(ref bool value)
+    {
+        uint v = 0;
+        if (!ReadBits(ref v, 1))
+        {
+            return false;
+        }
+        value = v != 0;
+        return true;
+    }
+
+    /// <summary>Serializes an uncompressed 32 bit floating point value. Identical
+    /// semantics to ReadStream.SerializeFloat.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeFloat(ref float value)
+    {
+        uint v = 0;
+        if (!ReadBits(ref v, 32))
+        {
+            return false;
+        }
+        value = BitConverter.UInt32BitsToSingle(v);
+        return true;
+    }
+
+    /// <summary>Serializes an uncompressed 64 bit floating point value. Identical
+    /// semantics to ReadStream.SerializeDouble.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeDouble(ref double value)
+    {
+        ulong v = 0;
+        if (!SerializeUInt64(ref v))
+        {
+            return false;
+        }
+        value = BitConverter.UInt64BitsToDouble(v);
+        return true;
+    }
+
+    /// <summary>Serializes a floating point value in [min,max] with the given
+    /// resolution. Identical semantics to ReadStream.SerializeCompressedFloat.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeCompressedFloat(ref float value, float min, float max, float resolution)
+    {
+        SerializeInternal.CompressedFloatParams(min, max, resolution,
+            out uint maxIntegerValue, out int bits, out float delta);
+        uint integerValue = 0;
+        if (!ReadBits(ref integerValue, bits))
+        {
+            return false;
+        }
+        if (integerValue > maxIntegerValue)
+        {
+            return Fail(SerializeError.ValueOutOfRange);
+        }
+        float normalizedValue = (float)integerValue / maxIntegerValue;
+        value = normalizedValue * delta + min;
+        return true;
+    }
+
+    /// <summary>Reads an align, verifying the padding bits are zero. Identical
+    /// semantics to ReadStream.SerializeAlign.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeAlign()
+    {
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        int alignBits = (int)((8 - _bitsRead % 8) % 8);
+        if (alignBits == 0)
+        {
+            return true;
+        }
+        if (_bitsRead + alignBits > _numBits)
+        {
+            return Fail(SerializeError.Overflow);
+        }
+        if (ReadBitsUnchecked(alignBits) != 0)
+        {
+            return Fail(SerializeError.Align);
+        }
+        return true;
+    }
+
+    /// <summary>Serializes an array of bytes, aligning first. Delegated: syncs state
+    /// down, runs ReadStream.SerializeBytes, recaptures — identical decode.</summary>
+    public bool SerializeBytes(Span<byte> data)
+    {
+        Sync();
+        bool ok = _stream.SerializeBytes(data);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes a string of fewer than bufferSize UTF-8 bytes. Delegated:
+    /// syncs state down, runs ReadStream.SerializeString, recaptures.</summary>
+    public bool SerializeString(ref string value, int bufferSize)
+    {
+        Sync();
+        bool ok = _stream.SerializeString(ref value, bufferSize);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes a string as 32 bits per code point. Delegated: syncs state
+    /// down, runs ReadStream.SerializeWideString, recaptures.</summary>
+    public bool SerializeWideString(ref string value, int bufferSize)
+    {
+        Sync();
+        bool ok = _stream.SerializeWideString(ref value, bufferSize);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes an object that implements ISerializer. Delegated: the
+    /// object's Serialize function runs against the underlying stream. For struct
+    /// implementers use the generic overload, which does not box.</summary>
+    public bool SerializeObject(ISerializer obj)
+    {
+        Sync();
+        bool ok = _stream.SerializeObject(obj);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes an object that implements ISerializer, by ref, without
+    /// boxing. Delegated: the object's Serialize function runs against the underlying
+    /// stream.</summary>
+    public bool SerializeObject<T>(ref T obj) where T : ISerializer
+    {
+        Sync();
+        bool ok = _stream.SerializeObject(ref obj);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>Serializes an integer relative to a previous integer. Delegated:
+    /// syncs state down, runs ReadStream.SerializeIntRelative, recaptures.</summary>
+    public bool SerializeIntRelative(int previous, ref int current)
+    {
+        Sync();
+        bool ok = _stream.SerializeIntRelative(previous, ref current);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>The number of bits required to align to the next byte boundary, in
+    /// [0,7], from the batch's current position.</summary>
+    public int AlignBits => (int)((8 - _bitsRead % 8) % 8);
+
+    /// <summary>The number of bits read, counting the batch's own reads.</summary>
+    public long BitsProcessed => _bitsRead;
+
+    /// <summary>The number of bits read rounded up to the next byte, counting the
+    /// batch's own reads.</summary>
+    public long BytesProcessed => (_bitsRead + 7) / 8;
+
+    /// <summary>The number of bits still available to read.</summary>
+    public long BitsRemaining => _numBits - _bitsRead;
+
+    /// <summary>The first error latched on the batch or carried in from the stream,
+    /// or SerializeError.None.</summary>
+    public SerializeError Error => _error;
+
+    /// <summary>True while no error is latched.</summary>
+    public bool Ok => _error == SerializeError.None;
+
+    /// <summary>The context value of the underlying stream.</summary>
+    public object? Context
+    {
+        get => _stream.Context;
+        set => _stream.Context = value;
+    }
 }
