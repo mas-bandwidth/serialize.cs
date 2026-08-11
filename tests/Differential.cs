@@ -77,6 +77,7 @@ internal sealed class Value
 
 internal static partial class Program
 {
+#if SERIALIZE_HAS_INT128 // the fixed differential rides the gated 128 surface
     // the fixed point configurations the differential draws from: every storage
     // width, both signednesses, and every wire group structure (single group, two
     // group, three group, four group / full width)
@@ -92,6 +93,7 @@ internal static partial class Program
         (FixedStorage.I128, 64, 64, long.MinValue, long.MaxValue),
         (FixedStorage.U128, 112, 16, 0, 2305843009213693952),
     };
+#endif // SERIALIZE_HAS_INT128
 
     private static UInt128 Next128(Rng rng)
     {
@@ -100,7 +102,11 @@ internal static partial class Program
 
     private static Value RandomValue(Rng rng)
     {
+#if SERIALIZE_HAS_INT128
         switch (rng.Range(14))
+#else
+        switch (rng.Range(11)) // the 128 and fixed kinds need the gated surface
+#endif
         {
             case 0:
             {
@@ -208,6 +214,7 @@ internal static partial class Program
                 }
                 return new Value { Kind = ValueKind.IntRelative, Previous = 0, Current = (int)gap };
             }
+#if SERIALIZE_HAS_INT128
             case 11:
                 return new Value { Kind = ValueKind.UInt128, U128 = Next128(rng) };
             case 12:
@@ -250,6 +257,14 @@ internal static partial class Program
                 Int128 raw = (Int128)(rawMin + offset);
                 return new Value { Kind = ValueKind.Fixed, FixedConfig = config, I128 = raw };
             }
+#else
+            default:
+            {
+                // unreachable: rng.Range(11) yields only the kinds above
+                Check(false, "the 128/fixed kinds are not generated without the 128 surface");
+                return new Value { Kind = ValueKind.Bool, Flag = false };
+            }
+#endif // SERIALIZE_HAS_INT128
         }
     }
 
@@ -268,6 +283,7 @@ internal static partial class Program
             case ValueKind.Align: return stream.SerializeAlign();
             case ValueKind.String: return stream.SerializeString(ref value.Str, 16);
             case ValueKind.IntRelative: return stream.SerializeIntRelative(value.Previous, ref value.Current);
+#if SERIALIZE_HAS_INT128
             case ValueKind.UInt128: return stream.SerializeUInt128(ref value.U128);
             case ValueKind.Int128: return stream.SerializeInt128(ref value.I128, value.I128Min, value.I128Max);
             default:
@@ -275,6 +291,13 @@ internal static partial class Program
                 (FixedStorage storage, int integerBits, int fractionBits, long min, long max) = FixedConfigs[value.FixedConfig];
                 return SerializeFixedAs(storage, stream, ref value.I128, integerBits, fractionBits, min, max);
             }
+#else
+            default:
+            {
+                Check(false, "the 128/fixed kinds are not generated without the 128 surface");
+                return false;
+            }
+#endif // SERIALIZE_HAS_INT128
         }
     }
 
@@ -293,6 +316,7 @@ internal static partial class Program
             case ValueKind.Align: return new Value { Kind = ValueKind.Align };
             case ValueKind.String: return new Value { Kind = ValueKind.String, Str = "" };
             case ValueKind.IntRelative: return new Value { Kind = ValueKind.IntRelative, Previous = value.Previous, Current = 0 };
+#if SERIALIZE_HAS_INT128
             case ValueKind.UInt128: return new Value { Kind = ValueKind.UInt128, U128 = 0 };
             case ValueKind.Int128: return new Value { Kind = ValueKind.Int128, I128 = value.I128Min, I128Min = value.I128Min, I128Max = value.I128Max };
             default:
@@ -301,6 +325,13 @@ internal static partial class Program
                 Int128 rawMin = (Int128)((UInt128)(Int128)min << fractionBits);
                 return new Value { Kind = ValueKind.Fixed, FixedConfig = value.FixedConfig, I128 = rawMin };
             }
+#else
+            default:
+            {
+                Check(false, "the 128/fixed kinds are not generated without the 128 surface");
+                return new Value { Kind = ValueKind.Bool, Flag = false };
+            }
+#endif // SERIALIZE_HAS_INT128
         }
     }
 

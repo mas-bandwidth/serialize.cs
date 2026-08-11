@@ -27,6 +27,8 @@ using System;
 
 namespace Serialize.Tests;
 
+#if SERIALIZE_HAS_INT128 // the whole fixed point + 128 bit suite needs the gated library surface
+
 // The fixed point section of the C++ fixed-point golden message. In the C++ golden
 // message this section begins byte aligned ("the fixed point section starts byte
 // aligned, so every byte pinned above it stays put"), so serializing it from a fresh
@@ -970,3 +972,5 @@ internal static partial class Program
         }
     }
 }
+
+#endif // SERIALIZE_HAS_INT128

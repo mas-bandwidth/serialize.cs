@@ -73,6 +73,7 @@ internal static partial class Program
         return stream.Error == SerializeError.None;
     }
 
+#if SERIALIZE_HAS_INT128 // fixed point rides the gated 128 surface
     // The fixed point golden serialize mirrored onto the batch surface: the exact
     // same calls as FixedWireData.Serialize, method for method — the fixed point and
     // wide integer section of the wire law, proven through the batch layer too.
@@ -99,7 +100,9 @@ internal static partial class Program
         stream.SerializeFixed(ref data.FixedQ64_64Wide, 64, 64, long.MinValue, long.MaxValue);
         return stream.Error == SerializeError.None;
     }
+#endif // SERIALIZE_HAS_INT128
 
+#if SERIALIZE_HAS_INT128 // gated out when the library TFM lacks the 128 bit surface (netstandard2.1)
     /// <summary>Drives the WriteBatch SerializeFixed overload selected by storage:
     /// the batch counterpart of SerializeFixedAs(FixedStorage, IBitStream, ...) in
     /// FixedPoint.cs. Ref structs cannot implement IBitStream, so the dispatch is
@@ -234,6 +237,7 @@ internal static partial class Program
             }
         }
     }
+#endif // SERIALIZE_HAS_INT128
 
     // The differential value dispatch mirrored onto the batch surfaces: the same
     // switch as SerializeValue(IBitStream, Value), case for case. A new ValueKind
@@ -254,13 +258,23 @@ internal static partial class Program
             case ValueKind.Align: return batch.SerializeAlign();
             case ValueKind.String: return batch.SerializeString(ref value.Str, 16);
             case ValueKind.IntRelative: return batch.SerializeIntRelative(value.Previous, ref value.Current);
+#if SERIALIZE_HAS_INT128 // gated out when the library TFM lacks the 128 bit surface (netstandard2.1)
             case ValueKind.UInt128: return batch.SerializeUInt128(ref value.U128);
             case ValueKind.Int128: return batch.SerializeInt128(ref value.I128, value.I128Min, value.I128Max);
+#endif // SERIALIZE_HAS_INT128
+#if SERIALIZE_HAS_INT128
             default:
             {
                 (FixedStorage storage, int integerBits, int fractionBits, long min, long max) = FixedConfigs[value.FixedConfig];
                 return SerializeFixedAs(storage, ref batch, ref value.I128, integerBits, fractionBits, min, max);
             }
+#else
+            default:
+            {
+                Check(false, "the 128/fixed kinds are not generated without the 128 surface");
+                return false;
+            }
+#endif // SERIALIZE_HAS_INT128
         }
     }
 
@@ -279,13 +293,23 @@ internal static partial class Program
             case ValueKind.Align: return batch.SerializeAlign();
             case ValueKind.String: return batch.SerializeString(ref value.Str, 16);
             case ValueKind.IntRelative: return batch.SerializeIntRelative(value.Previous, ref value.Current);
+#if SERIALIZE_HAS_INT128 // gated out when the library TFM lacks the 128 bit surface (netstandard2.1)
             case ValueKind.UInt128: return batch.SerializeUInt128(ref value.U128);
             case ValueKind.Int128: return batch.SerializeInt128(ref value.I128, value.I128Min, value.I128Max);
+#endif // SERIALIZE_HAS_INT128
+#if SERIALIZE_HAS_INT128
             default:
             {
                 (FixedStorage storage, int integerBits, int fractionBits, long min, long max) = FixedConfigs[value.FixedConfig];
                 return SerializeFixedAs(storage, ref batch, ref value.I128, integerBits, fractionBits, min, max);
             }
+#else
+            default:
+            {
+                Check(false, "the 128/fixed kinds are not generated without the 128 surface");
+                return false;
+            }
+#endif // SERIALIZE_HAS_INT128
         }
     }
 
@@ -335,6 +359,7 @@ internal static partial class Program
                 "batch read of the golden bytes decoded the wrong values");
         }
 
+#if SERIALIZE_HAS_INT128 // the fixed golden sections ride the gated surface
         // write side, fixed point section: the batch fixed point and wide integer
         // ops must produce exactly the pinned fixed golden bytes
         {
@@ -369,6 +394,7 @@ internal static partial class Program
                 && data.FixedQ64_64Wide == expected.FixedQ64_64Wide,
                 "batch read of the fixed golden bytes decoded the wrong values");
         }
+#endif // SERIALIZE_HAS_INT128
     }
 
     private const ulong BatchDifferentialSeeds = 300;

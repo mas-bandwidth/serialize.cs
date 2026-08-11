@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- THE UNITY-CLASS GATE: this runner consumes the netstandard2.1 build
+         of the library — the exact assembly surface a Unity project gets —
+         and runs the full suite minus the 128 bit tests (that surface is
+         gated to NET7_0_OR_GREATER and does not exist on 2.1). The golden
+         wire test inside proves the 2.1 compat shims byte-neutral. -->
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Serialize.Tests</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- no SERIALIZE_HAS_INT128: the referenced assembly has no 128 surface -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../tests/*.cs" />
+    <ProjectReference Include="../src/Serialize.csproj" SetTargetFramework="TargetFramework=netstandard2.1" SkipGetTargetFrameworkProperties="true" />
+  </ItemGroup>
+
+  <!-- family value: zero third-party dependencies, including test frameworks. -->
+
+</Project>
