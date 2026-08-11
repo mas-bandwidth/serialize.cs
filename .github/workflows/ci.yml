@@ -34,10 +34,18 @@ jobs:
             10.0.x
       - name: Build (both TFMs, warnings are errors)
         run: dotnet build tests/Tests.csproj -c Release
+      - name: Build (netstandard2.1, the Unity-class target, C# 9 pinned)
+        run: dotnet build src/Serialize.csproj -c Release -f netstandard2.1
       - name: Tests (net10.0)
         run: dotnet run -c Release --project tests/Tests.csproj -f net10.0 --no-build
       - name: Tests (net8.0, the LTS leg)
         run: dotnet run -c Release --project tests/Tests.csproj -f net8.0 --no-build
+      # THE UNITY-CLASS GATE: the full suite (minus the 128 bit surface, which
+      # is NET7_0_OR_GREATER only) running against the netstandard2.1 build of
+      # the library — the exact assembly surface a Unity project consumes. The
+      # golden wire test inside proves the 2.1 compat shims byte-neutral.
+      - name: Tests (netstandard2.1 assembly, the Unity-class leg)
+        run: dotnet run -c Release --project tests-ns21/TestsNs21.csproj
       # no test framework, so the runner's exit code is the whole verdict; these
       # keep the remaining executables compiling (compat is exercised for real in
       # the cpp-interop job, redteam runs are manual)

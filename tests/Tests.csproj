@@ -11,6 +11,8 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- the library TFMs referenced here carry the 128 bit surface -->
+    <DefineConstants>$(DefineConstants);SERIALIZE_HAS_INT128</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
