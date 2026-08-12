@@ -51,8 +51,8 @@ internal enum ValueKind
     Align,
     String,
     IntRelative,
-    UInt128,
-    Int128,
+    UInt128Value,
+    Int128Value,
     Fixed,
 }
 
@@ -70,14 +70,13 @@ internal sealed class Value
     public byte[] Bytes = Array.Empty<byte>();
     public string Str = "";
     public int Previous, Current;
-    public UInt128 U128;
-    public Int128 I128, I128Min, I128Max; // I128 doubles as the raw carrier for Fixed
+    public UInt128Value U128;
+    public Int128Value I128, I128Min, I128Max; // I128 doubles as the raw carrier for Fixed
     public int FixedConfig;
 }
 
 internal static partial class Program
 {
-#if SERIALIZE_HAS_INT128 // the fixed differential rides the gated 128 surface
     // the fixed point configurations the differential draws from: every storage
     // width, both signednesses, and every wire group structure (single group, two
     // group, three group, four group / full width)
@@ -93,20 +92,15 @@ internal static partial class Program
         (FixedStorage.I128, 64, 64, long.MinValue, long.MaxValue),
         (FixedStorage.U128, 112, 16, 0, 2305843009213693952),
     };
-#endif // SERIALIZE_HAS_INT128
 
-    private static UInt128 Next128(Rng rng)
+    private static UInt128Value Next128(Rng rng)
     {
-        return ((UInt128)rng.Next() << 64) | rng.Next();
+        return ((UInt128Value)rng.Next() << 64) | rng.Next();
     }
 
     private static Value RandomValue(Rng rng)
     {
-#if SERIALIZE_HAS_INT128
         switch (rng.Range(14))
-#else
-        switch (rng.Range(11)) // the 128 and fixed kinds need the gated surface
-#endif
         {
             case 0:
             {
@@ -214,14 +208,13 @@ internal static partial class Program
                 }
                 return new Value { Kind = ValueKind.IntRelative, Previous = 0, Current = (int)gap };
             }
-#if SERIALIZE_HAS_INT128
             case 11:
-                return new Value { Kind = ValueKind.UInt128, U128 = Next128(rng) };
+                return new Value { Kind = ValueKind.UInt128Value, U128 = Next128(rng) };
             case 12:
             {
-                Int128 a = (Int128)Next128(rng);
-                Int128 b = (Int128)Next128(rng);
-                Int128 min, max;
+                Int128Value a = (Int128Value)Next128(rng);
+                Int128Value b = (Int128Value)Next128(rng);
+                Int128Value min, max;
                 if (a < b)
                 {
                     (min, max) = (a, b);
@@ -230,7 +223,7 @@ internal static partial class Program
                 {
                     (min, max) = (b, a);
                 }
-                else if (a == Int128.MaxValue)
+                else if (a == Int128Value.MaxValue)
                 {
                     (min, max) = (a - 1, a);
                 }
@@ -240,31 +233,23 @@ internal static partial class Program
                 }
                 // pick a value in [min,max] in the unsigned domain so ranges wider
                 // than 2^127 cannot overflow
-                UInt128 span = (UInt128)max - (UInt128)min + 1;
-                UInt128 offset = span == 0 ? Next128(rng) : Next128(rng) % span;
-                Int128 value = (Int128)((UInt128)min + offset);
-                return new Value { Kind = ValueKind.Int128, I128 = value, I128Min = min, I128Max = max };
+                UInt128Value span = (UInt128Value)max - (UInt128Value)min + 1;
+                UInt128Value offset = span == 0 ? Next128(rng) : Next128(rng) % span;
+                Int128Value value = (Int128Value)((UInt128Value)min + offset);
+                return new Value { Kind = ValueKind.Int128Value, I128 = value, I128Min = min, I128Max = max };
             }
             default:
             {
                 int config = (int)rng.Range((ulong)FixedConfigs.Length);
                 (_, _, int fractionBits, long min, long max) = FixedConfigs[config];
                 // a raw value uniformly inside the raw bounds, in the unsigned domain
-                UInt128 rawMin = (UInt128)(Int128)min << fractionBits;
-                UInt128 rawMax = (UInt128)(Int128)max << fractionBits;
-                UInt128 span = rawMax - rawMin + 1;
-                UInt128 offset = span == 0 ? Next128(rng) : Next128(rng) % span;
-                Int128 raw = (Int128)(rawMin + offset);
+                UInt128Value rawMin = (UInt128Value)(Int128Value)min << fractionBits;
+                UInt128Value rawMax = (UInt128Value)(Int128Value)max << fractionBits;
+                UInt128Value span = rawMax - rawMin + 1;
+                UInt128Value offset = span == 0 ? Next128(rng) : Next128(rng) % span;
+                Int128Value raw = (Int128Value)(rawMin + offset);
                 return new Value { Kind = ValueKind.Fixed, FixedConfig = config, I128 = raw };
             }
-#else
-            default:
-            {
-                // unreachable: rng.Range(11) yields only the kinds above
-                Check(false, "the 128/fixed kinds are not generated without the 128 surface");
-                return new Value { Kind = ValueKind.Bool, Flag = false };
-            }
-#endif // SERIALIZE_HAS_INT128
         }
     }
 
@@ -283,21 +268,13 @@ internal static partial class Program
             case ValueKind.Align: return stream.SerializeAlign();
             case ValueKind.String: return stream.SerializeString(ref value.Str, 16);
             case ValueKind.IntRelative: return stream.SerializeIntRelative(value.Previous, ref value.Current);
-#if SERIALIZE_HAS_INT128
-            case ValueKind.UInt128: return stream.SerializeUInt128(ref value.U128);
-            case ValueKind.Int128: return stream.SerializeInt128(ref value.I128, value.I128Min, value.I128Max);
+            case ValueKind.UInt128Value: return stream.SerializeUInt128(ref value.U128);
+            case ValueKind.Int128Value: return stream.SerializeInt128(ref value.I128, value.I128Min, value.I128Max);
             default:
             {
                 (FixedStorage storage, int integerBits, int fractionBits, long min, long max) = FixedConfigs[value.FixedConfig];
                 return SerializeFixedAs(storage, stream, ref value.I128, integerBits, fractionBits, min, max);
             }
-#else
-            default:
-            {
-                Check(false, "the 128/fixed kinds are not generated without the 128 surface");
-                return false;
-            }
-#endif // SERIALIZE_HAS_INT128
         }
     }
 
@@ -316,22 +293,14 @@ internal static partial class Program
             case ValueKind.Align: return new Value { Kind = ValueKind.Align };
             case ValueKind.String: return new Value { Kind = ValueKind.String, Str = "" };
             case ValueKind.IntRelative: return new Value { Kind = ValueKind.IntRelative, Previous = value.Previous, Current = 0 };
-#if SERIALIZE_HAS_INT128
-            case ValueKind.UInt128: return new Value { Kind = ValueKind.UInt128, U128 = 0 };
-            case ValueKind.Int128: return new Value { Kind = ValueKind.Int128, I128 = value.I128Min, I128Min = value.I128Min, I128Max = value.I128Max };
+            case ValueKind.UInt128Value: return new Value { Kind = ValueKind.UInt128Value, U128 = 0 };
+            case ValueKind.Int128Value: return new Value { Kind = ValueKind.Int128Value, I128 = value.I128Min, I128Min = value.I128Min, I128Max = value.I128Max };
             default:
             {
                 (_, _, int fractionBits, long min, _) = FixedConfigs[value.FixedConfig];
-                Int128 rawMin = (Int128)((UInt128)(Int128)min << fractionBits);
+                Int128Value rawMin = (Int128Value)((UInt128Value)(Int128Value)min << fractionBits);
                 return new Value { Kind = ValueKind.Fixed, FixedConfig = value.FixedConfig, I128 = rawMin };
             }
-#else
-            default:
-            {
-                Check(false, "the 128/fixed kinds are not generated without the 128 surface");
-                return new Value { Kind = ValueKind.Bool, Flag = false };
-            }
-#endif // SERIALIZE_HAS_INT128
         }
     }
 
@@ -358,8 +327,8 @@ internal static partial class Program
             case ValueKind.Align: return true;
             case ValueKind.String: return written.Str == read.Str;
             case ValueKind.IntRelative: return written.Current == read.Current;
-            case ValueKind.UInt128: return written.U128 == read.U128;
-            case ValueKind.Int128: return written.I128 == read.I128;
+            case ValueKind.UInt128Value: return written.U128 == read.U128;
+            case ValueKind.Int128Value: return written.I128 == read.I128;
             default: return written.FixedConfig == read.FixedConfig && written.I128 == read.I128;
         }
     }

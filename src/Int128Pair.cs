@@ -98,6 +98,83 @@ public struct UInt128Value : IEquatable<UInt128Value>
         return new UInt128Value(0, v.Hi >> (count - 64));
     }
 
+    /// <summary>The high 64 bits of a 64x64 multiply, by 32 bit limbs —
+    /// netstandard2.1 has no Math.BigMul(ulong, ulong).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ulong MulHi64(ulong a, ulong b)
+    {
+        unchecked
+        {
+            ulong aLo = (uint)a;
+            ulong aHi = a >> 32;
+            ulong bLo = (uint)b;
+            ulong bHi = b >> 32;
+            ulong t = aLo * bLo;
+            ulong carry = t >> 32;
+            t = aHi * bLo + carry;
+            ulong mid = (uint)t;
+            ulong high = t >> 32;
+            t = aLo * bHi + mid;
+            return aHi * bHi + high + (t >> 32);
+        }
+    }
+
+    /// <summary>Truncating (mod 2^128) multiply — the fixed point tests scale
+    /// raw values with it. Matches System.UInt128's unchecked semantics.</summary>
+    public static UInt128Value operator *(UInt128Value a, UInt128Value b)
+    {
+        unchecked
+        {
+            ulong lo = a.Lo * b.Lo;
+            ulong hi = MulHi64(a.Lo, b.Lo) + a.Lo * b.Hi + a.Hi * b.Lo;
+            return new UInt128Value(hi, lo);
+        }
+    }
+
+    /// <summary>Quotient and remainder by shift-subtract long division — present
+    /// because the test harnesses need them (offset generation, fixed point
+    /// reference math). O(128) iterations; fine for tests and occasional use,
+    /// not a hot-path primitive. Division by zero throws DivideByZeroException,
+    /// matching the platform type.</summary>
+    private static UInt128Value DivRem(UInt128Value a, UInt128Value b, out UInt128Value remainder)
+    {
+        if (b == Zero)
+        {
+            throw new DivideByZeroException();
+        }
+        if (a < b)
+        {
+            remainder = a;
+            return Zero;
+        }
+        UInt128Value quotient = Zero;
+        remainder = Zero;
+        for (int i = 127; i >= 0; i--)
+        {
+            remainder = remainder << 1;
+            if (((a >> i) & One) == One)
+            {
+                remainder = remainder | One;
+            }
+            if (remainder >= b)
+            {
+                remainder = remainder - b;
+                quotient = quotient | (One << i);
+            }
+        }
+        return quotient;
+    }
+
+    public static UInt128Value operator %(UInt128Value a, UInt128Value b)
+    {
+        DivRem(a, b, out UInt128Value remainder);
+        return remainder;
+    }
+
+    public static UInt128Value operator /(UInt128Value a, UInt128Value b) => DivRem(a, b, out _);
+
+    public static UInt128Value operator -(UInt128Value v) => Zero - v;
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static UInt128Value operator |(UInt128Value a, UInt128Value b) =>
         new UInt128Value(a.Hi | b.Hi, a.Lo | b.Lo);
@@ -118,6 +195,22 @@ public struct UInt128Value : IEquatable<UInt128Value>
     // word casts — the serialize group writers read the low words
     public static explicit operator uint(UInt128Value v) => (uint)v.Lo;
     public static explicit operator ulong(UInt128Value v) => v.Lo;
+
+    // the rest of the integer conversion matrix — System.UInt128 defines every
+    // integer conversion directly, and without these the two-hop paths are
+    // ambiguous to overload resolution. Narrowing casts truncate (unchecked).
+    public static explicit operator int(UInt128Value v) => unchecked((int)v.Lo);
+    public static explicit operator long(UInt128Value v) => unchecked((long)v.Lo);
+    public static explicit operator ushort(UInt128Value v) => unchecked((ushort)v.Lo);
+    public static explicit operator short(UInt128Value v) => unchecked((short)v.Lo);
+    public static explicit operator byte(UInt128Value v) => unchecked((byte)v.Lo);
+    public static explicit operator sbyte(UInt128Value v) => unchecked((sbyte)v.Lo);
+    public static implicit operator UInt128Value(byte v) => new UInt128Value(0, v);
+    public static implicit operator UInt128Value(ushort v) => new UInt128Value(0, v);
+    public static implicit operator UInt128Value(sbyte v) =>
+        new UInt128Value(v < 0 ? ulong.MaxValue : 0, unchecked((ulong)(long)v));
+    public static implicit operator UInt128Value(short v) =>
+        new UInt128Value(v < 0 ? ulong.MaxValue : 0, unchecked((ulong)(long)v));
 
     // widening conversions. Signed sources sign-extend into the high half,
     // matching System.UInt128's unchecked conversion semantics.
@@ -177,6 +270,48 @@ public struct Int128Value : IEquatable<Int128Value>
     public static Int128Value operator -(Int128Value a, Int128Value b) =>
         (Int128Value)((UInt128Value)a - (UInt128Value)b);
 
+    /// <summary>Logical left shift (bits are bits; sign is just bit 127).
+    /// The count is masked to 0..127, matching System.Int128.</summary>
+    public static Int128Value operator <<(Int128Value v, int count) =>
+        (Int128Value)((UInt128Value)v << count);
+
+    /// <summary>ARITHMETIC right shift — the sign bit fills in from the top,
+    /// matching System.Int128.</summary>
+    public static Int128Value operator >>(Int128Value v, int count)
+    {
+        count &= 127;
+        if (count == 0)
+        {
+            return v;
+        }
+        UInt128Value u = (UInt128Value)v >> count;
+        if ((long)v.Hi < 0)
+        {
+            // fill the vacated top bits with ones
+            u = u | (UInt128Value.MaxValue << (128 - count));
+        }
+        return (Int128Value)u;
+    }
+
+    public static Int128Value operator -(Int128Value v) => Zero - v;
+
+    /// <summary>Truncated-toward-zero division, matching System.Int128: divide
+    /// the magnitudes in the unsigned domain, then apply the sign.</summary>
+    public static Int128Value operator /(Int128Value a, Int128Value b)
+    {
+        bool negA = (long)a.Hi < 0;
+        bool negB = (long)b.Hi < 0;
+        UInt128Value magA = negA ? (UInt128Value)(Zero - a) : (UInt128Value)a;
+        UInt128Value magB = negB ? (UInt128Value)(Zero - b) : (UInt128Value)b;
+        UInt128Value q = magA / magB;
+        return negA != negB ? Zero - (Int128Value)q : (Int128Value)q;
+    }
+
+    /// <summary>Truncating (mod 2^128) multiply — two's complement shares the
+    /// unsigned bit pattern. Matches System.Int128's unchecked semantics.</summary>
+    public static Int128Value operator *(Int128Value a, Int128Value b) =>
+        (Int128Value)((UInt128Value)a * (UInt128Value)b);
+
     public static bool operator ==(Int128Value a, Int128Value b) => a.Hi == b.Hi && a.Lo == b.Lo;
     public static bool operator !=(Int128Value a, Int128Value b) => !(a == b);
 
@@ -189,6 +324,21 @@ public struct Int128Value : IEquatable<Int128Value>
     // truncating word casts (unchecked semantics, matching System.Int128)
     public static explicit operator long(Int128Value v) => unchecked((long)v.Lo);
     public static explicit operator ulong(Int128Value v) => v.Lo;
+
+    // the rest of the integer conversion matrix — same reasoning as the
+    // unsigned half: direct conversions keep overload resolution unambiguous.
+    public static explicit operator int(Int128Value v) => unchecked((int)v.Lo);
+    public static explicit operator uint(Int128Value v) => unchecked((uint)v.Lo);
+    public static explicit operator ushort(Int128Value v) => unchecked((ushort)v.Lo);
+    public static explicit operator short(Int128Value v) => unchecked((short)v.Lo);
+    public static explicit operator byte(Int128Value v) => unchecked((byte)v.Lo);
+    public static explicit operator sbyte(Int128Value v) => unchecked((sbyte)v.Lo);
+    public static implicit operator Int128Value(byte v) => new Int128Value(0, v);
+    public static implicit operator Int128Value(ushort v) => new Int128Value(0, v);
+    public static implicit operator Int128Value(sbyte v) =>
+        new Int128Value(v < 0 ? ulong.MaxValue : 0, unchecked((ulong)(long)v));
+    public static implicit operator Int128Value(short v) =>
+        new Int128Value(v < 0 ? ulong.MaxValue : 0, unchecked((ulong)(long)v));
 
     // widening conversions — sign-extend into the high half
     public static implicit operator Int128Value(int v) =>

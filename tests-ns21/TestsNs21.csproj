@@ -13,7 +13,7 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <!-- no SERIALIZE_HAS_INT128: the referenced assembly has no 128 surface -->
+    <!-- no SERIALIZE_HAS_INT128: the define gates only the System.Int128 ORACLE tests; the 2.1 assembly carries the full 128 surface on the emulated pair -->
   </PropertyGroup>
 
   <ItemGroup>

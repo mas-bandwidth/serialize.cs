@@ -53,12 +53,21 @@ internal static partial class Program
             Check((UInt128)(a - b) == unchecked(oa - ob), "pair sub matches the oracle");
             Check((UInt128)(a | b) == (oa | ob), "pair or matches the oracle");
             Check((UInt128)(a & b) == (oa & ob), "pair and matches the oracle");
+            Check((UInt128)(a * b) == unchecked(oa * ob), "pair mul matches the oracle");
+            if (b != UInt128Value.Zero)
+            {
+                Check((UInt128)(a / b) == oa / ob, "pair div matches the oracle");
+            }
             Check((oa == ob) == (a == b), "pair equality matches the oracle");
             Check((oa < ob) == (a < b), "pair less-than matches the oracle");
             Check((oa > ob) == (a > b), "pair greater-than matches the oracle");
             Check((oa <= ob) == (a <= b), "pair less-equal matches the oracle");
             Check((oa >= ob) == (a >= b), "pair greater-equal matches the oracle");
             Check((uint)oa == (uint)a, "pair uint cast matches the oracle");
+            if (b != UInt128Value.Zero)
+            {
+                Check((UInt128)(a % b) == oa % ob, "pair modulo matches the oracle");
+            }
             Check((ulong)oa == (ulong)a, "pair ulong cast matches the oracle");
 
             for (int shift = 0; shift < 128; shift++)
@@ -82,6 +91,17 @@ internal static partial class Program
 
             Check((Int128)(a + b) == unchecked(oa + ob), "signed pair add matches the oracle");
             Check((Int128)(a - b) == unchecked(oa - ob), "signed pair sub matches the oracle");
+            Check((Int128)(a * b) == unchecked(oa * ob), "signed pair mul matches the oracle");
+            Check((Int128)(-a) == unchecked(-oa), "signed pair negate matches the oracle");
+            for (int shift = 0; shift < 128; shift++)
+            {
+                Check((Int128)(a << shift) == oa << shift, "signed pair left shift matches the oracle");
+                Check((Int128)(a >> shift) == oa >> shift, "signed pair arithmetic right shift matches the oracle");
+            }
+            if (b != Int128Value.Zero)
+            {
+                Check((Int128)(a / b) == unchecked(oa / ob), "signed pair div matches the oracle");
+            }
             Check((oa == ob) == (a == b), "signed pair equality matches the oracle");
             Check((oa < ob) == (a < b), "signed pair less-than matches the oracle");
             Check((oa > ob) == (a > b), "signed pair greater-than matches the oracle");
