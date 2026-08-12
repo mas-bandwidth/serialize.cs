@@ -412,6 +412,12 @@ internal static partial class Program
         RunTest("test_batch_end_idempotent", TestBatchEndIdempotent);
         RunTest("test_batch_allocation", TestBatchAllocation);
         RunTest("test_batch_properties", TestBatchProperties);
+
+        RunTest("test_int128_pair_basics", TestInt128PairBasics);
+#if SERIALIZE_HAS_INT128
+        RunTest("test_int128_pair_unsigned_oracle", TestInt128PairUnsignedOracle);
+        RunTest("test_int128_pair_signed_oracle", TestInt128PairSignedOracle);
+#endif // SERIALIZE_HAS_INT128
         if (!shortMode)
         {
             RunTest("test_large_buffer", TestLargeBuffer);
