@@ -361,9 +361,7 @@ internal static partial class Program
         RunTest("test_bitpacker", TestBitpacker);
         RunTest("test_bits_required", TestBitsRequired);
         RunTest("test_bits_required64", TestBitsRequired64);
-#if SERIALIZE_HAS_INT128
         RunTest("test_bits_required128", TestBitsRequired128);
-#endif // SERIALIZE_HAS_INT128
         RunTest("test_zigzag", TestZigZag);
         RunTest("test_serialize", TestSerialize);
         RunTest("test_read_write", TestReadWrite);
@@ -376,21 +374,15 @@ internal static partial class Program
         RunTest("test_wstring_validation", TestWStringValidation);
         RunTest("test_int_relative_validation", TestIntRelativeValidation);
         RunTest("test_compressed_float_validation", TestCompressedFloatValidation);
-#if SERIALIZE_HAS_INT128 // the fixed point suite lives in FixedPoint.cs, gated with the 128 surface
         RunTest("test_serialize_fixed", TestSerializeFixed);
         RunTest("test_serialize_fixed_validation", TestSerializeFixedValidation);
         RunTest("test_serialize_fixed_matches_int64", TestSerializeFixedMatchesInt64);
         RunTest("test_serialize_fixed_wide", TestSerializeFixedWide);
-#endif // SERIALIZE_HAS_INT128
-#if SERIALIZE_HAS_INT128 // gated out when the library TFM lacks the 128 bit surface (netstandard2.1)
         RunTest("test_serialize_uint128", TestSerializeUInt128);
         RunTest("test_serialize_int128", TestSerializeInt128);
-#endif // SERIALIZE_HAS_INT128
         RunTest("test_golden_wire_format", TestGoldenWireFormat);
         RunTest("test_extended_wire_format", TestExtendedWireFormat);
-#if SERIALIZE_HAS_INT128
         RunTest("test_fixed_wire_format", TestFixedWireFormat);
-#endif // SERIALIZE_HAS_INT128
         RunTest("test_write_bytes_qword_phases", TestWriteBytesQwordPhases);
         RunTest("test_write_overflow", TestWriteOverflow);
         RunTest("test_align_validation", TestAlignValidation);
@@ -412,6 +404,12 @@ internal static partial class Program
         RunTest("test_batch_end_idempotent", TestBatchEndIdempotent);
         RunTest("test_batch_allocation", TestBatchAllocation);
         RunTest("test_batch_properties", TestBatchProperties);
+
+        RunTest("test_int128_pair_basics", TestInt128PairBasics);
+#if SERIALIZE_HAS_INT128
+        RunTest("test_int128_pair_unsigned_oracle", TestInt128PairUnsignedOracle);
+        RunTest("test_int128_pair_signed_oracle", TestInt128PairSignedOracle);
+#endif // SERIALIZE_HAS_INT128
         if (!shortMode)
         {
             RunTest("test_large_buffer", TestLargeBuffer);
@@ -1327,18 +1325,14 @@ internal static partial class Program
             stream.SerializeCompressedFloat(ref f, 0, 10, 0.01f);
             int relative = 105;
             stream.SerializeIntRelative(100, ref relative);
-#if SERIALIZE_HAS_INT128 // gated out when the library TFM lacks the 128 bit surface (netstandard2.1)
-            UInt128 u128 = ((UInt128)0x0123456789ABCDEF << 64) | 0xFEDCBA9876543210;
+            UInt128Value u128 = ((UInt128Value)0x0123456789ABCDEF << 64) | 0xFEDCBA9876543210;
             stream.SerializeUInt128(ref u128);
-            Int128 i128 = -((Int128)1 << 99);
-            stream.SerializeInt128(ref i128, -((Int128)1 << 100), (Int128)1 << 100);
-#endif // SERIALIZE_HAS_INT128
+            Int128Value i128 = -((Int128Value)1 << 99);
+            stream.SerializeInt128(ref i128, -((Int128Value)1 << 100), (Int128Value)1 << 100);
             long fixedValue = -(54321L * 65536 + 12345);
             stream.SerializeFixed(ref fixedValue, 48, 16, -100000, +100000);
-#if SERIALIZE_HAS_INT128 // wide fixed point rides Int128 storage
-            Int128 fixedWide = -(98765432109L * 65536 + 4321);
+            Int128Value fixedWide = -(98765432109L * 65536 + 4321);
             stream.SerializeFixed(ref fixedWide, 112, 16, -144115188075855872, +144115188075855872);
-#endif // SERIALIZE_HAS_INT128
             Check(stream.Error == SerializeError.None, "serialize failed");
         }
 

@@ -5,11 +5,13 @@
          library; net10.0 is the current SDK. netstandard2.1 is the Unity-class
          target (Unity 2021+ through Unity 6: C# 9, netstandard2.1 API surface) —
          LangVersion pins it to C# 9 so anything Unity's compiler would refuse
-         fails HERE, in CI, not in the editor. The 128 bit surface is gated to
-         NET7_0_OR_GREATER (no Int128 on Unity-class runtimes); everything else
-         runs the same single code path on every TFM — the compat shims at the
-         bottom of Serialize.cs are unconditional except LeadingZeroCount, so
-         wire behavior cannot diverge by framework. -->
+         fails HERE, in CI, not in the editor. The FULL surface — including the
+         128 bit paths — runs on every TFM: Int128Value/UInt128Value (the
+         emulated pair, Int128Pair.cs) carry the 128 bit API everywhere, with
+         implicit System.Int128 conversions on .NET 7+. One code path per
+         operation on every TFM — the compat shims at the bottom of
+         Serialize.cs are unconditional except LeadingZeroCount, so wire
+         behavior cannot diverge by framework. -->
     <TargetFrameworks>net8.0;net10.0;netstandard2.1</TargetFrameworks>
     <LangVersion Condition="'$(TargetFramework)' == 'netstandard2.1'">9.0</LangVersion>
     <Nullable>enable</Nullable>

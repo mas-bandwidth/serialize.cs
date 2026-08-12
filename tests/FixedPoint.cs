@@ -11,7 +11,7 @@
     The C++ emulated-pair tests (test_uint128_emulation, test_int128_emulation,
     test_serialize_fixed_wide_emulated, the native/emulated differential) have no C#
     counterpart by design: both target frameworks are net7.0+, so the port uses the
-    native System.Int128 / System.UInt128 and there is exactly one representation.
+    native System.Int128Value / System.UInt128Value and there is exactly one representation.
 
     GOLDEN PIN PROVENANCE. Every pinned byte array below was derived from
     STANDARD.md's text by an independent oracle (a bit packer implementing only the
@@ -27,7 +27,6 @@ using System;
 
 namespace Serialize.Tests;
 
-#if SERIALIZE_HAS_INT128 // the whole fixed point + 128 bit suite needs the gated library surface
 
 // The fixed point section of the C++ fixed-point golden message. In the C++ golden
 // message this section begins byte aligned ("the fixed point section starts byte
@@ -41,8 +40,8 @@ internal sealed class FixedWireData
     public int FixedQ16_16;
     public long FixedQ48_16;
     public uint FixedQ16_16Unsigned;
-    public Int128 FixedQ112_16Wide;
-    public Int128 FixedQ64_64Wide;
+    public Int128Value FixedQ112_16Wide;
+    public Int128Value FixedQ64_64Wide;
 
     public static FixedWireData Init()
     {
@@ -53,7 +52,7 @@ internal sealed class FixedWireData
             FixedQ48_16 = -(54321L * 65536 + 12345),                // -54321.1883... in Q48.16
             FixedQ16_16Unsigned = 29999u * 65536u + 65535u,         // 29999.99998... in Q16.16: every fraction bit set
             FixedQ112_16Wide = -(98765432109L * 65536 + 4321),      // -98765432109.066 in Q112.16: 75 bits on the wire, three groups
-            FixedQ64_64Wide = ((Int128)0x0123456789ABCDEF << 64)
+            FixedQ64_64Wide = ((Int128Value)0x0123456789ABCDEF << 64)
                             + 0x0FEDCBA987654321,                   // Q64.64 over the full unit range: 128 bits, four groups, every group distinct
         };
     }
@@ -72,7 +71,7 @@ internal sealed class FixedWireData
 }
 
 /// <summary>The storage type a fixed point test case runs through, so one helper can
-/// drive every SerializeFixed overload. The carrier is an Int128 holding the raw
+/// drive every SerializeFixed overload. The carrier is an Int128Value holding the raw
 /// value's two's complement bit pattern.</summary>
 internal enum FixedStorage
 {
@@ -129,9 +128,9 @@ internal static partial class Program
         Check(SerializeUtil.BitsRequired128(0, 4294967295) == 32, "BitsRequired128(0,2^32-1) != 32");
         Check(SerializeUtil.BitsRequired128(0, 4294967296) == 33, "BitsRequired128(0,2^32) != 33");
         Check(SerializeUtil.BitsRequired128(0, ulong.MaxValue) == 64, "BitsRequired128(0,2^64-1) != 64");
-        Check(SerializeUtil.BitsRequired128(0, (UInt128)1 << 64) == 65, "BitsRequired128(0,2^64) != 65");
-        Check(SerializeUtil.BitsRequired128(0, (UInt128)1 << 127) == 128, "BitsRequired128(0,2^127) != 128");
-        Check(SerializeUtil.BitsRequired128(0, UInt128.MaxValue) == 128, "BitsRequired128(0,2^128-1) != 128");
+        Check(SerializeUtil.BitsRequired128(0, (UInt128Value)1 << 64) == 65, "BitsRequired128(0,2^64) != 65");
+        Check(SerializeUtil.BitsRequired128(0, (UInt128Value)1 << 127) == 128, "BitsRequired128(0,2^127) != 128");
+        Check(SerializeUtil.BitsRequired128(0, UInt128Value.MaxValue) == 128, "BitsRequired128(0,2^128-1) != 128");
 
         // must agree with the 64 bit variant wherever both apply
         Check(SerializeUtil.BitsRequired128(0, 4294967296) == SerializeUtil.BitsRequired64(0, 4294967296),
@@ -140,20 +139,20 @@ internal static partial class Program
             "BitsRequired128 disagrees with BitsRequired64 at 2^40");
 
         // a signed range converted through the unsigned 128 bit domain
-        Check(SerializeUtil.BitsRequired128((UInt128)(Int128)(-5000000000L), (UInt128)(Int128)5000000000L) == 34,
+        Check(SerializeUtil.BitsRequired128((UInt128Value)(Int128Value)(-5000000000L), (UInt128Value)(Int128Value)5000000000L) == 34,
             "BitsRequired128 over signed [-5e9,+5e9] != 34");
 
         // the same numbers zero extended instead of sign extended are a wrapped range
         Check(SerializeUtil.BitsRequired128(unchecked((ulong)(-5000000000L)), 5000000000UL) == 128,
             "BitsRequired128 over a wrapped range != 128");
 
-        Check(SerializeUtil.BitsRequired128(1, UInt128.MaxValue) == 128, "BitsRequired128(1,2^128-1) != 128");
+        Check(SerializeUtil.BitsRequired128(1, UInt128Value.MaxValue) == 128, "BitsRequired128(1,2^128-1) != 128");
     }
 
     /// <summary>Drives the SerializeFixed overload selected by storage, carrying the
-    /// raw value's two's complement bit pattern in an Int128.</summary>
+    /// raw value's two's complement bit pattern in an Int128Value.</summary>
     private static bool SerializeFixedAs(
-        FixedStorage storage, IBitStream stream, ref Int128 carrier,
+        FixedStorage storage, IBitStream stream, ref Int128Value carrier,
         int integerBits, int fractionBits, long min, long max)
     {
         switch (storage)
@@ -202,16 +201,16 @@ internal static partial class Program
             }
             case FixedStorage.I128:
             {
-                Int128 value = carrier;
+                Int128Value value = carrier;
                 bool ok = stream.SerializeFixed(ref value, integerBits, fractionBits, min, max);
                 carrier = value;
                 return ok;
             }
             default:
             {
-                UInt128 value = (UInt128)carrier;
+                UInt128Value value = (UInt128Value)carrier;
                 bool ok = stream.SerializeFixed(ref value, integerBits, fractionBits, min, max);
-                carrier = (Int128)value;
+                carrier = (Int128Value)value;
                 return ok;
             }
         }
@@ -221,27 +220,27 @@ internal static partial class Program
     /// the write — fixed point involves no alignment), read back exact.</summary>
     private static void CheckFixedRoundTrip(
         FixedStorage storage, int integerBits, int fractionBits, long minUnits, long maxUnits,
-        Int128 rawValue)
+        Int128Value rawValue)
     {
         string label = $"fixed {storage} Q{integerBits}.{fractionBits} [{minUnits},{maxUnits}] raw {rawValue}";
 
         byte[] buffer = new byte[32];
 
         WriteStream writeStream = new WriteStream(buffer);
-        Int128 written = rawValue;
+        Int128Value written = rawValue;
         Check(SerializeFixedAs(storage, writeStream, ref written, integerBits, fractionBits, minUnits, maxUnits),
             $"{label}: write failed: {writeStream.Error}");
         writeStream.Flush();
 
         MeasureStream measureStream = new MeasureStream();
-        Int128 measured = rawValue;
+        Int128Value measured = rawValue;
         Check(SerializeFixedAs(storage, measureStream, ref measured, integerBits, fractionBits, minUnits, maxUnits),
             $"{label}: measure failed: {measureStream.Error}");
         Check(measureStream.BitsProcessed == writeStream.BitsProcessed,
             $"{label}: measure {measureStream.BitsProcessed} != write {writeStream.BitsProcessed}");
 
         ReadStream readStream = new ReadStream(buffer, (int)writeStream.BytesProcessed);
-        Int128 readBack = 0;
+        Int128Value readBack = 0;
         Check(SerializeFixedAs(storage, readStream, ref readBack, integerBits, fractionBits, minUnits, maxUnits),
             $"{label}: read failed: {readStream.Error}");
         Check(readBack == rawValue, $"{label}: read back {readBack}");
@@ -253,10 +252,10 @@ internal static partial class Program
     /// the bounds allow them. The port of the C++ check_fixed_cases.</summary>
     private static void CheckFixedCases(
         FixedStorage storage, int integerBits, int fractionBits, long minUnits, long maxUnits,
-        Int128 oneUnit)
+        Int128Value oneUnit)
     {
-        Int128 rawMin = oneUnit * minUnits;
-        Int128 rawMax = oneUnit * maxUnits;
+        Int128Value rawMin = oneUnit * minUnits;
+        Int128Value rawMax = oneUnit * maxUnits;
 
         // exact raw bounds, and one raw step inside each
         CheckFixedRoundTrip(storage, integerBits, fractionBits, minUnits, maxUnits, rawMin);
@@ -306,7 +305,7 @@ internal static partial class Program
             bool threw = false;
             try
             {
-                Int128 value = 0;
+                Int128Value value = 0;
                 SerializeFixedAs(storage, stream, ref value, integerBits, fractionBits, minUnits, maxUnits);
             }
             catch (ArgumentException)
@@ -333,7 +332,7 @@ internal static partial class Program
 
         // long storage
         CheckFixedCases(FixedStorage.I64, 48, 16, -100000000000, +100000000000, 65536);
-        CheckFixedCases(FixedStorage.I64, 32, 32, -1000000, +1000000, (Int128)1 << 32);
+        CheckFixedCases(FixedStorage.I64, 32, 32, -1000000, +1000000, (Int128Value)1 << 32);
         CheckFixedCases(FixedStorage.I64, 64, 0, -5000000000, +5000000000, 1);          // pure integer Q at full width
 
         // unsigned storage
@@ -424,7 +423,7 @@ internal static partial class Program
         writeStream.Flush();
 
         ReadStream readStream = new ReadStream(buffer);
-        Int128 value128 = 0;
+        Int128Value value128 = 0;
         Check(!SerializeFixedAs(storage, readStream, ref value128, integerBits, fractionBits, minUnits, maxUnits),
             $"fixed {storage} Q{integerBits}.{fractionBits} [{minUnits},{maxUnits}]: expected the smuggled offset to be rejected");
         Check(readStream.Error == SerializeError.ValueOutOfRange,
@@ -560,23 +559,23 @@ internal static partial class Program
     private static void CheckFixedWideRejectsOutOfRange(
         FixedStorage storage, int integerBits, int fractionBits, long minUnits, long maxUnits)
     {
-        UInt128 rawMin = (UInt128)(Int128)minUnits << fractionBits;
-        UInt128 rawMax = (UInt128)(Int128)maxUnits << fractionBits;
-        UInt128 rawRange = rawMax - rawMin;
+        UInt128Value rawMin = (UInt128Value)(Int128Value)minUnits << fractionBits;
+        UInt128Value rawMax = (UInt128Value)(Int128Value)maxUnits << fractionBits;
+        UInt128Value rawRange = rawMax - rawMin;
 
         int bits = 0;
-        for (UInt128 x = rawRange; x != 0; x >>= 1)
+        for (UInt128Value x = rawRange; x != 0; x >>= 1)
         {
             bits++;
         }
 
-        UInt128 maxEncodable = bits < 128 ? ((UInt128)1 << bits) - 1 : UInt128.MaxValue;
+        UInt128Value maxEncodable = bits < 128 ? ((UInt128Value)1 << bits) - 1 : UInt128Value.MaxValue;
         if (rawRange == maxEncodable)
         {
             return; // no headroom: every encoding decodes in range for this configuration
         }
 
-        UInt128 smuggled = rawRange + 1;
+        UInt128Value smuggled = rawRange + 1;
 
         byte[] buffer = new byte[24];
         WriteStream writeStream = new WriteStream(buffer);
@@ -592,7 +591,7 @@ internal static partial class Program
         writeStream.Flush();
 
         ReadStream readStream = new ReadStream(buffer);
-        Int128 value = 0;
+        Int128Value value = 0;
         Check(!SerializeFixedAs(storage, readStream, ref value, integerBits, fractionBits, minUnits, maxUnits),
             $"fixed {storage} Q{integerBits}.{fractionBits} [{minUnits},{maxUnits}]: expected the smuggled offset to be rejected");
         Check(readStream.Error == SerializeError.ValueOutOfRange,
@@ -608,8 +607,8 @@ internal static partial class Program
         // (128 bits on the wire, four groups), and the unsigned wide case.
         CheckFixedCases(FixedStorage.I128, 112, 16, -1152921504606846976, +1152921504606846976, 65536); // ±2^60 units: 78 bits on the wire
         CheckFixedCases(FixedStorage.I128, 112, 16, -2, +2, 65536);
-        CheckFixedCases(FixedStorage.I128, 64, 64, -1000, +1000, (Int128)1 << 64);
-        CheckFixedCases(FixedStorage.I128, 64, 64, long.MinValue, long.MaxValue, (Int128)1 << 64);      // full unit range: 128 bits on the wire
+        CheckFixedCases(FixedStorage.I128, 64, 64, -1000, +1000, (Int128Value)1 << 64);
+        CheckFixedCases(FixedStorage.I128, 64, 64, long.MinValue, long.MaxValue, (Int128Value)1 << 64);      // full unit range: 128 bits on the wire
         CheckFixedCases(FixedStorage.U128, 112, 16, 0, 2305843009213693952, 65536);                     // 2^61 units, unsigned
 
         // the 33..64 bit two group band on wide storage: both boundaries exactly,
@@ -622,35 +621,35 @@ internal static partial class Program
         {
             byte[] buffer = new byte[16];
             WriteStream stream = new WriteStream(buffer);
-            Int128 value = (Int128)12345 * 65536;
+            Int128Value value = (Int128Value)12345 * 65536;
             Check(stream.SerializeFixed(ref value, 112, 16, -1152921504606846976, +1152921504606846976), "write failed");
             Check(stream.BitsProcessed == 78, $"expected 78 bits, got {stream.BitsProcessed}");         // 2^61 << 16 raw values needs 78 bits
         }
         {
             byte[] buffer = new byte[24];
             WriteStream stream = new WriteStream(buffer);
-            Int128 value = 0;
+            Int128Value value = 0;
             Check(stream.SerializeFixed(ref value, 64, 64, long.MinValue, long.MaxValue), "write failed");
             Check(stream.BitsProcessed == 128, $"expected 128 bits, got {stream.BitsProcessed}");       // the full unit range costs the full storage width
         }
         {
             byte[] buffer = new byte[16];
             WriteStream stream = new WriteStream(buffer);
-            Int128 value = (Int128)12345678901 * 65536;
+            Int128Value value = (Int128Value)12345678901 * 65536;
             Check(stream.SerializeFixed(ref value, 112, 16, -100000000000, +100000000000), "write failed");
             Check(stream.BitsProcessed == 54, $"expected 54 bits, got {stream.BitsProcessed}");         // the example's shape, inside the two group band
         }
         {
             byte[] buffer = new byte[16];
             WriteStream stream = new WriteStream(buffer);
-            Int128 value = 0;
+            Int128Value value = 0;
             Check(stream.SerializeFixed(ref value, 112, 16, -32768, +32768), "write failed");
             Check(stream.BitsProcessed == 33, $"expected 33 bits, got {stream.BitsProcessed}");         // the band's low edge
         }
         {
             byte[] buffer = new byte[16];
             WriteStream stream = new WriteStream(buffer);
-            Int128 value = 0;
+            Int128Value value = 0;
             Check(stream.SerializeFixed(ref value, 112, 16, -140737488355328, +140737488355327), "write failed");
             Check(stream.BitsProcessed == 64, $"expected 64 bits, got {stream.BitsProcessed}");         // the band's high edge
         }
@@ -669,7 +668,7 @@ internal static partial class Program
         {
             byte[] buffer = new byte[8];
             ReadStream readStream = new ReadStream(buffer, 4);
-            Int128 value = 424242; // sentinel
+            Int128Value value = 424242; // sentinel
             Check(!readStream.SerializeFixed(ref value, 112, 16, -1152921504606846976, +1152921504606846976),
                 "expected the truncated read to fail");
             Check(readStream.Error == SerializeError.Overflow, $"expected Overflow, got {readStream.Error}");
@@ -682,27 +681,27 @@ internal static partial class Program
         // round trips across the value patterns: zero, max, each half alone,
         // alternating bits, distinct halves; always exactly 128 bits, measure agrees
         {
-            UInt128[] values =
+            UInt128Value[] values =
             {
                 0,
-                UInt128.MaxValue,
-                (UInt128)0xFFFFFFFFFFFFFFFF << 64,                                      // high half only
+                UInt128Value.MaxValue,
+                (UInt128Value)0xFFFFFFFFFFFFFFFF << 64,                                      // high half only
                 0xFFFFFFFFFFFFFFFF,                                                     // low half only
-                ((UInt128)0xAAAAAAAAAAAAAAAA << 64) | 0x5555555555555555,               // alternating bits
-                ((UInt128)0x0123456789ABCDEF << 64) | 0xFEDCBA9876543210,               // distinct halves
+                ((UInt128Value)0xAAAAAAAAAAAAAAAA << 64) | 0x5555555555555555,               // alternating bits
+                ((UInt128Value)0x0123456789ABCDEF << 64) | 0xFEDCBA9876543210,               // distinct halves
             };
 
-            foreach (UInt128 expected in values)
+            foreach (UInt128Value expected in values)
             {
                 byte[] buffer = new byte[16];
 
                 WriteStream writeStream = new WriteStream(buffer);
-                UInt128 written = expected;
+                UInt128Value written = expected;
                 Check(writeStream.SerializeUInt128(ref written), "write failed");
                 writeStream.Flush();
 
                 MeasureStream measureStream = new MeasureStream();
-                UInt128 measured = expected;
+                UInt128Value measured = expected;
                 Check(measureStream.SerializeUInt128(ref measured), "measure failed");
                 Check(measureStream.BitsProcessed == writeStream.BitsProcessed,
                     $"measure {measureStream.BitsProcessed} != write {writeStream.BitsProcessed}");
@@ -710,7 +709,7 @@ internal static partial class Program
                     $"expected 128 bits, got {writeStream.BitsProcessed}");
 
                 ReadStream readStream = new ReadStream(buffer, (int)writeStream.BytesProcessed);
-                UInt128 readBack = 0;
+                UInt128Value readBack = 0;
                 Check(readStream.SerializeUInt128(ref readBack), "read failed");
                 Check(readBack == expected, $"read back {readBack}, expected {expected}");
             }
@@ -726,7 +725,7 @@ internal static partial class Program
 
             byte[] uint128Buffer = new byte[16];
             WriteStream uint128Stream = new WriteStream(uint128Buffer);
-            UInt128 value = ((UInt128)highHalf << 64) | lowHalf;
+            UInt128Value value = ((UInt128Value)highHalf << 64) | lowHalf;
             Check(uint128Stream.SerializeUInt128(ref value), "uint128 write failed");
             uint128Stream.Flush();
 
@@ -747,11 +746,11 @@ internal static partial class Program
         // the golden pin: 16 bytes, little endian, low half first. write side must
         // produce exactly the pinned bytes; the pinned bytes must decode back.
         {
-            UInt128 goldenValue = ((UInt128)0x0123456789ABCDEF << 64) | 0xFEDCBA9876543210;
+            UInt128Value goldenValue = ((UInt128Value)0x0123456789ABCDEF << 64) | 0xFEDCBA9876543210;
 
             byte[] buffer = new byte[16];
             WriteStream writeStream = new WriteStream(buffer);
-            UInt128 written = goldenValue;
+            UInt128Value written = goldenValue;
             Check(writeStream.SerializeUInt128(ref written), "write failed");
             writeStream.Flush();
             Check(writeStream.BytesProcessed == Uint128GoldenBytes.Length,
@@ -760,7 +759,7 @@ internal static partial class Program
                 $"uint128 golden mismatch:\nexpected {Convert.ToHexString(Uint128GoldenBytes)}\ngot      {Convert.ToHexString(writeStream.Data)}");
 
             ReadStream readStream = new ReadStream(Uint128GoldenBytes);
-            UInt128 readBack = 0;
+            UInt128Value readBack = 0;
             Check(readStream.SerializeUInt128(ref readBack), "golden read failed");
             Check(readBack == goldenValue, "golden bytes decoded to the wrong value");
         }
@@ -780,7 +779,7 @@ internal static partial class Program
             {
                 byte[] buffer128 = new byte[32];
                 WriteStream w128 = new WriteStream(buffer128);
-                Int128 v128 = value;
+                Int128Value v128 = value;
                 Check(w128.SerializeInt128(ref v128, min64, max64), "int128 write failed");
                 w128.Flush();
 
@@ -797,7 +796,7 @@ internal static partial class Program
                     $"value {value}: int128 bytes differ from int64 bytes");
 
                 ReadStream readStream = new ReadStream(buffer128, (int)w128.BytesProcessed);
-                Int128 readBack = 0;
+                Int128Value readBack = 0;
                 Check(readStream.SerializeInt128(ref readBack, min64, max64), "read failed");
                 Check(readBack == value, $"read back {readBack}, expected {value}");
             }
@@ -806,22 +805,22 @@ internal static partial class Program
         // 2. the wide bands the 64 bit path cannot express at all: three group
         //    ranges, including offsets only a 128 bit domain can hold
         {
-            Int128 wideMin = -((Int128)1 << 100);
-            Int128 wideMax = (Int128)1 << 100;
-            Int128[] values = { wideMin, wideMin + 1, -1, 0, 1, (Int128)1 << 99, wideMax - 1, wideMax };
+            Int128Value wideMin = -((Int128Value)1 << 100);
+            Int128Value wideMax = (Int128Value)1 << 100;
+            Int128Value[] values = { wideMin, wideMin + 1, -1, 0, 1, (Int128Value)1 << 99, wideMax - 1, wideMax };
 
-            foreach (Int128 value in values)
+            foreach (Int128Value value in values)
             {
                 byte[] buffer = new byte[32];
                 WriteStream writeStream = new WriteStream(buffer);
-                Int128 v = value;
+                Int128Value v = value;
                 Check(writeStream.SerializeInt128(ref v, wideMin, wideMax), "write failed");
                 writeStream.Flush();
                 Check(writeStream.BitsProcessed == 102,                     // BitsRequired128(-2^100, 2^100) == 102
                     $"expected 102 bits, got {writeStream.BitsProcessed}");
 
                 ReadStream readStream = new ReadStream(buffer, (int)writeStream.BytesProcessed);
-                Int128 readBack = 0;
+                Int128Value readBack = 0;
                 Check(readStream.SerializeInt128(ref readBack, wideMin, wideMax), "read failed");
                 Check(readBack == value, $"read back {readBack}, expected {value}");
             }
@@ -830,22 +829,22 @@ internal static partial class Program
         // 3. the full 128 bit range: every group full, and the range is wider than
         //    2^127 — the unsigned domain subtraction a signed one would overflow
         {
-            Int128 fullMin = Int128.MinValue;
-            Int128 fullMax = Int128.MaxValue;
-            Int128[] values = { fullMin, fullMin + 1, -1, 0, 1, fullMax - 1, fullMax };
+            Int128Value fullMin = Int128Value.MinValue;
+            Int128Value fullMax = Int128Value.MaxValue;
+            Int128Value[] values = { fullMin, fullMin + 1, -1, 0, 1, fullMax - 1, fullMax };
 
-            foreach (Int128 value in values)
+            foreach (Int128Value value in values)
             {
                 byte[] buffer = new byte[32];
                 WriteStream writeStream = new WriteStream(buffer);
-                Int128 v = value;
+                Int128Value v = value;
                 Check(writeStream.SerializeInt128(ref v, fullMin, fullMax), "write failed");
                 writeStream.Flush();
                 Check(writeStream.BitsProcessed == 128,
                     $"expected 128 bits, got {writeStream.BitsProcessed}");
 
                 ReadStream readStream = new ReadStream(buffer, (int)writeStream.BytesProcessed);
-                Int128 readBack = 0;
+                Int128Value readBack = 0;
                 Check(readStream.SerializeInt128(ref readBack, fullMin, fullMax), "read failed");
                 Check(readBack == value, $"read back {readBack}, expected {value}");
             }
@@ -854,24 +853,24 @@ internal static partial class Program
         // 4. the measure stream must agree with the write stream exactly, at every
         //    group width
         {
-            (Int128 Value, Int128 Min, Int128 Max)[] cases =
+            (Int128Value Value, Int128Value Min, Int128Value Max)[] cases =
             {
                 (0, 0, 255),
                 (7, -5000000000, +5000000000),
-                (1, -((Int128)1 << 100), (Int128)1 << 100),
-                (0, Int128.MinValue, Int128.MaxValue),
+                (1, -((Int128Value)1 << 100), (Int128Value)1 << 100),
+                (0, Int128Value.MinValue, Int128Value.MaxValue),
             };
 
-            foreach ((Int128 value, Int128 min, Int128 max) in cases)
+            foreach ((Int128Value value, Int128Value min, Int128Value max) in cases)
             {
                 byte[] buffer = new byte[32];
                 WriteStream writeStream = new WriteStream(buffer);
-                Int128 v = value;
+                Int128Value v = value;
                 Check(writeStream.SerializeInt128(ref v, min, max), "write failed");
                 writeStream.Flush();
 
                 MeasureStream measureStream = new MeasureStream();
-                Int128 m = value;
+                Int128Value m = value;
                 Check(measureStream.SerializeInt128(ref m, min, max), "measure failed");
                 Check(measureStream.BitsProcessed == writeStream.BitsProcessed,
                     $"measure {measureStream.BitsProcessed} != write {writeStream.BitsProcessed}");
@@ -884,14 +883,14 @@ internal static partial class Program
         {
             byte[] buffer = new byte[32];
             WriteStream writeStream = new WriteStream(buffer);
-            Int128 written = 255;
+            Int128Value written = 255;
             Check(writeStream.SerializeInt128(ref written, 0, 255), "write failed");
             writeStream.Flush();
 
             Check(SerializeUtil.BitsRequired128(0, 200) == 8, "expected [0,200] to cost 8 bits too");
 
             ReadStream readStream = new ReadStream(buffer);
-            Int128 readBack = -777; // sentinel
+            Int128Value readBack = -777; // sentinel
             Check(!readStream.SerializeInt128(ref readBack, 0, 200), "expected the read to fail");
             Check(readStream.Error == SerializeError.ValueOutOfRange,
                 $"expected ValueOutOfRange, got {readStream.Error}");
@@ -902,8 +901,8 @@ internal static partial class Program
         {
             byte[] buffer = new byte[32];
             ReadStream readStream = new ReadStream(buffer, 4);      // 32 bits available, 128 required
-            Int128 readBack = 424242; // sentinel
-            Check(!readStream.SerializeInt128(ref readBack, Int128.MinValue, Int128.MaxValue),
+            Int128Value readBack = 424242; // sentinel
+            Check(!readStream.SerializeInt128(ref readBack, Int128Value.MinValue, Int128Value.MaxValue),
                 "expected the truncated read to fail");
             Check(readStream.Error == SerializeError.Overflow, $"expected Overflow, got {readStream.Error}");
             Check(readBack == 424242, "a failed read must leave the value unmodified");
@@ -913,13 +912,13 @@ internal static partial class Program
         //    (32, 32, then 8). write side must produce exactly the pinned bytes; the
         //    pinned bytes must decode back. see the pin's provenance note above.
         {
-            Int128 goldenMin = -((Int128)1 << 70);
-            Int128 goldenMax = (Int128)1 << 70;
-            Int128 goldenValue = -(Int128)0x0123456789ABCDEF;
+            Int128Value goldenMin = -((Int128Value)1 << 70);
+            Int128Value goldenMax = (Int128Value)1 << 70;
+            Int128Value goldenValue = -(Int128Value)0x0123456789ABCDEF;
 
             byte[] buffer = new byte[16];
             WriteStream writeStream = new WriteStream(buffer);
-            Int128 written = goldenValue;
+            Int128Value written = goldenValue;
             Check(writeStream.SerializeInt128(ref written, goldenMin, goldenMax), "write failed");
             writeStream.Flush();
             Check(writeStream.BitsProcessed == 72, $"expected 72 bits, got {writeStream.BitsProcessed}");
@@ -929,7 +928,7 @@ internal static partial class Program
                 $"int128 golden mismatch:\nexpected {Convert.ToHexString(Int128GoldenBytes)}\ngot      {Convert.ToHexString(writeStream.Data)}");
 
             ReadStream readStream = new ReadStream(Int128GoldenBytes);
-            Int128 readBack = 0;
+            Int128Value readBack = 0;
             Check(readStream.SerializeInt128(ref readBack, goldenMin, goldenMax), "golden read failed");
             Check(readBack == goldenValue, "golden bytes decoded to the wrong value");
         }
@@ -973,4 +972,3 @@ internal static partial class Program
     }
 }
 
-#endif // SERIALIZE_HAS_INT128

@@ -136,7 +136,6 @@ public interface IBitStream
     /// required to represent the range. The full 64 bit range is supported.</summary>
     bool SerializeInt64(ref long value, long min, long max);
 
-#if NET7_0_OR_GREATER // the 128 bit surface needs Int128/UInt128 (.NET 7+) — absent on Unity-class runtimes
     /// <summary>Serializes a signed 128 bit integer in [min,max], using only the bits
     /// required to represent the range. The full 128 bit range is supported: the bit
     /// count and offset arithmetic run in the unsigned domain, so ranges wider than
@@ -145,8 +144,7 @@ public interface IBitStream
     /// SerializeInt64 over the same bounds — a field can be widened from 64 to 128
     /// bits without changing the wire, provided the bounds do not change. On read the
     /// value is guaranteed to be in [min,max] if the call succeeds.</summary>
-    bool SerializeInt128(ref Int128 value, Int128 min, Int128 max);
-#endif // NET7_0_OR_GREATER
+    bool SerializeInt128(ref Int128Value value, Int128Value min, Int128Value max);
 
     /// <summary>Serializes a byte (an unsigned 8 bit integer). Wire compatible with
     /// serialize_uint8 in the C++ library; the name follows the C# type vocabulary, as
@@ -162,14 +160,12 @@ public interface IBitStream
     /// <summary>Serializes an unsigned 64 bit integer (low dword first).</summary>
     bool SerializeUInt64(ref ulong value);
 
-#if NET7_0_OR_GREATER // the 128 bit surface needs Int128/UInt128 (.NET 7+) — absent on Unity-class runtimes
     /// <summary>Serializes an unsigned 128 bit integer. Always 128 bits on the wire:
     /// the low 64 bit half first, then the high half, each half low dword first —
     /// when the stream is byte aligned the result is the 16 bytes of the value in
     /// little endian order. Not ranged: do not confuse this with SerializeInt128,
     /// which uses only the bits the range requires.</summary>
-    bool SerializeUInt128(ref UInt128 value);
-#endif // NET7_0_OR_GREATER
+    bool SerializeUInt128(ref UInt128Value value);
 
     /// <summary>Serializes a boolean value with one bit.</summary>
     bool SerializeBool(ref bool value);
@@ -231,19 +227,17 @@ public interface IBitStream
     /// contract.</summary>
     bool SerializeFixed(ref ushort value, int integerBits, int fractionBits, long min, long max);
 
-#if NET7_0_OR_GREATER // the 128 bit surface needs Int128/UInt128 (.NET 7+) — absent on Unity-class runtimes
     /// <summary>Serializes a fixed point value held in signed 128 bit storage as
-    /// Q integerBits.fractionBits (Q112.16 in an Int128 is (112, 16), Q64.64 is
+    /// Q integerBits.fractionBits (Q112.16 in an Int128Value is (112, 16), Q64.64 is
     /// (64, 64)). The offset is written in 32 bit groups from least significant
     /// upward, up to four groups. See the signed 64 bit overload for the rest of the
     /// contract.</summary>
-    bool SerializeFixed(ref Int128 value, int integerBits, int fractionBits, long min, long max);
+    bool SerializeFixed(ref Int128Value value, int integerBits, int fractionBits, long min, long max);
 
     /// <summary>Serializes a fixed point value held in unsigned 128 bit storage as
     /// Q integerBits.fractionBits. See the 128 bit signed overload for the
     /// contract.</summary>
-    bool SerializeFixed(ref UInt128 value, int integerBits, int fractionBits, long min, long max);
-#endif // NET7_0_OR_GREATER
+    bool SerializeFixed(ref UInt128Value value, int integerBits, int fractionBits, long min, long max);
 
     /// <summary>Serializes an array of bytes. The stream aligns to a byte boundary
     /// first, then block copies the data. Both sides must know the length: it is not
@@ -332,23 +326,21 @@ public static class SerializeUtil
         return min == max ? 0 : 64 - SerializeCompat.LeadingZeroCount(max - min);
     }
 
-#if NET7_0_OR_GREATER // the 128 bit surface needs Int128/UInt128 (.NET 7+) — absent on Unity-class runtimes
     /// <summary>Returns the number of bits required to serialize a 128 bit integer in
     /// range [min,max]. The result is in [0,128]. The subtraction is performed in the
     /// unsigned domain, so ranges wider than 2^127 are exact.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int BitsRequired128(UInt128 min, UInt128 max)
+    public static int BitsRequired128(UInt128Value min, UInt128Value max)
     {
         if (min == max)
         {
             return 0;
         }
         // subtract in the unsigned domain: the range may be wider than 2^127
-        UInt128 diff = max - min;
+        UInt128Value diff = max - min;
         ulong high = (ulong)(diff >> 64);
         return high != 0 ? 64 + BitsRequired64(0, high) : BitsRequired64(0, (ulong)diff);
     }
-#endif // NET7_0_OR_GREATER
 
     /// <summary>Converts a signed integer to an unsigned integer with zig-zag encoding.
     /// 0,-1,+1,-2,+2... becomes 0,1,2,3,4...</summary>
@@ -559,7 +551,6 @@ internal static class SerializeInternal
         bits = SerializeUtil.BitsRequired64(rawMin, rawMax);
     }
 
-#if NET7_0_OR_GREATER // the 128 bit surface needs Int128/UInt128 (.NET 7+) — absent on Unity-class runtimes
     /// <summary>
     /// The 128 bit storage counterpart of FixedPointParams: raw bounds in the
     /// unsigned 128 bit domain, where two's complement wrap is exact for signed
@@ -570,15 +561,14 @@ internal static class SerializeInternal
     internal static void FixedPointParams128(
         bool storageSigned, int integerBits, int fractionBits,
         long minUnits, long maxUnits,
-        out UInt128 rawMin, out UInt128 rawMax, out int bits)
+        out UInt128Value rawMin, out UInt128Value rawMax, out int bits)
     {
         ValidateFixedPointFormat(128, storageSigned, integerBits, fractionBits, minUnits, maxUnits);
-        // the Int128 conversion sign extends the whole unit bounds before the shift
-        rawMin = (UInt128)(Int128)minUnits << fractionBits;
-        rawMax = (UInt128)(Int128)maxUnits << fractionBits;
+        // the Int128Value conversion sign extends the whole unit bounds before the shift
+        rawMin = (UInt128Value)(Int128Value)minUnits << fractionBits;
+        rawMax = (UInt128Value)(Int128Value)maxUnits << fractionBits;
         bits = SerializeUtil.BitsRequired64((ulong)minUnits, (ulong)maxUnits) + fractionBits;
     }
-#endif // NET7_0_OR_GREATER
 }
 
 /// <summary>
@@ -1181,12 +1171,11 @@ public sealed class WriteStream : IBitStream
         return true;
     }
 
-#if NET7_0_OR_GREATER // the 128 bit surface needs Int128/UInt128 (.NET 7+) — absent on Unity-class runtimes
     /// <summary>Writes a value in 32 bit groups, least significant group first: full
     /// 32 bit groups from the bottom with the final group carrying the remainder —
     /// the shared group structure of the 128 bit paths. bits must be in [1,128] and
     /// already bounds checked.</summary>
-    private void WriteGroups128(UInt128 value, int bits)
+    private void WriteGroups128(UInt128Value value, int bits)
     {
         if (bits <= 32)
         {
@@ -1213,7 +1202,7 @@ public sealed class WriteStream : IBitStream
     }
 
     /// <inheritdoc/>
-    public bool SerializeInt128(ref Int128 value, Int128 min, Int128 max)
+    public bool SerializeInt128(ref Int128Value value, Int128Value min, Int128Value max)
     {
         if (min >= max)
         {
@@ -1223,14 +1212,14 @@ public sealed class WriteStream : IBitStream
         {
             return false;
         }
-        Int128 v = value;
+        Int128Value v = value;
         if (v < min || v > max)
         {
             return Fail(SerializeError.ValueOutOfRange);
         }
-        int bits = SerializeUtil.BitsRequired128((UInt128)min, (UInt128)max);
+        int bits = SerializeUtil.BitsRequired128((UInt128Value)min, (UInt128Value)max);
         // subtract in the unsigned domain: the range may be wider than 2^127
-        UInt128 unsigned = (UInt128)v - (UInt128)min;
+        UInt128Value unsigned = (UInt128Value)v - (UInt128Value)min;
         if (_writer.BitsWritten + bits > _writer.NumBits)
         {
             return Fail(SerializeError.Overflow);
@@ -1238,7 +1227,6 @@ public sealed class WriteStream : IBitStream
         WriteGroups128(unsigned, bits);
         return true;
     }
-#endif // NET7_0_OR_GREATER
 
     /// <inheritdoc/>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1269,9 +1257,8 @@ public sealed class WriteStream : IBitStream
         return true;
     }
 
-#if NET7_0_OR_GREATER // the 128 bit surface needs Int128/UInt128 (.NET 7+) — absent on Unity-class runtimes
     /// <inheritdoc/>
-    public bool SerializeUInt128(ref UInt128 value)
+    public bool SerializeUInt128(ref UInt128Value value)
     {
         if (_error != SerializeError.None)
         {
@@ -1285,7 +1272,6 @@ public sealed class WriteStream : IBitStream
         WriteGroups128(value, 128);
         return true;
     }
-#endif // NET7_0_OR_GREATER
 
     /// <inheritdoc/>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1362,17 +1348,16 @@ public sealed class WriteStream : IBitStream
         return true;
     }
 
-#if NET7_0_OR_GREATER // the 128 bit surface needs Int128/UInt128 (.NET 7+) — absent on Unity-class runtimes
     /// <summary>The 128 bit storage counterpart of WriteFixed: the offset is written
     /// in 32 bit groups, least significant group first.</summary>
-    private bool WriteFixed128(UInt128 raw, UInt128 rawMin, UInt128 rawMax, int bits)
+    private bool WriteFixed128(UInt128Value raw, UInt128Value rawMin, UInt128Value rawMax, int bits)
     {
         if (_error != SerializeError.None)
         {
             return false;
         }
         // subtract in the unsigned domain: the raw range may be wider than 2^127
-        UInt128 offset = raw - rawMin;
+        UInt128Value offset = raw - rawMin;
         if (offset > rawMax - rawMin)
         {
             return Fail(SerializeError.ValueOutOfRange);
@@ -1384,7 +1369,6 @@ public sealed class WriteStream : IBitStream
         WriteGroups128(offset, bits);
         return true;
     }
-#endif // NET7_0_OR_GREATER
 
     /// <inheritdoc/>
     public bool SerializeFixed(ref long value, int integerBits, int fractionBits, long min, long max)
@@ -1434,23 +1418,21 @@ public sealed class WriteStream : IBitStream
         return WriteFixed(value, rawMin, rawMax, bits);
     }
 
-#if NET7_0_OR_GREATER // the 128 bit surface needs Int128/UInt128 (.NET 7+) — absent on Unity-class runtimes
     /// <inheritdoc/>
-    public bool SerializeFixed(ref Int128 value, int integerBits, int fractionBits, long min, long max)
+    public bool SerializeFixed(ref Int128Value value, int integerBits, int fractionBits, long min, long max)
     {
         SerializeInternal.FixedPointParams128(true, integerBits, fractionBits, min, max,
-            out UInt128 rawMin, out UInt128 rawMax, out int bits);
-        return WriteFixed128((UInt128)value, rawMin, rawMax, bits);
+            out UInt128Value rawMin, out UInt128Value rawMax, out int bits);
+        return WriteFixed128((UInt128Value)value, rawMin, rawMax, bits);
     }
 
     /// <inheritdoc/>
-    public bool SerializeFixed(ref UInt128 value, int integerBits, int fractionBits, long min, long max)
+    public bool SerializeFixed(ref UInt128Value value, int integerBits, int fractionBits, long min, long max)
     {
         SerializeInternal.FixedPointParams128(false, integerBits, fractionBits, min, max,
-            out UInt128 rawMin, out UInt128 rawMax, out int bits);
+            out UInt128Value rawMin, out UInt128Value rawMax, out int bits);
         return WriteFixed128(value, rawMin, rawMax, bits);
     }
-#endif // NET7_0_OR_GREATER
 
     /// <inheritdoc/>
     public bool SerializeBytes(Span<byte> data)
@@ -1870,12 +1852,11 @@ public sealed class ReadStream : IBitStream
         return true;
     }
 
-#if NET7_0_OR_GREATER // the 128 bit surface needs Int128/UInt128 (.NET 7+) — absent on Unity-class runtimes
     /// <summary>Reads a value written in 32 bit groups, least significant group
     /// first: full 32 bit groups from the bottom with the final group carrying the
     /// remainder — the shared group structure of the 128 bit paths. bits must be in
     /// [1,128] and already bounds checked.</summary>
-    private UInt128 ReadGroups128(int bits)
+    private UInt128Value ReadGroups128(int bits)
     {
         if (bits <= 32)
         {
@@ -1892,19 +1873,19 @@ public sealed class ReadStream : IBitStream
             uint g0 = _reader.ReadBitsUnchecked(32);
             uint g1 = _reader.ReadBitsUnchecked(32);
             uint g2 = _reader.ReadBitsUnchecked(bits - 64);
-            return (UInt128)g2 << 64 | ((ulong)g1 << 32 | g0);
+            return (UInt128Value)g2 << 64 | ((ulong)g1 << 32 | g0);
         }
         {
             uint g0 = _reader.ReadBitsUnchecked(32);
             uint g1 = _reader.ReadBitsUnchecked(32);
             uint g2 = _reader.ReadBitsUnchecked(32);
             uint g3 = _reader.ReadBitsUnchecked(bits - 96);
-            return (UInt128)g3 << 96 | (UInt128)g2 << 64 | ((ulong)g1 << 32 | g0);
+            return (UInt128Value)g3 << 96 | (UInt128Value)g2 << 64 | ((ulong)g1 << 32 | g0);
         }
     }
 
     /// <inheritdoc/>
-    public bool SerializeInt128(ref Int128 value, Int128 min, Int128 max)
+    public bool SerializeInt128(ref Int128Value value, Int128Value min, Int128Value max)
     {
         if (min >= max)
         {
@@ -1914,21 +1895,20 @@ public sealed class ReadStream : IBitStream
         {
             return false;
         }
-        int bits = SerializeUtil.BitsRequired128((UInt128)min, (UInt128)max);
+        int bits = SerializeUtil.BitsRequired128((UInt128Value)min, (UInt128Value)max);
         if (_reader.BitsRead + bits > _reader.NumBits)
         {
             return Fail(SerializeError.Overflow);
         }
-        UInt128 unsigned = ReadGroups128(bits);
+        UInt128Value unsigned = ReadGroups128(bits);
         // compare and add in the unsigned domain: the range may be wider than 2^127
-        if (unsigned > (UInt128)max - (UInt128)min)
+        if (unsigned > (UInt128Value)max - (UInt128Value)min)
         {
             return Fail(SerializeError.ValueOutOfRange);
         }
-        value = (Int128)(unsigned + (UInt128)min);
+        value = (Int128Value)(unsigned + (UInt128Value)min);
         return true;
     }
-#endif // NET7_0_OR_GREATER
 
     /// <inheritdoc/>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1978,9 +1958,8 @@ public sealed class ReadStream : IBitStream
         return true;
     }
 
-#if NET7_0_OR_GREATER // the 128 bit surface needs Int128/UInt128 (.NET 7+) — absent on Unity-class runtimes
     /// <inheritdoc/>
-    public bool SerializeUInt128(ref UInt128 value)
+    public bool SerializeUInt128(ref UInt128Value value)
     {
         if (_error != SerializeError.None)
         {
@@ -1994,7 +1973,6 @@ public sealed class ReadStream : IBitStream
         value = ReadGroups128(128);
         return true;
     }
-#endif // NET7_0_OR_GREATER
 
     /// <inheritdoc/>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -2090,9 +2068,8 @@ public sealed class ReadStream : IBitStream
         return true;
     }
 
-#if NET7_0_OR_GREATER // the 128 bit surface needs Int128/UInt128 (.NET 7+) — absent on Unity-class runtimes
     /// <summary>The 128 bit storage counterpart of ReadFixed.</summary>
-    private bool ReadFixed128(ref UInt128 raw, UInt128 rawMin, UInt128 rawMax, int bits)
+    private bool ReadFixed128(ref UInt128Value raw, UInt128Value rawMin, UInt128Value rawMax, int bits)
     {
         if (_error != SerializeError.None)
         {
@@ -2102,7 +2079,7 @@ public sealed class ReadStream : IBitStream
         {
             return Fail(SerializeError.Overflow);
         }
-        UInt128 offset = ReadGroups128(bits);
+        UInt128Value offset = ReadGroups128(bits);
         // compare and add in the unsigned domain: the raw range may be wider than 2^127
         if (offset > rawMax - rawMin)
         {
@@ -2111,7 +2088,6 @@ public sealed class ReadStream : IBitStream
         raw = rawMin + offset;
         return true;
     }
-#endif // NET7_0_OR_GREATER
 
     /// <inheritdoc/>
     public bool SerializeFixed(ref long value, int integerBits, int fractionBits, long min, long max)
@@ -2197,27 +2173,26 @@ public sealed class ReadStream : IBitStream
         return true;
     }
 
-#if NET7_0_OR_GREATER // the 128 bit surface needs Int128/UInt128 (.NET 7+) — absent on Unity-class runtimes
     /// <inheritdoc/>
-    public bool SerializeFixed(ref Int128 value, int integerBits, int fractionBits, long min, long max)
+    public bool SerializeFixed(ref Int128Value value, int integerBits, int fractionBits, long min, long max)
     {
         SerializeInternal.FixedPointParams128(true, integerBits, fractionBits, min, max,
-            out UInt128 rawMin, out UInt128 rawMax, out int bits);
-        UInt128 raw = 0;
+            out UInt128Value rawMin, out UInt128Value rawMax, out int bits);
+        UInt128Value raw = 0;
         if (!ReadFixed128(ref raw, rawMin, rawMax, bits))
         {
             return false;
         }
-        value = (Int128)raw;
+        value = (Int128Value)raw;
         return true;
     }
 
     /// <inheritdoc/>
-    public bool SerializeFixed(ref UInt128 value, int integerBits, int fractionBits, long min, long max)
+    public bool SerializeFixed(ref UInt128Value value, int integerBits, int fractionBits, long min, long max)
     {
         SerializeInternal.FixedPointParams128(false, integerBits, fractionBits, min, max,
-            out UInt128 rawMin, out UInt128 rawMax, out int bits);
-        UInt128 raw = 0;
+            out UInt128Value rawMin, out UInt128Value rawMax, out int bits);
+        UInt128Value raw = 0;
         if (!ReadFixed128(ref raw, rawMin, rawMax, bits))
         {
             return false;
@@ -2225,7 +2200,6 @@ public sealed class ReadStream : IBitStream
         value = raw;
         return true;
     }
-#endif // NET7_0_OR_GREATER
 
     /// <inheritdoc/>
     public bool SerializeBytes(Span<byte> data)
@@ -2575,9 +2549,8 @@ public sealed class MeasureStream : IBitStream
         return Measure(SerializeUtil.BitsRequired64((ulong)min, (ulong)max));
     }
 
-#if NET7_0_OR_GREATER // the 128 bit surface needs Int128/UInt128 (.NET 7+) — absent on Unity-class runtimes
     /// <inheritdoc/>
-    public bool SerializeInt128(ref Int128 value, Int128 min, Int128 max)
+    public bool SerializeInt128(ref Int128Value value, Int128Value min, Int128Value max)
     {
         if (min >= max)
         {
@@ -2591,9 +2564,8 @@ public sealed class MeasureStream : IBitStream
         {
             return Fail(SerializeError.ValueOutOfRange);
         }
-        return Measure(SerializeUtil.BitsRequired128((UInt128)min, (UInt128)max));
+        return Measure(SerializeUtil.BitsRequired128((UInt128Value)min, (UInt128Value)max));
     }
-#endif // NET7_0_OR_GREATER
 
     /// <inheritdoc/>
     public bool SerializeByte(ref byte value) => Measure(8);
@@ -2607,10 +2579,8 @@ public sealed class MeasureStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeUInt64(ref ulong value) => Measure(64);
 
-#if NET7_0_OR_GREATER // the 128 bit surface needs Int128/UInt128 (.NET 7+) — absent on Unity-class runtimes
     /// <inheritdoc/>
-    public bool SerializeUInt128(ref UInt128 value) => Measure(128);
-#endif // NET7_0_OR_GREATER
+    public bool SerializeUInt128(ref UInt128Value value) => Measure(128);
 
     /// <inheritdoc/>
     public bool SerializeBool(ref bool value) => Measure(1);
@@ -2647,9 +2617,8 @@ public sealed class MeasureStream : IBitStream
         return Measure(bits);
     }
 
-#if NET7_0_OR_GREATER // the 128 bit surface needs Int128/UInt128 (.NET 7+) — absent on Unity-class runtimes
     /// <summary>The 128 bit storage counterpart of MeasureFixed.</summary>
-    private bool MeasureFixed128(UInt128 raw, UInt128 rawMin, UInt128 rawMax, int bits)
+    private bool MeasureFixed128(UInt128Value raw, UInt128Value rawMin, UInt128Value rawMax, int bits)
     {
         if (_error != SerializeError.None)
         {
@@ -2662,7 +2631,6 @@ public sealed class MeasureStream : IBitStream
         }
         return Measure(bits);
     }
-#endif // NET7_0_OR_GREATER
 
     /// <inheritdoc/>
     public bool SerializeFixed(ref long value, int integerBits, int fractionBits, long min, long max)
@@ -2712,23 +2680,21 @@ public sealed class MeasureStream : IBitStream
         return MeasureFixed(value, rawMin, rawMax, bits);
     }
 
-#if NET7_0_OR_GREATER // the 128 bit surface needs Int128/UInt128 (.NET 7+) — absent on Unity-class runtimes
     /// <inheritdoc/>
-    public bool SerializeFixed(ref Int128 value, int integerBits, int fractionBits, long min, long max)
+    public bool SerializeFixed(ref Int128Value value, int integerBits, int fractionBits, long min, long max)
     {
         SerializeInternal.FixedPointParams128(true, integerBits, fractionBits, min, max,
-            out UInt128 rawMin, out UInt128 rawMax, out int bits);
-        return MeasureFixed128((UInt128)value, rawMin, rawMax, bits);
+            out UInt128Value rawMin, out UInt128Value rawMax, out int bits);
+        return MeasureFixed128((UInt128Value)value, rawMin, rawMax, bits);
     }
 
     /// <inheritdoc/>
-    public bool SerializeFixed(ref UInt128 value, int integerBits, int fractionBits, long min, long max)
+    public bool SerializeFixed(ref UInt128Value value, int integerBits, int fractionBits, long min, long max)
     {
         SerializeInternal.FixedPointParams128(false, integerBits, fractionBits, min, max,
-            out UInt128 rawMin, out UInt128 rawMax, out int bits);
+            out UInt128Value rawMin, out UInt128Value rawMax, out int bits);
         return MeasureFixed128(value, rawMin, rawMax, bits);
     }
-#endif // NET7_0_OR_GREATER
 
     /// <inheritdoc/>
     public bool SerializeBytes(Span<byte> data)
@@ -3308,12 +3274,11 @@ public ref struct WriteBatch
         return ok;
     }
 
-#if NET7_0_OR_GREATER // the 128 bit surface needs Int128/UInt128 (.NET 7+) — absent on Unity-class runtimes
     /// <summary>Serializes a signed 128 bit integer in [min,max]. Delegated: syncs
     /// state down, runs WriteStream.SerializeInt128, recaptures — byte identical to
     /// the stream call.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool SerializeInt128(ref Int128 value, Int128 min, Int128 max)
+    public bool SerializeInt128(ref Int128Value value, Int128Value min, Int128Value max)
     {
         Sync();
         bool ok = _stream.SerializeInt128(ref value, min, max);
@@ -3324,14 +3289,13 @@ public ref struct WriteBatch
     /// <summary>Serializes an unsigned 128 bit integer as a full 128 bits. Delegated:
     /// syncs state down, runs WriteStream.SerializeUInt128, recaptures.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool SerializeUInt128(ref UInt128 value)
+    public bool SerializeUInt128(ref UInt128Value value)
     {
         Sync();
         bool ok = _stream.SerializeUInt128(ref value);
         Recapture();
         return ok;
     }
-#endif // NET7_0_OR_GREATER
 
     /// <summary>Serializes a fixed point value with signed 64 bit storage. Delegated:
     /// syncs state down, runs the WriteStream overload, recaptures.</summary>
@@ -3399,11 +3363,10 @@ public ref struct WriteBatch
         return ok;
     }
 
-#if NET7_0_OR_GREATER // the 128 bit surface needs Int128/UInt128 (.NET 7+) — absent on Unity-class runtimes
     /// <summary>Serializes a fixed point value with signed 128 bit storage. Delegated:
     /// syncs state down, runs the WriteStream overload, recaptures.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool SerializeFixed(ref Int128 value, int integerBits, int fractionBits, long min, long max)
+    public bool SerializeFixed(ref Int128Value value, int integerBits, int fractionBits, long min, long max)
     {
         Sync();
         bool ok = _stream.SerializeFixed(ref value, integerBits, fractionBits, min, max);
@@ -3414,14 +3377,13 @@ public ref struct WriteBatch
     /// <summary>Serializes a fixed point value with unsigned 128 bit storage. Delegated:
     /// syncs state down, runs the WriteStream overload, recaptures.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool SerializeFixed(ref UInt128 value, int integerBits, int fractionBits, long min, long max)
+    public bool SerializeFixed(ref UInt128Value value, int integerBits, int fractionBits, long min, long max)
     {
         Sync();
         bool ok = _stream.SerializeFixed(ref value, integerBits, fractionBits, min, max);
         Recapture();
         return ok;
     }
-#endif // NET7_0_OR_GREATER
 
     /// <summary>The number of bits required to align to the next byte boundary, in
     /// [0,7], from the batch's current position.</summary>
@@ -3889,11 +3851,10 @@ public ref struct ReadBatch
         return ok;
     }
 
-#if NET7_0_OR_GREATER // the 128 bit surface needs Int128/UInt128 (.NET 7+) — absent on Unity-class runtimes
     /// <summary>Serializes a signed 128 bit integer in [min,max]. Delegated: syncs
     /// state down, runs ReadStream.SerializeInt128, recaptures — identical decode.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool SerializeInt128(ref Int128 value, Int128 min, Int128 max)
+    public bool SerializeInt128(ref Int128Value value, Int128Value min, Int128Value max)
     {
         Sync();
         bool ok = _stream.SerializeInt128(ref value, min, max);
@@ -3904,14 +3865,13 @@ public ref struct ReadBatch
     /// <summary>Serializes an unsigned 128 bit integer as a full 128 bits. Delegated:
     /// syncs state down, runs ReadStream.SerializeUInt128, recaptures.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool SerializeUInt128(ref UInt128 value)
+    public bool SerializeUInt128(ref UInt128Value value)
     {
         Sync();
         bool ok = _stream.SerializeUInt128(ref value);
         Recapture();
         return ok;
     }
-#endif // NET7_0_OR_GREATER
 
     /// <summary>Serializes a fixed point value with signed 64 bit storage. Delegated:
     /// syncs state down, runs the ReadStream overload, recaptures.</summary>
@@ -3979,11 +3939,10 @@ public ref struct ReadBatch
         return ok;
     }
 
-#if NET7_0_OR_GREATER // the 128 bit surface needs Int128/UInt128 (.NET 7+) — absent on Unity-class runtimes
     /// <summary>Serializes a fixed point value with signed 128 bit storage. Delegated:
     /// syncs state down, runs the ReadStream overload, recaptures.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool SerializeFixed(ref Int128 value, int integerBits, int fractionBits, long min, long max)
+    public bool SerializeFixed(ref Int128Value value, int integerBits, int fractionBits, long min, long max)
     {
         Sync();
         bool ok = _stream.SerializeFixed(ref value, integerBits, fractionBits, min, max);
@@ -3994,14 +3953,13 @@ public ref struct ReadBatch
     /// <summary>Serializes a fixed point value with unsigned 128 bit storage. Delegated:
     /// syncs state down, runs the ReadStream overload, recaptures.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool SerializeFixed(ref UInt128 value, int integerBits, int fractionBits, long min, long max)
+    public bool SerializeFixed(ref UInt128Value value, int integerBits, int fractionBits, long min, long max)
     {
         Sync();
         bool ok = _stream.SerializeFixed(ref value, integerBits, fractionBits, min, max);
         Recapture();
         return ok;
     }
-#endif // NET7_0_OR_GREATER
 
     /// <summary>The number of bits required to align to the next byte boundary, in
     /// [0,7], from the batch's current position.</summary>
@@ -4035,7 +3993,7 @@ public ref struct ReadBatch
 /// <summary>
 /// Framework-compat shims: the single implementations every TFM shares, so
 /// wire behavior can never diverge by framework. netstandard2.1 (Unity-class
-/// runtimes: C# 9, no Int128, no BitOperations, no Rune, no Utf8.IsValid) is
+/// runtimes: C# 9, no Int128Value, no BitOperations, no Rune, no Utf8.IsValid) is
 /// a first-class target — these shims are the whole difference, and only
 /// LeadingZeroCount branches per framework (to keep the hardware intrinsic
 /// where it exists; the software fallback is bit-identical by definition,
