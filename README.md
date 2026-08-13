@@ -172,4 +172,4 @@ Two further rules:
 
 ## License
 
-AGPL-3.0. See [LICENSE](LICENSE).
+BSD 3-Clause. See [LICENSE](LICENSE).
