@@ -1,6 +1,6 @@
 # serialize.cs
 
-**Status: DRAFT** — not yet released.
+**Status: released.** See the [releases page](https://github.com/mas-bandwidth/serialize.cs/releases) for tagged versions.
 
 C# port of the C++ [serialize](https://github.com/mas-bandwidth/serialize) bitpacking
 library. Produces bit-for-bit identical output to the C++ library (and to the Go and
