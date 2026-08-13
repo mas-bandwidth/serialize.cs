@@ -406,7 +406,7 @@ internal static class SerializeInternal
 {
     internal const string BitsRangeMessage = "bits must be in [1,32]";
     internal const string BitsRange64Message = "bits must be in [1,64]";
-    internal const string MinMaxMessage = "min must be less than max";
+    internal const string MinMaxMessage = "min must not be greater than max";
     internal const string BufferSizeMessage = "string buffer size must be at least 2";
     internal const string FloatParamsMessage = "compressed float requires min < max and resolution > 0";
     internal const string WriteOverflowMessage = "bit writer overflow";
@@ -502,7 +502,7 @@ internal static class SerializeInternal
         {
             throw new ArgumentException(FixedWidthMessage);
         }
-        if (minUnits >= maxUnits)
+        if (minUnits > maxUnits)
         {
             throw new ArgumentException(MinMaxMessage);
         }
@@ -1119,7 +1119,7 @@ public sealed class WriteStream : IBitStream
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt(ref int value, int min, int max)
     {
-        if (min >= max)
+        if (min > max)
         {
             throw new ArgumentException(SerializeInternal.MinMaxMessage);
         }
@@ -1141,7 +1141,7 @@ public sealed class WriteStream : IBitStream
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt64(ref long value, long min, long max)
     {
-        if (min >= max)
+        if (min > max)
         {
             throw new ArgumentException(SerializeInternal.MinMaxMessage);
         }
@@ -1204,7 +1204,7 @@ public sealed class WriteStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeInt128(ref Int128Value value, Int128Value min, Int128Value max)
     {
-        if (min >= max)
+        if (min > max)
         {
             throw new ArgumentException(SerializeInternal.MinMaxMessage);
         }
@@ -1791,7 +1791,7 @@ public sealed class ReadStream : IBitStream
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt(ref int value, int min, int max)
     {
-        if (min >= max)
+        if (min > max)
         {
             throw new ArgumentException(SerializeInternal.MinMaxMessage);
         }
@@ -1818,7 +1818,7 @@ public sealed class ReadStream : IBitStream
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt64(ref long value, long min, long max)
     {
-        if (min >= max)
+        if (min > max)
         {
             throw new ArgumentException(SerializeInternal.MinMaxMessage);
         }
@@ -1887,7 +1887,7 @@ public sealed class ReadStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeInt128(ref Int128Value value, Int128Value min, Int128Value max)
     {
-        if (min >= max)
+        if (min > max)
         {
             throw new ArgumentException(SerializeInternal.MinMaxMessage);
         }
@@ -2516,7 +2516,7 @@ public sealed class MeasureStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeInt(ref int value, int min, int max)
     {
-        if (min >= max)
+        if (min > max)
         {
             throw new ArgumentException(SerializeInternal.MinMaxMessage);
         }
@@ -2534,7 +2534,7 @@ public sealed class MeasureStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeInt64(ref long value, long min, long max)
     {
-        if (min >= max)
+        if (min > max)
         {
             throw new ArgumentException(SerializeInternal.MinMaxMessage);
         }
@@ -2552,7 +2552,7 @@ public sealed class MeasureStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeInt128(ref Int128Value value, Int128Value min, Int128Value max)
     {
-        if (min >= max)
+        if (min > max)
         {
             throw new ArgumentException(SerializeInternal.MinMaxMessage);
         }
@@ -3057,7 +3057,7 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt(ref int value, int min, int max)
     {
-        if (min >= max)
+        if (min > max)
         {
             throw new ArgumentException(SerializeInternal.MinMaxMessage);
         }
@@ -3080,7 +3080,7 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt64(ref long value, long min, long max)
     {
-        if (min >= max)
+        if (min > max)
         {
             throw new ArgumentException(SerializeInternal.MinMaxMessage);
         }
@@ -3582,7 +3582,7 @@ public ref struct ReadBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt(ref int value, int min, int max)
     {
-        if (min >= max)
+        if (min > max)
         {
             throw new ArgumentException(SerializeInternal.MinMaxMessage);
         }
@@ -3610,7 +3610,7 @@ public ref struct ReadBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt64(ref long value, long min, long max)
     {
-        if (min >= max)
+        if (min > max)
         {
             throw new ArgumentException(SerializeInternal.MinMaxMessage);
         }

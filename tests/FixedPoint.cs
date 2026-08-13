@@ -317,6 +317,40 @@ internal static partial class Program
         }
     }
 
+    /// <summary>A degenerate fixed point range (min == max) is legal and costs ZERO
+    /// BITS -- the value is known from the range alone, exactly as for a ranged
+    /// integer. Fixed point with fraction_bits = 0 IS a ranged integer, so treating
+    /// the two differently here would be an inconsistency in the format rather than
+    /// a safety check.</summary>
+    private static void CheckFixedDegenerate()
+    {
+        byte[] buffer = new byte[32];
+
+        WriteStream write = new WriteStream(buffer);
+        Int128Value value = 100L << 16;         // 100.0 in Q16.16
+        Check(SerializeFixedAs(FixedStorage.I32, write, ref value, 16, 16, 100, 100),
+            "degenerate fixed range must serialize");
+        Check(write.BitsProcessed == 0,
+            $"degenerate fixed range wrote {write.BitsProcessed} bits, expected 0");
+        write.Flush();
+
+        ReadStream read = new ReadStream(buffer, 8);
+        Int128Value readBack = 0;
+        Check(SerializeFixedAs(FixedStorage.I32, read, ref readBack, 16, 16, 100, 100),
+            "degenerate fixed range must deserialize");
+        Check(readBack == (Int128Value)(100L << 16),
+            $"degenerate fixed read back {readBack}, expected {100L << 16}");
+        Check(read.BitsProcessed == 0,
+            $"degenerate fixed range read {read.BitsProcessed} bits, expected 0");
+
+        MeasureStream measure = new MeasureStream();
+        Int128Value measured = 100L << 16;
+        Check(SerializeFixedAs(FixedStorage.I32, measure, ref measured, 16, 16, 100, 100),
+            "degenerate fixed range must measure");
+        Check(measure.BitsProcessed == 0,
+            $"measure says the degenerate fixed range costs {measure.BitsProcessed} bits, expected 0");
+    }
+
     private static void TestSerializeFixed()
     {
         // the storage x Q format matrix, mirroring the C++ test_serialize_fixed
@@ -377,8 +411,9 @@ internal static partial class Program
         // living in comments
         CheckFixedThrows(FixedStorage.I32, 16, 8, 0, 100);          // 16 + 8 != 32: the Q format doesn't fill the storage type
         CheckFixedThrows(FixedStorage.I32, 16, 16, -40000, +40000); // bounds exceed the Q16.16 whole unit capacity [-32768,32767]
-        CheckFixedThrows(FixedStorage.I32, 16, 16, 100, 100);       // min must be below max
-        CheckFixedThrows(FixedStorage.I32, 16, 16, 200, 100);       // min must be below max
+        // [100,100] is NOT here: a degenerate range is legal and costs zero bits
+        // (STANDARD.md), and CheckFixedDegenerate below pins that.
+        CheckFixedThrows(FixedStorage.I32, 16, 16, 200, 100);       // min must not be above max
         CheckFixedThrows(FixedStorage.I32, 0, 32, 0, 100);          // at least one integer bit
         CheckFixedThrows(FixedStorage.I32, 33, -1, 0, 100);         // fraction bits can't be negative
         CheckFixedThrows(FixedStorage.U32, 16, 16, -5, 100);        // negative bound on unsigned storage
@@ -386,6 +421,8 @@ internal static partial class Program
         CheckFixedThrows(FixedStorage.I128, 16, 16, 0, 100);        // 16 + 16 != 128
         CheckFixedThrows(FixedStorage.I128, 16, 112, -40000, +40000); // bounds exceed the wide Q16.112 whole unit capacity
         CheckFixedThrows(FixedStorage.U128, 112, 16, -5, 100);      // negative bound on unsigned wide storage
+
+        CheckFixedDegenerate();
     }
 
     /// <summary>Hand builds a stream encoding an offset of exactly rawRange + 1 — one

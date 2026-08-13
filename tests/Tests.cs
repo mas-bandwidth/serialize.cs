@@ -359,6 +359,7 @@ internal static partial class Program
         }
 
         RunTest("test_bitpacker", TestBitpacker);
+        RunTest("test_degenerate_range", TestDegenerateRange);
         RunTest("test_bits_required", TestBitsRequired);
         RunTest("test_bits_required64", TestBitsRequired64);
         RunTest("test_bits_required128", TestBitsRequired128);
@@ -492,6 +493,70 @@ internal static partial class Program
             Check(!reader.WouldReadPastEnd((int)reader.BitsRemaining), "reading the remaining bits must not read past the end");
             Check(reader.WouldReadPastEnd((int)reader.BitsRemaining + 1), "reading past the remaining bits must report past the end");
         }
+    }
+
+    // STANDARD.md: a degenerate range where min == max costs ZERO BITS -- the
+    // value is known from the range alone and nothing is written.
+    //
+    // Every stream used to throw ArgumentException on min >= max, rejecting
+    // exactly that case. The C++ and C ports support it, so this was a
+    // cross-language divergence: the same sequence works against one runtime
+    // and throws against this one.
+    private static void TestDegenerateRange()
+    {
+        byte[] buffer = new byte[64];
+
+        WriteStream write = new WriteStream(buffer);
+        int degenerate = 5;
+        int after = 3;
+        Check(write.SerializeInt(ref degenerate, 5, 5), "write degenerate range");
+        Check(write.BitsProcessed == 0, $"degenerate range wrote {write.BitsProcessed} bits, expected 0");
+        Check(write.SerializeInt(ref after, 0, 7), "write after");
+        // the next field must still start at bit 0 -- if the degenerate range
+        // consumed bit space, everything downstream shifts and the wire stops
+        // matching the other ports
+        Check(write.BitsProcessed == 3, $"after the degenerate range the stream is at {write.BitsProcessed} bits, expected 3");
+        write.Flush();
+
+        ReadStream read = new ReadStream(buffer, (int)write.BytesProcessed);
+        int readDegenerate = 0;
+        int readAfter = 0;
+        Check(read.SerializeInt(ref readDegenerate, 5, 5), "read degenerate range");
+        Check(readDegenerate == 5, $"degenerate read back {readDegenerate}, expected 5 (recovered from the range)");
+        Check(read.BitsProcessed == 0, $"degenerate range read {read.BitsProcessed} bits, expected 0");
+        Check(read.SerializeInt(ref readAfter, 0, 7), "read after");
+        Check(readAfter == 3, $"after read back {readAfter}, expected 3");
+
+        MeasureStream measure = new MeasureStream();
+        int measured = 5;
+        Check(measure.SerializeInt(ref measured, 5, 5), "measure degenerate range");
+        Check(measure.BitsProcessed == 0, $"measure says the degenerate range costs {measure.BitsProcessed} bits, expected 0");
+
+        // 64 bit too
+        WriteStream write64 = new WriteStream(buffer);
+        long v64 = -42;
+        Check(write64.SerializeInt64(ref v64, -42, -42), "write degenerate 64");
+        Check(write64.BitsProcessed == 0, "degenerate 64 bit range must be free");
+        write64.Flush();
+        ReadStream read64 = new ReadStream(buffer, 8);
+        long out64 = 0;
+        Check(read64.SerializeInt64(ref out64, -42, -42), "read degenerate 64");
+        Check(out64 == -42, $"degenerate 64 read back {out64}, expected -42");
+
+        // Relaxing the guard was meant to admit the degenerate case, not to stop
+        // validating: an inverted range is still API misuse.
+        bool threw = false;
+        try
+        {
+            WriteStream bad = new WriteStream(buffer);
+            int v = 0;
+            bad.SerializeInt(ref v, 10, 5);
+        }
+        catch (ArgumentException)
+        {
+            threw = true;
+        }
+        Check(threw, "min > max must still throw");
     }
 
     private static void TestBitsRequired()
