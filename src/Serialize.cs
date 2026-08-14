@@ -3993,7 +3993,7 @@ public ref struct ReadBatch
 /// <summary>
 /// Framework-compat shims: the single implementations every TFM shares, so
 /// wire behavior can never diverge by framework. netstandard2.1 (Unity-class
-/// runtimes: C# 9, no Int128Value, no BitOperations, no Rune, no Utf8.IsValid) is
+/// runtimes: C# 9, no System.Int128, no BitOperations, no Rune, no Utf8.IsValid) is
 /// a first-class target — these shims are the whole difference, and only
 /// LeadingZeroCount branches per framework (to keep the hardware intrinsic
 /// where it exists; the software fallback is bit-identical by definition,

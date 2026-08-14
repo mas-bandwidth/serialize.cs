@@ -4,9 +4,10 @@
     <OutputType>Exe</OutputType>
     <!-- THE UNITY-CLASS GATE: this runner consumes the netstandard2.1 build
          of the library — the exact assembly surface a Unity project gets —
-         and runs the full suite minus the 128 bit tests (that surface is
-         gated to NET7_0_OR_GREATER and does not exist on 2.1). The golden
-         wire test inside proves the 2.1 compat shims byte-neutral. -->
+         and runs the full suite, the 128 bit tests included: that surface
+         speaks the emulated pair and exists on every TFM. The golden wire
+         test inside proves the 2.1 compat shims byte-neutral. The only tests
+         missing are the two System.Int128 oracle cross-checks below. -->
     <TargetFramework>net10.0</TargetFramework>
     <RootNamespace>Serialize.Tests</RootNamespace>
     <Nullable>enable</Nullable>

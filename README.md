@@ -6,8 +6,8 @@ C# port of the C++ [serialize](https://github.com/mas-bandwidth/serialize) bitpa
 library. Produces bit-for-bit identical output to the C++ library (and to the Go and
 Rust ports), so streams written in one language can be read by any other. Wire
 compatibility is proven, not asserted: a golden wire test pins 72 bytes copied verbatim
-from the C++ test suite, and a live interop harness cross-checks against the real
-`serialize.h` compiled with clang++.
+from the C++ test suite, and CI runs a live interop harness on every push against the
+real `serialize.h`, compiled with clang++ from a pinned C++ release.
 
 Family values: zero third-party dependencies (including test frameworks); malicious
 packet data never throws — reads fail cleanly with a sticky latched error (exceptions
@@ -16,35 +16,55 @@ are reserved for API misuse); no unsafe code; zero allocation on serialization p
 
 ## Layout
 
-- `src/Serialize.cs` — the whole library, one file (mirrors the C++ single header):
-  `BitWriter`, `BitReader`, `IBitStream`, `WriteStream`, `ReadStream`, `MeasureStream`,
-  `SerializeUtil`, `ISerializer`, plus the C#-only batch layer `WriteBatch` /
-  `ReadBatch` (see below).
+- `src/Serialize.cs` — the streams and the codec, one file (mirrors the C++ single
+  header): `BitWriter`, `BitReader`, `IBitStream`, `WriteStream`, `ReadStream`,
+  `MeasureStream`, `SerializeUtil`, `ISerializer`, plus the C#-only batch layer
+  `WriteBatch` / `ReadBatch` (see below).
+- `src/Int128Pair.cs` — `Int128Value` / `UInt128Value`, the emulated 128 bit pair the
+  128 bit surface speaks on every target framework (see below).
 - `tests/` — console test runner, no test framework: prints each test name, exit code
   is the verdict. Includes the golden wire test, an extended wire test pinning the
   64-bit paths, and deterministic differential/hostile seeded tests.
+- `tests-ns21/` — the same test sources compiled against the `netstandard2.1` build of
+  the library: the exact assembly surface a Unity project consumes. CI runs it.
 - `compat/` — the cross-language interop harness: `Compat.csproj` (C# half) and
   `cpp/compat.cpp` (C++ half, built against the real `serialize.h`).
+- `redteam/` — the hostile-input attack harness against the read path. It records
+  findings instead of exiting, so one run gives the whole picture; runs are manual and
+  CI only keeps it compiling.
 - `scripts/interop.sh` — the interop gate as one runnable command.
-- `STANDARD.md` — the wire format spec, vendored verbatim from the C++ repo
-  (family precedent: CI should diff it against upstream and fail on drift).
+- `.github/workflows/ci.yml` — three jobs: the test matrix (all three TFM legs, Linux
+  and macOS), the C++ interop gate, and the `STANDARD.md` spec-sync check.
+- `STANDARD.md` — the wire format spec, vendored verbatim from the C++ repo; the
+  spec-sync job diffs it against upstream and fails on drift.
+- `SECURITY.md` — how to report a vulnerability privately, and what is in scope.
 
 ## Build and test
 
 ```sh
-dotnet build src/Serialize.csproj                          # builds net8.0 + net10.0
+dotnet build src/Serialize.csproj                          # builds all three TFMs
 dotnet run --project tests/Tests.csproj -f net10.0         # add "short" to skip the 320 MB test
 dotnet run --project tests/Tests.csproj -f net8.0          # the LTS leg (needs the .NET 8
                                                            # runtime, or DOTNET_ROLL_FORWARD=LatestMajor)
+dotnet run --project tests-ns21/TestsNs21.csproj           # the Unity-class leg: the same tests
+                                                           # against the netstandard2.1 assembly
 dotnet run --project tests/Tests.csproj -f net10.0 -- golden   # run only tests matching a substring
 ```
 
-The library targets `net8.0` (LTS game servers) and `net10.0`. A
-`netstandard2.1` target for Unity-class runtimes is an open deliverable: it needs
-shims for `BitOperations`, the unsigned `BitConverter` bit casts, `Rune`
-enumeration and `Utf8.IsValid`, plus an emulated 128 bit pair standing in for
-`Int128`/`UInt128` (mirroring the C++ emulated types' two's complement
-semantics), each proven wire-neutral by the golden test per TFM before it ships.
+The library targets `net8.0` (LTS game servers), `net10.0`, and `netstandard2.1`
+for Unity-class runtimes (Unity 2021+ through Unity 6) — `LangVersion` is pinned
+to C# 9 on that target, so anything Unity's compiler would refuse fails here, in
+CI, rather than in the editor. The 2.1 target is not a reduced library: shims for
+`BitOperations`, the unsigned `BitConverter` bit casts, `Rune` enumeration and
+`Utf8.IsValid` sit at the bottom of `Serialize.cs` as the single implementation
+every TFM shares — unconditional except `LeadingZeroCount`, which keeps the
+hardware intrinsic where it is guaranteed and takes a bit-identical software
+fallback everywhere else — and the 128 bit surface runs there too, on the
+emulated pair (see below). CI runs the whole suite against the netstandard2.1
+assembly, golden wire pins included, which is what proves the shims wire-neutral.
+The only tests that leg skips are the two `System.Int128` oracle cross-checks,
+which need the framework type they check the pair against (49 tests there, 51 on
+`net8.0`/`net10.0`).
 
 ## Batches: the hot path for tiny messages
 
@@ -108,16 +128,25 @@ evaluate strictly; the compat sequence carries a value pinned on such a boundary
 instead of passing silently. (The Go port on ARM64 currently fuses and should be
 flagged upstream.)
 
-When CI is created, pin the C++ clone to one release tag — the Go and Rust ports
-pin `v1.4.3`; the sibling clone here is currently at a later head — and pick one
-tag for both the interop job and the spec-sync job.
+CI runs this gate in its own job, with `CXX=clang++` and the C++ clone checked out
+at release tag `v1.4.3` — the family-wide pin the Go and Rust ports build their
+interop gates against. Bump it deliberately, in its own commit. Locally the default
+compiler is fine and the clone may track HEAD. The spec-sync job deliberately does
+*not* use that tag: it diffs `STANDARD.md` against upstream `main`, because drift
+detection is the point and `v1.4.3` predates the spec document.
 
 ## Fixed point and 128 bit integers
 
 The fixed point + 128 bit additions to the C++ library (its `fixed-point` branch)
-are ported in full, on the native `Int128`/`UInt128` — both TFMs are net7.0+, so
-the C++ native/emulated distinction does not exist here; there is exactly one
-representation:
+are ported in full. The 128 bit surface speaks `Int128Value` / `UInt128Value` — the
+emulated pair in `src/Int128Pair.cs`, two's complement math on `(Hi, Lo)` ulong
+halves, mirroring the C++ emulated types — on every target framework, including
+`netstandard2.1` where `System.Int128` does not exist. One representation and one
+code path everywhere, so wire behavior cannot diverge by framework. On .NET 7+
+implicit conversions to and from `System.Int128` / `System.UInt128` make the pair
+transparent at call boundaries (a `ref` parameter still needs a pair-typed local —
+C# does not convert through `ref`), and the tests cross-check every pair operation
+against the framework type as an oracle:
 
 - `SerializeUInt128` — raw, always 128 bits on the wire: the low 64 bit half
   first, then the high half. When the stream is byte aligned the result is the 16

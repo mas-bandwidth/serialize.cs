@@ -40,10 +40,12 @@ jobs:
         run: dotnet run -c Release --project tests/Tests.csproj -f net10.0 --no-build
       - name: Tests (net8.0, the LTS leg)
         run: dotnet run -c Release --project tests/Tests.csproj -f net8.0 --no-build
-      # THE UNITY-CLASS GATE: the full suite (minus the 128 bit surface, which
-      # is NET7_0_OR_GREATER only) running against the netstandard2.1 build of
-      # the library — the exact assembly surface a Unity project consumes. The
-      # golden wire test inside proves the 2.1 compat shims byte-neutral.
+      # THE UNITY-CLASS GATE: the full suite — the 128 bit surface included, it
+      # runs on the emulated pair on every TFM — against the netstandard2.1
+      # build of the library, the exact assembly surface a Unity project
+      # consumes. The golden wire test inside proves the 2.1 compat shims
+      # byte-neutral. Only the two System.Int128 ORACLE tests are absent here:
+      # they check the pair against the framework type, which 2.1 lacks.
       - name: Tests (netstandard2.1 assembly, the Unity-class leg)
         run: dotnet run -c Release --project tests-ns21/TestsNs21.csproj
       # no test framework, so the runner's exit code is the whole verdict; these
