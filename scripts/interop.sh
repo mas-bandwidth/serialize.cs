@@ -12,9 +12,16 @@
 # boundaries; the compat sequence contains a value pinned on such a boundary so a
 # contracted build fails this gate instead of passing silently.
 #
-# CI pins the C++ clone to the family-wide release tag v1.4.3 (same as the Go and
-# Rust ports) and runs this script with CXX=clang++; locally the default compiler
-# is fine (Apple clang on macOS) and the clone may track HEAD.
+# CI pins the C++ clone to release tag v1.6.2 and runs this script with CXX=clang++;
+# locally the default compiler is fine (Apple clang on macOS) and the clone may track
+# HEAD. v1.6.2 is the floor, not a preference: it is the C++ release that relaxed the
+# assert from min < max to min <= max, and the compat sequence carries a degenerate
+# range (min == max), so an older serialize.h aborts here. Each port in the family
+# pins on its own schedule -- the Rust port is still on v1.4.3 and the C port clones
+# upstream HEAD -- so there is no family-wide tag to keep in step with.
+#
+# The C++ half is built WITHOUT -DNDEBUG on purpose: serialize_assert stays live, so
+# the degenerate range has to pass with the library's own asserts enabled.
 
 set -e
 

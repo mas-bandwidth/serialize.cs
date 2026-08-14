@@ -32,7 +32,10 @@ jobs:
           dotnet-version: |
             8.0.x
             10.0.x
-      - name: Build (both TFMs, warnings are errors)
+      # the LIBRARY targets three TFMs (net8.0, net10.0, netstandard2.1); this
+      # step builds the TEST project, which targets the two runnable ones. The
+      # netstandard2.1 leg is built in the next step and exercised via tests-ns21.
+      - name: Build tests (net8.0 + net10.0 of the library's three TFMs, warnings are errors)
         run: dotnet build tests/Tests.csproj -c Release
       - name: Build (netstandard2.1, the Unity-class target, C# 9 pinned)
         run: dotnet build src/Serialize.csproj -c Release -f netstandard2.1
@@ -65,10 +68,15 @@ jobs:
       - name: Check out the C++ serialize library (pinned release)
         uses: actions/checkout@v7
         with:
-          # the family-wide pin: the Go and Rust ports build their interop gates
-          # against this same tag. Bump deliberately, in its own commit.
+          # v1.6.2 is the C++ release that relaxed the assert from min < max to
+          # min <= max, so it is the first one that can round trip the degenerate
+          # range (min == max) the compat harness now covers -- against v1.4.3 the
+          # C++ half aborts on that field. Each port pins independently: the Rust
+          # port is still on v1.4.3 (its harness has no degenerate field) and the
+          # C port clones upstream HEAD, so this is NOT a family-wide pin. Bump
+          # deliberately, in its own commit.
           repository: mas-bandwidth/serialize
-          ref: v1.4.3
+          ref: v1.6.2
           path: cpp-serialize
       - uses: actions/setup-dotnet@v6
         with:
@@ -99,9 +107,9 @@ jobs:
       # constant, except it drifts silently and the ports are what break.
       #
       # Diffed against upstream main, not the interop tag: drift detection is the
-      # point, and v1.4.3 predates STANDARD.md anyway. If this fails, the
-      # upstream spec changed. Read the diff, port whatever it implies, then copy
-      # the new file across in the same commit.
+      # point, so the newest spec text is what this must catch up to. If this
+      # fails, the upstream spec changed. Read the diff, port whatever it
+      # implies, then copy the new file across in the same commit.
       - name: Compare against mas-bandwidth/serialize
         run: |
           curl -fsSL -o /tmp/upstream-STANDARD.md \

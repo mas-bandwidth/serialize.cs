@@ -6,8 +6,9 @@ C# port of the C++ [serialize](https://github.com/mas-bandwidth/serialize) bitpa
 library. Produces bit-for-bit identical output to the C++ library (and to the Go and
 Rust ports), so streams written in one language can be read by any other. Wire
 compatibility is proven, not asserted: a golden wire test pins 72 bytes copied verbatim
-from the C++ test suite, and CI runs a live interop harness on every push against the
-real `serialize.h`, compiled with clang++ from a pinned C++ release.
+from the C++ test suite, and CI runs a live interop harness against the real
+`serialize.h`, compiled with clang++ from a pinned C++ release — on every push to
+`main`, on every pull request targeting `main`, and on manual dispatch.
 
 Family values: zero third-party dependencies (including test frameworks); malicious
 packet data never throws — reads fail cleanly with a sticky latched error (exceptions
@@ -125,15 +126,27 @@ multiply-add, which rounds differently within 1 ULP of a `.5` boundary and shift
 the written integer by one wire quantum (~1 in 10^7 values). C# and Rust always
 evaluate strictly; the compat sequence carries a value pinned on such a boundary
 (`0.005f` in `[0,10]` res `0.01`), so a contracted C++ build fails the `cmp`
-instead of passing silently. (The Go port on ARM64 currently fuses and should be
-flagged upstream.)
+instead of passing silently. (The Go port's harness builds its C++ half without
+`-ffp-contract=off` and carries no boundary value — its only compressed float is
+`5.0f`, which quantizes identically either way — so it would not catch fusion. Its
+CI runs on x86-64, where the default is no contraction; worth flagging upstream.)
 
 CI runs this gate in its own job, with `CXX=clang++` and the C++ clone checked out
-at release tag `v1.4.3` — the family-wide pin the Go and Rust ports build their
-interop gates against. Bump it deliberately, in its own commit. Locally the default
-compiler is fine and the clone may track HEAD. The spec-sync job deliberately does
-*not* use that tag: it diffs `STANDARD.md` against upstream `main`, because drift
-detection is the point and `v1.4.3` predates the spec document.
+at release tag `v1.6.2`. That tag is a floor, not a preference: `v1.6.2` is the C++
+release that relaxed the assert from `min < max` to `min <= max`, and the compat
+sequence carries a degenerate range (`min == max`), so an older `serialize.h` aborts
+the gate. The C++ half is built with asserts live (no `-DNDEBUG`), so that field has
+to pass against the library's own checks rather than around them. Bump deliberately,
+in its own commit. Locally the default compiler is fine and the clone may track HEAD.
+
+Each port pins on its own schedule — there is no family-wide tag. At the time of
+writing the Rust port pins `v1.4.3` (its interop harness has no degenerate field, so
+it has no reason to move) and the C port clones upstream `HEAD`; the Go port pins
+`v1.6.2` for the same degenerate-range reason as this one.
+
+The spec-sync job deliberately does *not* use the interop tag: it diffs
+`STANDARD.md` against upstream `main`, because catching drift against the newest
+spec text is the point.
 
 ## Fixed point and 128 bit integers
 

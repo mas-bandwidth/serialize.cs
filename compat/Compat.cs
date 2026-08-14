@@ -11,6 +11,11 @@
     copied verbatim from the C++ test suite) and extends it with the 64 bit paths the
     golden test does not cover, matching the Go port's compat harness. Any change here
     must be mirrored in cpp/compat.cpp, and never changes the wire format.
+
+    The sequence carries a degenerate range (min == max) in the MIDDLE, which costs
+    zero bits: it proves the field is free on the wire AND that every field after it
+    stays put, which a trailing field could not show. Because it writes nothing, adding
+    it left the bytes identical -- the gate's byte-identity cmp is the proof.
 */
 
 using System;
@@ -26,6 +31,7 @@ internal sealed class CompatData
     public uint Bits32;
     public int IntSmall;
     public int IntFull;
+    public int Degenerate;
     public bool Flag;
     public float FloatValue;
     public float CompressedFloatValue;
@@ -54,6 +60,7 @@ internal sealed class CompatData
             Bits32 = 0xDEADBEEF,
             IntSmall = -37,
             IntFull = -123456789,
+            Degenerate = 42, // min == max: known from the range alone, zero bits on the wire
             Flag = true,
             FloatValue = 3.1415926f, // the LITERAL, bits 0x40490FDA — NOT MathF.PI
             CompressedFloatValue = 5.0f, // 5.0 in [0,10] normalizes to exactly 0.5: quantizes identically everywhere
@@ -87,6 +94,8 @@ internal sealed class CompatData
         stream.SerializeBits(ref Bits32, 32);
         stream.SerializeInt(ref IntSmall, -100, +100);
         stream.SerializeInt(ref IntFull, int.MinValue, int.MaxValue);
+        // the degenerate range: zero bits, and every field below must stay put
+        stream.SerializeInt(ref Degenerate, 42, 42);
         stream.SerializeBool(ref Flag);
         stream.SerializeFloat(ref FloatValue);
         stream.SerializeCompressedFloat(ref CompressedFloatValue, 0.0f, 10.0f, 0.01f);
@@ -116,6 +125,7 @@ internal sealed class CompatData
             && Bits32 == other.Bits32
             && IntSmall == other.IntSmall
             && IntFull == other.IntFull
+            && Degenerate == other.Degenerate
             && Flag == other.Flag
             && FloatValue == other.FloatValue
             && CompressedFloatValue == other.CompressedFloatValue
