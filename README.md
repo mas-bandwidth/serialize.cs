@@ -212,6 +212,20 @@ Two further rules:
   infinity and still report success — behavior inherited from the C++ library for
   wire fidelity. Choose ranges whose difference is finite.
 
+## Contributing
+
+Contributions are accepted under the Más Bandwidth
+[Contributor Assignment Agreement](https://github.com/mas-bandwidth/.github/blob/main/CAA.md)
+(CAA). Before a pull request can merge, every human commit author on it signs by
+posting this exact sentence as a comment on the pull request:
+
+> I have read the CAA and I hereby sign it, assigning copyright in my contributions to Más Bandwidth LLC.
+
+The signature ledger is organization-wide: signing once, on any Más Bandwidth
+repository, covers all of them. The check runs automatically on every pull
+request (`.github/workflows/cla.yml`); commenting `recheck` re-runs it after a
+signature lands.
+
 ## License
 
 BSD 3-Clause. See [LICENSE](LICENSE).
