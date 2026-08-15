@@ -109,15 +109,18 @@ jobs:
       - name: Check out the C++ serialize library (pinned release)
         uses: actions/checkout@v7
         with:
-          # v1.6.2 is the C++ release that relaxed the assert from min < max to
-          # min <= max, so it is the first one that can round trip the degenerate
-          # range (min == max) the compat harness now covers -- against v1.4.3 the
-          # C++ half aborts on that field. Each port pins independently: the Rust
-          # port is still on v1.4.3 (its harness has no degenerate field) and the
-          # C port clones upstream HEAD, so this is NOT a family-wide pin. Bump
-          # deliberately, in its own commit.
+          # v1.7.0 is the family's interop pin: ONE POLICY, ONE VERSION. Every
+          # port's gate checks out the same current C++ release, so "compatible
+          # with C++" means the same thing in every repo -- under the four
+          # different pins this replaces (v1.6.2 here and in Go, v1.4.3 in Rust,
+          # upstream HEAD in C), each port certified against a different wire.
+          # v1.7.0 is also the release that pins the compressed_float write
+          # arithmetic to float32 with two roundings on every architecture --
+          # the arithmetic QuantizeCompressedFloat mirrors -- so the
+          # byte-identity cmp below is the cross-language proof of that pin.
+          # Bump family-wide, deliberately, in its own commit per repo.
           repository: mas-bandwidth/serialize
-          ref: v1.6.2
+          ref: v1.7.0
           path: cpp-serialize
       - uses: actions/setup-dotnet@v6
         with:

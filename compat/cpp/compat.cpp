@@ -26,8 +26,11 @@
     on the degenerate field. See ../../scripts/interop.sh.
 
     This file is adapted from the Go port's compat/cpp/compat.cpp (the extended golden
-    sequence: golden wire values plus the 64 bit paths). Any change to the value
-    sequence must be mirrored in ../Compat.cs, and never changes the wire format.
+    sequence: golden wire values plus the 64 bit paths), and extends it with the fixed
+    point / 128 bit section -- the six fields the C++ GoldenWireData carries, values
+    verbatim, with the golden message's byte-aligned section structure. Any change to
+    the value sequence must be mirrored in ../Compat.cs, and never changes the wire
+    format.
 */
 
 #include "serialize.h"
@@ -64,6 +67,12 @@ struct CompatData
     int64_t int64Full;
     int64_t int64Range;
     float fmaBoundaryFloat;
+    int16_t fixedQ8_8;
+    int32_t fixedQ16_16;
+    int64_t fixedQ48_16;
+    uint32_t fixedQ16_16Unsigned;
+    serialize::int128_t fixedQ112_16Wide;
+    serialize::int128_t fixedQ64_64Wide;
 
     void Init()
     {
@@ -96,6 +105,14 @@ struct CompatData
         int64Full = -123456789012345LL;
         int64Range = 4123456789LL;
         fmaBoundaryFloat = 0.005f;              // t = 1.0f quantization boundary: strict evaluation writes 1, a fused build writes 0
+        // the C++ GoldenWireData fixed point values, verbatim
+        fixedQ8_8 = int16_t( -( 3 * 256 + 64 ) );                                   // -3.25 in Q8.8
+        fixedQ16_16 = 1234 * 65536 + 32768;                                         // 1234.5 in Q16.16
+        fixedQ48_16 = -( int64_t( 54321 ) * 65536 + 12345 );                        // -54321.1883... in Q48.16
+        fixedQ16_16Unsigned = 29999u * 65536 + 65535;                               // 29999.99998... in Q16.16: every fraction bit set
+        fixedQ112_16Wide = serialize::int128_t( -( int64_t( 98765432109LL ) * 65536 + 4321 ) );     // -98765432109.066 in Q112.16: 75 bits on the wire, three groups
+        fixedQ64_64Wide = ( serialize::int128_t( 0x0123456789ABCDEFLL ) << 64 )
+                        + serialize::int128_t( 0x0FEDCBA987654321LL );              // Q64.64 over the full unit range: 128 bits, four groups, every group distinct
     }
 
     template <typename Stream> bool Serialize( Stream & stream )
@@ -126,6 +143,16 @@ struct CompatData
         serialize_int64( stream, int64Full, INT64_MIN, INT64_MAX );
         serialize_int64( stream, int64Range, -5000000000LL, +5000000000LL );
         serialize_compressed_float( stream, fmaBoundaryFloat, 0.0f, 10.0f, 0.01f );
+        // the fixed point / 128 bit section, with the golden message's structure:
+        // it starts byte aligned, so every bit above it stays put
+        serialize_align( stream );
+        serialize_fixed( stream, fixedQ8_8, 8, 8, -100, +100 );
+        serialize_fixed( stream, fixedQ16_16, 16, 16, -2000, +2000 );
+        serialize_fixed( stream, fixedQ48_16, 48, 16, -100000, +100000 );
+        serialize_fixed( stream, fixedQ16_16Unsigned, 16, 16, 0, 30000 );
+        serialize_align( stream );              // the wide fixed section starts byte aligned too
+        serialize_fixed( stream, fixedQ112_16Wide, 112, 16, -144115188075855872LL, +144115188075855872LL );     // ±2^57 units: 75 bits, the three group structure
+        serialize_fixed( stream, fixedQ64_64Wide, 64, 64, INT64_MIN, INT64_MAX );                               // full unit range: 128 bits, the four group structure
         return true;
     }
 
@@ -154,6 +181,12 @@ struct CompatData
             && bits33 == other.bits33
             && int64Full == other.int64Full
             && int64Range == other.int64Range
+            && fixedQ8_8 == other.fixedQ8_8
+            && fixedQ16_16 == other.fixedQ16_16
+            && fixedQ48_16 == other.fixedQ48_16
+            && fixedQ16_16Unsigned == other.fixedQ16_16Unsigned
+            && fixedQ112_16Wide == other.fixedQ112_16Wide
+            && fixedQ64_64Wide == other.fixedQ64_64Wide
             && fabsf( fmaBoundaryFloat - other.fmaBoundaryFloat ) <= 0.01f;   // within the resolution: 0.005 decodes to 0.01
     }
 };
