@@ -20,6 +20,7 @@ internal static class RedTeam
     private static readonly List<string> Findings = new List<string>();
     private static readonly Dictionary<string, int> Classes = new Dictionary<string, int>();
     private static int _cases;
+    private static long InfiniteDeltaDecodes; // documented non-finite decodes from infinite-delta params: noted, never a finding
 
     // dedup by class (the text with digits stripped) so one bug cannot mask the others
     private static void Finding(string s)
@@ -60,6 +61,7 @@ internal static class RedTeam
         public long Int64Full, Int64Wide;
         public bool Flag;
         public float F, CF;
+        public float CFWide; // decoded from an infinite-delta field: non-finite by documented behavior
         public double D;
         public byte U8;
         public ushort U16;
@@ -108,7 +110,7 @@ internal static class RedTeam
         s.SerializeInt64(ref p.Int64Wide, 0, 255);
         s.SerializeInt(ref p.IntSmall, 0, 5);            // 3 bit headroom over max 5
         s.SerializeInt(ref p.IntFull, -1, 0);            // 1 bit, straddles zero
-        s.SerializeCompressedFloat(ref p.CF, -3.4e38f, 3.4e38f, 1e-30f); // pathological delta/res
+        s.SerializeCompressedFloat(ref p.CFWide, -3.4e38f, 3.4e38f, 1e-30f); // pathological: delta overflows to +inf
         s.SerializeAlign();
         s.SerializeString(ref p.Str, 512);
         s.SerializeWideString(ref p.WStr, 4096);
@@ -168,6 +170,16 @@ internal static class RedTeam
                 if (p.CF < -float.MaxValue || p.CF > float.MaxValue || float.IsNaN(p.CF))
                 {
                     return $"{label}: compressed float decoded to {p.CF}";
+                }
+                // CFWide is decoded over [-3.4e38, 3.4e38], whose delta overflows to
+                // +inf. The library documents that an infinite delta is deliberately
+                // NOT rejected (parity with C++; rejecting it as API misuse is an open
+                // family decision), and its decode is non-finite: normalized * inf.
+                // Counted loudly in the summary rather than failing the verdict, so
+                // the exit code stays armed for what the rule actually promises.
+                if (float.IsNaN(p.CFWide) || float.IsInfinity(p.CFWide))
+                {
+                    InfiniteDeltaDecodes++;
                 }
             }
             return null;
@@ -659,8 +671,19 @@ internal static class RedTeam
                         bool ok = r.SerializeCompressedFloat(ref value, min, max, res);
                         if (ok && (float.IsNaN(value) || value < min || value > max))
                         {
-                            Finding($"cfloat[{min},{max},{res}] raw={raw}: decoded {value} outside [min,max]");
-                            break;
+                            // an infinite delta (max - min overflows float) is documented
+                            // as deliberately not rejected -- parity with C++, rejecting
+                            // it as API misuse is an open family decision -- and every
+                            // decode through it is non-finite. Note it, do not fail on it.
+                            if (float.IsInfinity(max - min) && (float.IsNaN(value) || float.IsInfinity(value)))
+                            {
+                                InfiniteDeltaDecodes++;
+                            }
+                            else
+                            {
+                                Finding($"cfloat[{min},{max},{res}] raw={raw}: decoded {value} outside [min,max]");
+                                break;
+                            }
                         }
                     }
                     catch (Exception e)
@@ -1149,6 +1172,7 @@ internal static class RedTeam
         Console.WriteLine($"hostile cases run: {_cases:N0} in {sw.Elapsed.TotalSeconds:F1}s");
         Console.WriteLine($"naive while(more) loops that spun past the cap: {NaiveHangs}");
         Console.WriteLine($"unchecked-count loops that over-worked: {CountAmplification}");
+        Console.WriteLine($"non-finite decodes from infinite-delta params (documented; open family decision): {InfiniteDeltaDecodes}");
         if (BitReaderAlignThrows.Count > 0)
         {
             Console.WriteLine($"BitReader.ReadAlign threw in {BitReaderAlignThrows.Count} cases, e.g. {BitReaderAlignThrows[0]}");

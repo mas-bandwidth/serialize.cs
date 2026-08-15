@@ -31,11 +31,13 @@ are reserved for API misuse); no unsafe code; zero allocation on serialization p
 - `compat/` — the cross-language interop harness: `Compat.csproj` (C# half) and
   `cpp/compat.cpp` (C++ half, built against the real `serialize.h`).
 - `redteam/` — the hostile-input attack harness against the read path. It records
-  findings instead of exiting, so one run gives the whole picture; runs are manual and
-  CI only keeps it compiling.
+  findings instead of stopping at the first one, so one run gives the whole picture,
+  then exits nonzero if any were recorded. CI runs it on every push and pull request;
+  the exit code is the verdict.
 - `scripts/interop.sh` — the interop gate as one runnable command.
-- `.github/workflows/ci.yml` — three jobs: the test matrix (all three TFM legs, Linux
-  and macOS), the C++ interop gate, and the `STANDARD.md` spec-sync check.
+- `.github/workflows/ci.yml` — five jobs: the test matrix (all three TFM legs, on
+  Linux, macOS and Windows — Unity's authoring platform), the red team run, the
+  analyzer/style check, the C++ interop gate, and the `STANDARD.md` spec-sync check.
 - `STANDARD.md` — the wire format spec, vendored verbatim from the C++ repo; the
   spec-sync job diffs it against upstream and fails on drift.
 - `SECURITY.md` — how to report a vulnerability privately, and what is in scope.

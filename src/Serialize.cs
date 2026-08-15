@@ -469,6 +469,41 @@ internal static class SerializeInternal
         bits = SerializeUtil.BitsRequired(0, maxIntegerValue);
     }
 
+    /// <summary>
+    /// The write-side quantization of SerializeCompressedFloat, shared by the stream
+    /// and batch write paths so the normative arithmetic exists in exactly one place.
+    /// Returns the integer that goes on the wire.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static uint QuantizeCompressedFloat(float value, float min, float delta, uint maxIntegerValue)
+    {
+        float normalizedValue = (value - min) / delta;
+        if (!(normalizedValue >= 0.0f))
+        {
+            normalizedValue = 0.0f; // the !>= form of the clamp forces NaN into range too
+        }
+        else if (!(normalizedValue <= 1.0f))
+        {
+            normalizedValue = 1.0f;
+        }
+        // STANDARD.md pins this arithmetic to float32 with TWO roundings: the product
+        // rounds to float32 before 0.5f is added, and the sum rounds to float32 before
+        // the floor. ECMA-334 permits floating point operations to be performed at
+        // higher precision than the result type, so the explicit (float) casts below
+        // are the language-level guarantee that any excess precision is discarded --
+        // without them the wire rests on an unwritten RyuJIT implementation detail.
+        // The same rule already cost the family a live divergence once: on arm64 a
+        // C++ compiler contracted this multiply-add into a single FMA (ONE rounding)
+        // and quantized 0.005 over [0,10] at resolution 0.01 to 0 where every
+        // conformant runtime writes 1. Widening to double diverges the same way on
+        // the same values (0.005 / 0.025 / 0.105 / 9.995 -- only values exactly on a
+        // quantum agree). Do not fold the product back into one expression, and do
+        // not drop the casts. Matches serialize.h serialize_compressed_float_internal
+        // (`const float scaled`) and serialize.c serialize_write_compressed_float.
+        float scaled = (float)(normalizedValue * maxIntegerValue);
+        return (uint)Math.Floor((double)(float)(scaled + 0.5f));
+    }
+
     /// <summary>Throws if a string buffer size cannot express a valid length range.</summary>
     internal static void ValidateBufferSize(int bufferSize)
     {
@@ -1302,16 +1337,7 @@ public sealed class WriteStream : IBitStream
         {
             return false;
         }
-        float normalizedValue = (value - min) / delta;
-        if (!(normalizedValue >= 0.0f))
-        {
-            normalizedValue = 0.0f; // the !>= form of the clamp forces NaN into range too
-        }
-        else if (!(normalizedValue <= 1.0f))
-        {
-            normalizedValue = 1.0f;
-        }
-        uint integerValue = (uint)Math.Floor((double)(normalizedValue * maxIntegerValue + 0.5f));
+        uint integerValue = SerializeInternal.QuantizeCompressedFloat(value, min, delta, maxIntegerValue);
         return WriteBits(integerValue, bits);
     }
 
@@ -3175,16 +3201,7 @@ public ref struct WriteBatch
         {
             return false;
         }
-        float normalizedValue = (value - min) / delta;
-        if (!(normalizedValue >= 0.0f))
-        {
-            normalizedValue = 0.0f; // the !>= form of the clamp forces NaN into range too
-        }
-        else if (!(normalizedValue <= 1.0f))
-        {
-            normalizedValue = 1.0f;
-        }
-        uint integerValue = (uint)Math.Floor((double)(normalizedValue * maxIntegerValue + 0.5f));
+        uint integerValue = SerializeInternal.QuantizeCompressedFloat(value, min, delta, maxIntegerValue);
         return WriteBits(integerValue, bits);
     }
 

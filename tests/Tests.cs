@@ -375,6 +375,7 @@ internal static partial class Program
         RunTest("test_wstring_validation", TestWStringValidation);
         RunTest("test_int_relative_validation", TestIntRelativeValidation);
         RunTest("test_compressed_float_validation", TestCompressedFloatValidation);
+        RunTest("test_compressed_float_quantization_boundaries", TestCompressedFloatQuantizationBoundaries);
         RunTest("test_serialize_fixed", TestSerializeFixed);
         RunTest("test_serialize_fixed_validation", TestSerializeFixedValidation);
         RunTest("test_serialize_fixed_matches_int64", TestSerializeFixedMatchesInt64);
@@ -1179,6 +1180,62 @@ internal static partial class Program
             float value = -1.0f;
             Check(readStream.SerializeCompressedFloat(ref value, 0, 10, 0.01f), "read failed");
             Check(value >= 0.0f && value <= 10.0f, $"expected value in [0,10], got {value}"); // NaN clamps to the low end
+        }
+    }
+
+    private static void TestCompressedFloatQuantizationBoundaries()
+    {
+        // The write-side quantization is normatively float32 with TWO roundings: the
+        // product rounds before 0.5f is added, the sum rounds before the floor
+        // (SerializeInternal.QuantizeCompressedFloat). These values sit on the
+        // boundaries where the two evaluations ECMA-334 would otherwise permit
+        // diverge: a fused multiply-add rounds ONCE and writes 0 for 0.005, and
+        // double-widened arithmetic writes 0 / 10 / 999 for 0.005 / 0.105 / 9.995.
+        // 2.5 and 5.0 land exactly on a quantum, where every evaluation agrees --
+        // they anchor the encoding itself, so a failure here isolates the arithmetic.
+        (float value, uint expected)[] cases =
+        {
+            (0.0f, 0),
+            (0.005f, 1),
+            (0.025f, 3),
+            (0.105f, 11),
+            (2.5f, 250),
+            (5.0f, 500),
+            (9.995f, 1000),
+            (10.0f, 1000),
+        };
+
+        foreach ((float value, uint expected) in cases)
+        {
+            // the stream write path
+            {
+                byte[] buffer = new byte[8];
+                WriteStream writeStream = new WriteStream(buffer);
+                float written = value;
+                Check(writeStream.SerializeCompressedFloat(ref written, 0, 10, 0.01f), "write failed");
+                writeStream.Flush();
+
+                ReadStream readStream = new ReadStream(buffer);
+                uint integer = 0;
+                Check(readStream.SerializeBits(ref integer, 10), "read failed"); // [0,10] at res 0.01 -> 10 bits
+                Check(integer == expected, $"stream: {value} must quantize to {expected}, got {integer}");
+            }
+
+            // the batch write path: the quantizer's other call site
+            {
+                byte[] buffer = new byte[8];
+                WriteStream writeStream = new WriteStream(buffer);
+                WriteBatch batch = writeStream.BeginBatch();
+                float written = value;
+                Check(batch.SerializeCompressedFloat(ref written, 0, 10, 0.01f), "batch write failed");
+                batch.End();
+                writeStream.Flush();
+
+                ReadStream readStream = new ReadStream(buffer);
+                uint integer = 0;
+                Check(readStream.SerializeBits(ref integer, 10), "read failed");
+                Check(integer == expected, $"batch: {value} must quantize to {expected}, got {integer}");
+            }
         }
     }
 
