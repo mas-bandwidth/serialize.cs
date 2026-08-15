@@ -591,7 +591,11 @@ internal static class SerializeInternal
     /// unsigned 128 bit domain, where two's complement wrap is exact for signed
     /// storage. The wire cost comes from the 64 bit domain: the range in whole units
     /// is exact in a ulong, and shifting it left by fractionBits adds exactly
-    /// fractionBits to its bit length.
+    /// fractionBits to its bit length — except when the range is DEGENERATE. A
+    /// degenerate range (min == max) costs zero bits on every storage width, per
+    /// STANDARD.md; adding fractionBits to the zero-width unit range would emit
+    /// fractionBits of zeros here while the narrow path writes nothing, the exact
+    /// 64/128 self-disagreement serialize#54 pins.
     /// </summary>
     internal static void FixedPointParams128(
         bool storageSigned, int integerBits, int fractionBits,
@@ -602,7 +606,9 @@ internal static class SerializeInternal
         // the Int128Value conversion sign extends the whole unit bounds before the shift
         rawMin = (UInt128Value)(Int128Value)minUnits << fractionBits;
         rawMax = (UInt128Value)(Int128Value)maxUnits << fractionBits;
-        bits = SerializeUtil.BitsRequired64((ulong)minUnits, (ulong)maxUnits) + fractionBits;
+        bits = minUnits == maxUnits
+            ? 0
+            : SerializeUtil.BitsRequired64((ulong)minUnits, (ulong)maxUnits) + fractionBits;
     }
 }
 

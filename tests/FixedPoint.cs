@@ -350,6 +350,53 @@ internal static partial class Program
             "degenerate fixed range must measure");
         Check(measure.BitsProcessed == 0,
             $"measure says the degenerate fixed range costs {measure.BitsProcessed} bits, expected 0");
+
+        // ...and the SAME zero bits across the 64/128 storage boundary. The wide
+        // params computed the wire cost as BitsRequired64(min, max) + fractionBits,
+        // which degenerates to fractionBits ZEROS when min == max while the narrow
+        // path above writes nothing -- the same library disagreeing with itself
+        // about one declared field depending on an internal storage width
+        // (serialize#54). Zero bits, every width: Q112.16 (the fractionBits shape),
+        // Q64.64 (the fraction alone spans a full 64 bit field), signed and
+        // unsigned wide storage, negative bound included.
+        CheckFixedDegenerateWide(FixedStorage.I128, 112, 16, 9);
+        CheckFixedDegenerateWide(FixedStorage.I128, 112, 16, -9);
+        CheckFixedDegenerateWide(FixedStorage.I128, 64, 64, 0);
+        CheckFixedDegenerateWide(FixedStorage.U128, 112, 16, 9);
+    }
+
+    /// <summary>One degenerate configuration on 128 bit storage: write, read and
+    /// measure must all agree the field costs zero bits, and the reader must
+    /// recover the value from the range alone.</summary>
+    private static void CheckFixedDegenerateWide(
+        FixedStorage storage, int integerBits, int fractionBits, long unit)
+    {
+        byte[] buffer = new byte[32];
+        Int128Value raw = (Int128Value)unit << fractionBits;
+
+        WriteStream write = new WriteStream(buffer);
+        Int128Value value = raw;
+        Check(SerializeFixedAs(storage, write, ref value, integerBits, fractionBits, unit, unit),
+            $"degenerate wide fixed {storage} Q{integerBits}.{fractionBits} [{unit},{unit}] must serialize");
+        Check(write.BitsProcessed == 0,
+            $"degenerate wide fixed {storage} Q{integerBits}.{fractionBits} wrote {write.BitsProcessed} bits, expected 0 (not fractionBits)");
+        write.Flush();
+
+        ReadStream read = new ReadStream(buffer, 8);
+        Int128Value readBack = 0;
+        Check(SerializeFixedAs(storage, read, ref readBack, integerBits, fractionBits, unit, unit),
+            $"degenerate wide fixed {storage} Q{integerBits}.{fractionBits} must deserialize");
+        Check(readBack == raw,
+            $"degenerate wide fixed {storage} Q{integerBits}.{fractionBits} read back {readBack}, expected {raw}");
+        Check(read.BitsProcessed == 0,
+            $"degenerate wide fixed {storage} Q{integerBits}.{fractionBits} read {read.BitsProcessed} bits, expected 0");
+
+        MeasureStream measure = new MeasureStream();
+        Int128Value measured = raw;
+        Check(SerializeFixedAs(storage, measure, ref measured, integerBits, fractionBits, unit, unit),
+            $"degenerate wide fixed {storage} Q{integerBits}.{fractionBits} must measure");
+        Check(measure.BitsProcessed == 0,
+            $"measure says degenerate wide fixed {storage} Q{integerBits}.{fractionBits} costs {measure.BitsProcessed} bits, expected 0");
     }
 
     private static void TestSerializeFixed()
