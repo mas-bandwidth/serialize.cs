@@ -14,7 +14,8 @@ Family values: zero third-party dependencies (including test frameworks); malici
 packet data never throws — reads fail cleanly with a sticky latched error (exceptions
 are reserved for API misuse); writes are trusted — the write path performs no
 validation in release builds, and writer contract violations (out of range values,
-buffer overflow, oversized strings, non-finite compressed floats) are `Debug.Assert`,
+buffer overflow, oversized strings, ill-formed UTF-16 wstring payloads, non-finite
+compressed floats) are `Debug.Assert`,
 compiled out without the `DEBUG` constant, matching the C++ library's
 `serialize_assert` (STANDARD.md "Writes assume trusted data", enacted for C# per
 serialize#52); no unsafe code; zero allocation on serialization paths (strings on the
@@ -214,6 +215,17 @@ malicious packet spins the loop forever. Use `stream.Continue(ref more)` /
 `stream.Until(ref done)` for sentinel-driven loops, and check the result of any
 serialized loop count before looping — on a reused stream a failed read leaves the
 previous packet's count in place.
+
+String content is validated on read (serialize#8): `SerializeString` refuses bytes
+that are not well-formed UTF-8 and any interior NUL; `SerializeWideString` refuses
+unpaired surrogates and interior NULs (each 32-bit group carries one UTF-16 code
+unit per STANDARD.md, so a well-formed surrogate pair — an astral character — is
+valid, and a group above `0xFFFF` fails with `ValueOutOfRange`). Malformed string
+content fails with `InvalidString`, and the refusal happens in every build mode:
+an interior NUL is the classic two-lengths smuggling primitive (the wire length
+and the C-string length a downstream consumer perceives disagree), and an
+unpaired surrogate would otherwise flow into the application as an ill-formed
+.NET string.
 
 Two further rules:
 

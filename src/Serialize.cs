@@ -89,7 +89,12 @@ public enum SerializeError
     /// the read and write serialize functions don't match.</summary>
     Align,
 
-    /// <summary>String bytes read from the stream are not valid UTF-8.</summary>
+    /// <summary>A string payload read from the stream is malformed: bytes that are
+    /// not valid UTF-8, an interior NUL (either width — the wire length and the
+    /// C-string length a consumer perceives would disagree), or, for wide strings,
+    /// ill-formed UTF-16 (an unpaired surrogate). Readers refuse malformed string
+    /// content in every build mode (serialize#8 ruling; the write side is the
+    /// writer's contract, debug-asserted).</summary>
     InvalidString,
 }
 
@@ -279,14 +284,18 @@ public interface IBitStream
     /// UTF-8 bytes are block copied. bufferSize mirrors the C++ API, where a string with
     /// its terminating null character must fit into the buffer, keeping streams
     /// compatible between the two languages. On read, bytes that are not valid UTF-8
-    /// fail with SerializeError.InvalidString.</summary>
+    /// or that contain an interior NUL fail with SerializeError.InvalidString.</summary>
     bool SerializeString(ref string value, int bufferSize);
 
-    /// <summary>Serializes a string as 32 bits per code point, wire compatible with
-    /// serialize_wstring in the C++ library. The length is serialized in
-    /// [0,bufferSize-1] code points. On read, code points that are not valid
-    /// (surrogates or values above 0x10FFFF) fail with
-    /// SerializeError.ValueOutOfRange.</summary>
+    /// <summary>Serializes a string as 32 bits per UTF-16 code unit, wire compatible
+    /// with serialize_wstring in the C++ library (STANDARD.md, adopted 2026-08-15:
+    /// one code unit per group, not one code point). The length is serialized in
+    /// [0,bufferSize-1] code units. Surrogate pairs are valid — an astral character
+    /// is two groups; the payload being well-formed UTF-16 is the writer's contract,
+    /// debug-asserted. On read, a group above 0xFFFF fails with
+    /// SerializeError.ValueOutOfRange (not a code unit — and char could not hold it:
+    /// fail rather than truncate); an unpaired surrogate or an interior NUL fails
+    /// with SerializeError.InvalidString.</summary>
     bool SerializeWideString(ref string value, int bufferSize);
 
     /// <summary>Pads the stream with zero bits to the next byte boundary. On read the
@@ -453,6 +462,7 @@ internal static class SerializeInternal
     // per serialize#52): Debug.Assert messages, never seen in release builds.
     internal const string WriteRangeAssertMessage = "write value out of range: writes are trusted, the range is the writer's contract";
     internal const string WriteStringAssertMessage = "string does not fit in the buffer size: the writer's contract";
+    internal const string WriteWideStringAssertMessage = "wstring payload is not well-formed UTF-16 (unpaired surrogate): the writer's contract";
     internal const string WriteIntRelativeAssertMessage = "int relative requires previous < current: the writer's contract";
     internal const string FloatDeltaAssertMessage = "compressed float declaration is non-conforming: max - min must be finite";
     internal const string FloatValuesAssertMessage = "compressed float declaration is non-conforming: (max - min) / resolution must be finite";
@@ -1550,16 +1560,25 @@ public sealed class WriteStream : IBitStream
         {
             return false;
         }
-        int length = SerializeCompat.CodePointCount(value);
+        // each 32-bit group carries one UTF-16 CODE UNIT, not one code point
+        // (STANDARD.md, adopted 2026-08-15), and the length field counts units. A C#
+        // string IS a sequence of UTF-16 code units, so the split a 4-byte wchar_t
+        // port performs at this boundary (astral code point -> surrogate pair) has
+        // already happened in the string itself: transmit chars as they are. The
+        // payload being well-formed UTF-16 (no unpaired surrogate) is the writer's
+        // contract, debug-asserted per serialize#52; conforming readers refuse an
+        // unpaired surrogate.
+        Debug.Assert(SerializeCompat.Utf16IsValid(value), SerializeInternal.WriteWideStringAssertMessage);
+        int length = value.Length;
         Debug.Assert(length < bufferSize, SerializeInternal.WriteStringAssertMessage);
         if (!SerializeInt(ref length, 0, bufferSize - 1))
         {
             return false;
         }
-        for (int i = 0; i < value.Length;)
+        // NO align here -- deliberately unlike the narrow path (STANDARD.md)
+        for (int i = 0; i < value.Length; i++)
         {
-            uint codePoint = SerializeCompat.NextCodePoint(value, ref i);
-            if (!WriteBits(codePoint, 32))
+            if (!WriteBits(value[i], 32))
             {
                 return false;
             }
@@ -2284,6 +2303,14 @@ public sealed class ReadStream : IBitStream
         {
             return Fail(SerializeError.InvalidString);
         }
+        // an interior NUL is valid UTF-8 but is refused (serialize#8 ruling): the
+        // wire length field and the C-string length a downstream consumer perceives
+        // would disagree -- the classic two-lengths smuggling primitive. The
+        // terminator is never transmitted, so ANY NUL in the payload is interior.
+        if (utf8.IndexOf((byte)0) >= 0)
+        {
+            return Fail(SerializeError.InvalidString);
+        }
         value = Encoding.UTF8.GetString(utf8);
         return true;
     }
@@ -2306,18 +2333,54 @@ public sealed class ReadStream : IBitStream
         {
             return Fail(SerializeError.Overflow);
         }
-        char[] chars = new char[(long)length * 2];
-        int position = 0;
+        // each 32-bit group carries one UTF-16 CODE UNIT, not one code point
+        // (STANDARD.md, adopted 2026-08-15). A C# string stores exactly these
+        // units, so a valid surrogate pair "recombines" by adjacency: storing the
+        // two units next to each other IS the astral character. What this reader
+        // adds on top of the wire format is content validation (serialize#8
+        // ruling: readers refuse): an unpaired surrogate is a refusal, not a
+        // pass-through, and an interior NUL is refused as the two-lengths
+        // smuggling primitive it is (wire length vs the shorter length a wcslen
+        // consumer perceives; the terminator is never transmitted, so ANY NUL in
+        // the payload is interior).
+        char[] chars = new char[length];
+        bool pendingHigh = false; // a high surrogate awaiting its low half
         for (int i = 0; i < length; i++)
         {
-            uint codePoint = _reader.ReadBitsUnchecked(32);
-            if (codePoint > 0x10FFFF || (codePoint >= 0xD800 && codePoint <= 0xDFFF))
+            uint unit = _reader.ReadBitsUnchecked(32);
+            if (unit > 0xFFFF)
             {
+                // not a UTF-16 code unit, and char could not hold it: fail
+                // rather than truncate (the C 2-byte wchar_t path exactly)
                 return Fail(SerializeError.ValueOutOfRange);
             }
-            position += SerializeCompat.EncodeCodePointUtf16(codePoint, chars, position);
+            if (unit == 0)
+            {
+                return Fail(SerializeError.InvalidString); // interior NUL
+            }
+            if (pendingHigh)
+            {
+                if (unit < 0xDC00 || unit > 0xDFFF)
+                {
+                    return Fail(SerializeError.InvalidString); // high surrogate without its low half
+                }
+                pendingHigh = false;
+            }
+            else if (unit >= 0xD800 && unit <= 0xDBFF)
+            {
+                pendingHigh = true;
+            }
+            else if (unit >= 0xDC00 && unit <= 0xDFFF)
+            {
+                return Fail(SerializeError.InvalidString); // low surrogate with no high before it
+            }
+            chars[i] = (char)unit;
         }
-        value = new string(chars, 0, position);
+        if (pendingHigh)
+        {
+            return Fail(SerializeError.InvalidString); // the payload ends inside a surrogate pair
+        }
+        value = new string(chars);
         return true;
     }
 
@@ -2766,7 +2829,10 @@ public sealed class MeasureStream : IBitStream
         {
             return false;
         }
-        int length = SerializeCompat.CodePointCount(value);
+        // counts UTF-16 code units -- value.Length is exactly the group count the
+        // write transmits (STANDARD.md, adopted 2026-08-15), so measure and write
+        // agree bit for bit
+        int length = value.Length;
         Debug.Assert(length < bufferSize, SerializeInternal.WriteStringAssertMessage);
         if (!SerializeInt(ref length, 0, bufferSize - 1))
         {
@@ -3219,7 +3285,7 @@ public ref struct WriteBatch
         return ok;
     }
 
-    /// <summary>Serializes a string as 32 bits per code point. Delegated: syncs state
+    /// <summary>Serializes a string as 32 bits per UTF-16 code unit. Delegated: syncs state
     /// down, runs WriteStream.SerializeWideString, recaptures.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeWideString(ref string value, int bufferSize)
@@ -3796,7 +3862,7 @@ public ref struct ReadBatch
         return ok;
     }
 
-    /// <summary>Serializes a string as 32 bits per code point. Delegated: syncs state
+    /// <summary>Serializes a string as 32 bits per UTF-16 code unit. Delegated: syncs state
     /// down, runs ReadStream.SerializeWideString, recaptures.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeWideString(ref string value, int bufferSize)
@@ -4044,49 +4110,30 @@ internal static class SerializeCompat
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static double UInt64BitsToDouble(ulong value) => BitConverter.Int64BitsToDouble(unchecked((long)value));
 
-    /// <summary>The number of Unicode code points in a string, with
-    /// string.EnumerateRunes's exact semantics: a lone or mismatched surrogate
-    /// counts as one code point (U+FFFD).</summary>
-    public static int CodePointCount(string value)
+    /// <summary>Well-formed UTF-16: every high surrogate is immediately followed
+    /// by a low surrogate, and no low surrogate stands alone. The wstring writer's
+    /// contract (STANDARD.md, adopted 2026-08-15), referenced only from
+    /// Debug.Assert — the C# analog of serialize_wstring_is_valid_utf16 in the C
+    /// port, taking its 2-byte wchar_t shape, which is what a C# string is.</summary>
+    public static bool Utf16IsValid(string value)
     {
-        int count = 0;
-        for (int i = 0; i < value.Length;)
+        for (int i = 0; i < value.Length; i++)
         {
-            NextCodePoint(value, ref i);
-            count++;
+            char c = value[i];
+            if (char.IsHighSurrogate(c))
+            {
+                if (i + 1 >= value.Length || !char.IsLowSurrogate(value[i + 1]))
+                {
+                    return false; // high surrogate without its low half
+                }
+                i++;
+            }
+            else if (char.IsLowSurrogate(c))
+            {
+                return false; // low surrogate with no high before it
+            }
         }
-        return count;
-    }
-
-    /// <summary>Reads the code point at index and advances it by one or two
-    /// chars — string.EnumerateRunes's exact semantics: a well-formed surrogate
-    /// pair decodes, a lone or mismatched surrogate yields U+FFFD.</summary>
-    public static uint NextCodePoint(string value, ref int index)
-    {
-        char c = value[index];
-        if (char.IsHighSurrogate(c) && index + 1 < value.Length && char.IsLowSurrogate(value[index + 1]))
-        {
-            uint codePoint = (uint)char.ConvertToUtf32(c, value[index + 1]);
-            index += 2;
-            return codePoint;
-        }
-        index += 1;
-        return char.IsSurrogate(c) ? 0xFFFDu : c;
-    }
-
-    /// <summary>Encodes a scalar code point (caller-validated: not a surrogate,
-    /// at most U+10FFFF) as UTF-16 at position; returns chars written.</summary>
-    public static int EncodeCodePointUtf16(uint codePoint, char[] destination, int position)
-    {
-        if (codePoint <= 0xFFFF)
-        {
-            destination[position] = (char)codePoint;
-            return 1;
-        }
-        uint v = codePoint - 0x10000;
-        destination[position] = (char)(0xD800 + (v >> 10));
-        destination[position + 1] = (char)(0xDC00 + (v & 0x3FF));
-        return 2;
+        return true;
     }
 
     /// <summary>Strict well-formed UTF-8 validation, matching
