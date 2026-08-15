@@ -391,7 +391,12 @@ internal static class RedTeam
             }
         }
 
-        // d) every 32 bit code point value through the wide string reader
+        // d) every 32 bit group value through the wide string reader. Each group is
+        // one UTF-16 CODE UNIT (STANDARD.md, adopted 2026-08-15): legal alone means
+        // a nonzero BMP unit — zero is an interior NUL (refused), any surrogate is
+        // unpaired at length 1 (refused), and anything above 0xFFFF is not a code
+        // unit at all (refused; this includes 0x10000..0x10FFFF, the pre-code-unit
+        // format's astral groups)
         {
             uint[] hostile =
             {
@@ -413,20 +418,67 @@ internal static class RedTeam
                     ReadStream r = new ReadStream(buf, 16);
                     string s = "";
                     bool ok = r.SerializeWideString(ref s, 8);
-                    bool legal = cp <= 0x10FFFF && !(cp >= 0xD800 && cp <= 0xDFFF);
+                    bool legal = cp >= 1 && cp <= 0xFFFF && !(cp >= 0xD800 && cp <= 0xDFFF);
                     if (ok != legal)
                     {
-                        Finding($"wstring code point 0x{cp:X}: read returned {ok}, expected {legal}");
+                        Finding($"wstring unit 0x{cp:X}: read returned {ok}, expected {legal}");
                     }
                 }
                 catch (Exception e)
                 {
-                    Finding($"wstring code point 0x{cp:X}: THREW {e.GetType().Name}: {e.Message}");
+                    Finding($"wstring unit 0x{cp:X}: THREW {e.GetType().Name}: {e.Message}");
                 }
             }
         }
 
-        // e) every invalid UTF-8 shape through SerializeString
+        // d2) surrogate pairing through the wide string reader: a well-formed pair
+        // is the ONLY multi-group shape involving surrogates that may pass — every
+        // unpaired arrangement, and a NUL riding behind a valid pair, must refuse
+        {
+            (uint[] units, bool legal)[] sequences =
+            {
+                (new uint[] { 0xD83D, 0xDE00 }, true),           // a valid pair: U+1F600
+                (new uint[] { 0xDBFF, 0xDFFF }, true),           // the last valid pair: U+10FFFF
+                (new uint[] { 0xD83D, 0x0041 }, false),          // high then BMP
+                (new uint[] { 0xD83D, 0xD83D }, false),          // high then high
+                (new uint[] { 0xDE00, 0xD83D }, false),          // reversed pair
+                (new uint[] { 0x0041, 0xD83D }, false),          // ends inside a pair
+                (new uint[] { 0xD83D, 0xDE00, 0x0000 }, false),  // NUL behind a valid pair
+            };
+            foreach ((uint[] units, bool legal) in sequences)
+            {
+                byte[] buf = new byte[32];
+                WriteStream w = new WriteStream(buf);
+                int count = units.Length;
+                w.SerializeInt(ref count, 0, 7);
+                foreach (uint unit in units)
+                {
+                    uint v = unit;
+                    w.SerializeBits(ref v, 32);
+                }
+                w.Flush();
+                _cases++;
+                string shape = string.Join(" ", Array.ConvertAll(units, x => x.ToString("X4")));
+                try
+                {
+                    ReadStream r = new ReadStream(buf, 32);
+                    string s = "";
+                    bool ok = r.SerializeWideString(ref s, 8);
+                    if (ok != legal)
+                    {
+                        Finding($"wstring units [{shape}]: read returned {ok}, expected {legal}");
+                    }
+                }
+                catch (Exception e)
+                {
+                    Finding($"wstring units [{shape}]: THREW {e.GetType().Name}: {e.Message}");
+                }
+            }
+        }
+
+        // e) every refused payload shape through SerializeString: the invalid UTF-8
+        // shapes, plus an interior NUL — valid UTF-8, refused anyway (serialize#8):
+        // the wire length and the perceived C-string length would disagree
         {
             byte[][] bad =
             {
@@ -438,6 +490,7 @@ internal static class RedTeam
                 new byte[] { 0xF8, 0x88, 0x80, 0x80, 0x80 },
                 new byte[] { 0xE2, 0x28, 0xA1 },
                 new byte[] { 0xC2 },                   // truncated sequence
+                new byte[] { 0x61, 0x00, 0x62 },       // interior NUL (two-lengths smuggling)
             };
             foreach (byte[] payload in bad)
             {

@@ -968,7 +968,12 @@ internal static partial class Program
         // trusted): it asserts in debug builds — test_write_contract_asserts
         // proves the assert fires — and is unchecked in release
 
-        // string bytes that are not valid UTF-8 must be rejected on read
+        // refusal (serialize#8): string bytes that are not valid UTF-8 must be
+        // rejected on read. INVERTED CHECK — if the reader tested
+        // `SerializeCompat.Utf8IsValid(utf8)` instead of `!SerializeCompat.
+        // Utf8IsValid(utf8)` (or skipped the call), 0xC3 0x28 would decode via
+        // Encoding.UTF8.GetString into "�(" and be handed to the application
+        // as if the peer had sent it.
         {
             byte[] buffer = new byte[8];
             WriteStream writeStream = new WriteStream(buffer);
@@ -984,11 +989,36 @@ internal static partial class Program
                 $"expected InvalidString, got {readStream.Error}");
             Check(value == "unchanged", "a failed read must leave the value unmodified");
         }
+
+        // refusal (serialize#8): an interior NUL is valid UTF-8 but must be rejected
+        // on read — the two-lengths smuggling primitive: the wire length says 3, a
+        // C-string consumer downstream (strlen/strcpy, a native plugin, a logging
+        // sink) perceives length 1, and the bytes after the NUL ride along unseen.
+        // INVERTED CHECK — if the reader tested `utf8.IndexOf((byte)0) < 0` instead
+        // of `>= 0` (or skipped it), this read would succeed and value would be
+        // "a\0b": value.Length == 3 while the perceived C-string length is 1.
+        {
+            byte[] buffer = new byte[8];
+            WriteStream writeStream = new WriteStream(buffer);
+            int length = 3;
+            writeStream.SerializeInt(ref length, 0, 255);
+            writeStream.SerializeBytes(new byte[] { 0x61, 0x00, 0x62 }); // "a", NUL, "b"
+            writeStream.Flush();
+
+            ReadStream readStream = new ReadStream(buffer);
+            string value = "unchanged";
+            Check(!readStream.SerializeString(ref value, 256), "expected the read to fail");
+            Check(readStream.Error == SerializeError.InvalidString,
+                $"expected InvalidString, got {readStream.Error}");
+            Check(value == "unchanged", "a failed read must leave the value unmodified");
+        }
     }
 
     private static void TestWStringValidation()
     {
-        // BMP and astral code points round trip; empty string round trips
+        // BMP and astral strings round trip; empty string round trips. The astral
+        // string rides as surrogate pairs — one UTF-16 code unit per 32-bit group
+        // (STANDARD.md, adopted 2026-08-15), four groups for the two emoji
         string[] values = { "", "мир", "привіт, світ!", "\U0001F600\U0001F680" };
 
         foreach (string expected in values)
@@ -1006,8 +1036,8 @@ internal static partial class Program
             Check(value == expected, $"expected \"{expected}\", got \"{value}\"");
         }
 
-        // the longest legal string (bufferSize-1 code points) round trips, and the
-        // measure stream agrees with the write
+        // the longest legal string (bufferSize-1 UTF-16 code units) round trips, and
+        // the measure stream agrees with the write
         {
             const int bufferSize = 8;
             string longest = new string('a', bufferSize - 1);
@@ -1029,31 +1059,152 @@ internal static partial class Program
             Check(readStream.SerializeWideString(ref value, bufferSize), "read failed");
             Check(value == longest, "longest legal string did not round trip");
 
-            // one code point too many is a writer contract violation, no longer
+            // one code unit too many is a writer contract violation, no longer
             // rejected at runtime (serialize#52: writes are trusted): it asserts in
             // debug builds — test_write_contract_asserts proves the assert fires
         }
 
-        // invalid code points (surrogates, values above 0x10FFFF) must be rejected on
-        // read — the C# analog of the C++ test where a code point above 16 bits must
-        // fail rather than truncate on 2-byte wchar_t platforms
-        uint[] invalidCodePoints = { 0xD800, 0xDFFF, 0x110000, 0xFFFFFFFF };
-        foreach (uint codePoint in invalidCodePoints)
+        // THE CONFORMANCE PIN: "a\U0001F600" in a wchar_t[8] buffer is exactly these
+        // 13 bytes — 3-bit length 3 (UNITS: 0x0061, then the surrogate pair 0xD83D
+        // 0xDE00), then three unaligned 32-bit groups. Byte-for-byte what
+        // serialize.c (mas-bandwidth/serialize.c#12) and the C++
+        // wstring-surrogate-boundary branch emit for L"a\U0001F600" on EVERY
+        // wchar_t width; derived with a reference bit packer validated against the
+        // STANDARD.md worked example. Never regenerate these.
+        //
+        // Before the code-unit fix this pin was doubly unreachable: the writer
+        // emitted CODE POINTS (3-bit length 2, groups 0x0061 and 0x1F600 — the bytes
+        // were 0A 03 00 00 00 B0 0F 00 00), and the reader REFUSED these very bytes
+        // at its group check, `codePoint > 0x10FFFF || (codePoint >= 0xD800 &&
+        // codePoint <= 0xDFFF)` → ValueOutOfRange on the 0xD83D group — so a valid
+        // astral wstring from a conforming port could never be read at all.
+        {
+            byte[] astralWireBytes =
+            {
+                0x0B, 0x03, 0x00, 0x00, 0xE8, 0xC1, 0x06, 0x00, 0x00, 0xF0, 0x06,
+                0x00, 0x00,
+            };
+            const string astral = "a\U0001F600";
+            const int bufferSize = 8;
+
+            // write side: the writer must emit exactly the conforming bytes
+            byte[] buffer = new byte[64];
+            WriteStream writeStream = new WriteStream(buffer);
+            string v = astral;
+            Check(writeStream.SerializeWideString(ref v, bufferSize), "write failed");
+            writeStream.Flush();
+            Check(writeStream.BytesProcessed == astralWireBytes.Length,
+                $"expected {astralWireBytes.Length} bytes, got {writeStream.BytesProcessed}");
+            Check(writeStream.Data.SequenceEqual(astralWireBytes),
+                $"astral bytes mismatch:\nexpected {Convert.ToHexString(astralWireBytes)}\ngot      {Convert.ToHexString(writeStream.Data)}");
+
+            // measure agrees: 3 bits of length + 3 * 32 bits of units = 99 bits
+            MeasureStream measureStream = new MeasureStream();
+            string m = astral;
+            Check(measureStream.SerializeWideString(ref m, bufferSize), "measure failed");
+            Check(measureStream.BitsProcessed == 99,
+                $"expected 99 bits measured, got {measureStream.BitsProcessed}");
+
+            // read side: the conforming bytes (as another port would send them) must
+            // decode — the pair recombines into the astral character
+            ReadStream readStream = new ReadStream(astralWireBytes);
+            string value = "";
+            Check(readStream.SerializeWideString(ref value, bufferSize),
+                $"read of the conforming astral vector failed: {readStream.Error}");
+            Check(value == astral, $"expected \"{astral}\", got \"{value}\"");
+        }
+
+        // a group above 0xFFFF is not a UTF-16 code unit and must be rejected on
+        // read — including 0x10000..0x10FFFF, the OLD format's astral code point
+        // groups: under the code-unit format (STANDARD.md, adopted 2026-08-15) an
+        // astral character is a surrogate pair, never a single group. This is also
+        // the C# analog of the C 2-byte wchar_t path: char cannot hold the value,
+        // so fail rather than truncate
+        uint[] invalidUnits = { 0x10000, 0x10FFFF, 0x110000, 0xFFFFFFFF };
+        foreach (uint invalidUnit in invalidUnits)
         {
             byte[] buffer = new byte[16];
 
             WriteStream writeStream = new WriteStream(buffer);
             int length = 1;
             writeStream.SerializeInt(ref length, 0, 63); // length prefix for bufferSize 64
-            uint cp = codePoint;
-            writeStream.SerializeBits(ref cp, 32);
+            uint u = invalidUnit;
+            writeStream.SerializeBits(ref u, 32);
             writeStream.Flush();
 
             ReadStream readStream = new ReadStream(buffer);
             string value = "unchanged"; // sentinel: a failed read must not publish a partial string
-            Check(!readStream.SerializeWideString(ref value, 64), $"code point {codePoint:x}: expected the read to fail");
+            Check(!readStream.SerializeWideString(ref value, 64), $"unit {invalidUnit:x}: expected the read to fail");
             Check(readStream.Error == SerializeError.ValueOutOfRange,
-                $"code point {codePoint:x}: expected ValueOutOfRange, got {readStream.Error}");
+                $"unit {invalidUnit:x}: expected ValueOutOfRange, got {readStream.Error}");
+            Check(value == "unchanged", "a failed read must leave the value unmodified");
+        }
+
+        // refusal (serialize#8): unpaired or invalid surrogates must be rejected on
+        // read — an unpaired surrogate is a refusal, not a pass-through. INVERTED
+        // CHECK — if the reader stored lone surrogates as they arrived instead of
+        // refusing (dropping the pendingHigh/lone-low branches), each of these would
+        // succeed and publish an ill-formed .NET string: one that
+        // char.IsSurrogate flags, that Encoding.UTF8.GetBytes silently rewrites to
+        // U+FFFD, and that a conforming peer would itself refuse if echoed back.
+        {
+            uint[][] unpairedShapes =
+            {
+                new uint[] { 0xD83D },                    // lone high surrogate
+                new uint[] { 0xD83D, 0x0041 },            // high followed by a BMP unit
+                new uint[] { 0xD83D, 0xD83D },            // high followed by another high
+                new uint[] { 0xDE00 },                    // lone low surrogate
+                new uint[] { 0x0041, 0xDE00 },            // low with no high before it
+                new uint[] { 0xD83D, 0xDE00, 0xD83D },    // valid pair, then ends inside a pair
+            };
+            foreach (uint[] units in unpairedShapes)
+            {
+                byte[] buffer = new byte[32];
+
+                WriteStream writeStream = new WriteStream(buffer);
+                int length = units.Length;
+                writeStream.SerializeInt(ref length, 0, 63); // length prefix for bufferSize 64
+                foreach (uint unit in units)
+                {
+                    uint u = unit;
+                    writeStream.SerializeBits(ref u, 32);
+                }
+                writeStream.Flush();
+
+                ReadStream readStream = new ReadStream(buffer);
+                string value = "unchanged";
+                string shape = string.Join(" ", Array.ConvertAll(units, x => x.ToString("x4")));
+                Check(!readStream.SerializeWideString(ref value, 64), $"units [{shape}]: expected the read to fail");
+                Check(readStream.Error == SerializeError.InvalidString,
+                    $"units [{shape}]: expected InvalidString, got {readStream.Error}");
+                Check(value == "unchanged", "a failed read must leave the value unmodified");
+            }
+        }
+
+        // refusal (serialize#8): an interior NUL unit must be rejected on read — the
+        // wide twin of the narrow smuggling primitive: wire length 3 versus the
+        // length 1 a wcslen consumer perceives. INVERTED CHECK — if the reader
+        // tested `unit != 0` instead of `unit == 0` (or skipped it), this read would
+        // succeed and publish "a\0b" with value.Length == 3.
+        {
+            byte[] buffer = new byte[32];
+
+            WriteStream writeStream = new WriteStream(buffer);
+            int length = 3;
+            writeStream.SerializeInt(ref length, 0, 63); // length prefix for bufferSize 64
+            uint[] units = { 0x0061, 0x0000, 0x0062 }; // "a", NUL, "b"
+            foreach (uint unit in units)
+            {
+                uint u = unit;
+                writeStream.SerializeBits(ref u, 32);
+            }
+            writeStream.Flush();
+
+            ReadStream readStream = new ReadStream(buffer);
+            string value = "unchanged";
+            Check(!readStream.SerializeWideString(ref value, 64), "expected the read to fail");
+            Check(readStream.Error == SerializeError.InvalidString,
+                $"expected InvalidString, got {readStream.Error}");
             Check(value == "unchanged", "a failed read must leave the value unmodified");
         }
     }
@@ -1471,7 +1622,8 @@ internal static partial class Program
         // string and wstring length, int relative ordering, the measure stream, and
         // the two compressed float rulings (non-finite value, non-finite declaration).
 
-        // a fully conforming write sequence must not assert
+        // a fully conforming write sequence must not assert — surrogate PAIRS
+        // included: a well-formed astral wstring is valid UTF-16, not a violation
         Check(!AssertFires(() =>
         {
             WriteStream stream = new WriteStream(new byte[64]);
@@ -1479,6 +1631,8 @@ internal static partial class Program
             stream.SerializeInt(ref i, 0, 100);
             string s = "ok";
             stream.SerializeString(ref s, 16);
+            string astral = "a\U0001F600";
+            stream.SerializeWideString(ref astral, 8);
             float f = 2.5f;
             stream.SerializeCompressedFloat(ref f, 0, 10, 0.01f);
             stream.Flush();
@@ -1537,6 +1691,17 @@ internal static partial class Program
             string tooLong = new string('a', 8);
             stream.SerializeWideString(ref tooLong, 8);
         }), "an oversized wide string write must assert in debug");
+
+        // wide string payload that is not well-formed UTF-16: an unpaired surrogate
+        // is a writer contract violation (STANDARD.md, adopted 2026-08-15), asserted
+        // in debug; conforming READERS refuse it in every build mode
+        // (test_wstring_validation pins the refusal)
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[512]);
+            string unpaired = "a\uD83Db"; // high surrogate with no low half
+            stream.SerializeWideString(ref unpaired, 8);
+        }), "an ill-formed UTF-16 wide string write must assert in debug");
 
         // int relative with previous >= current
         Check(AssertFires(() =>
