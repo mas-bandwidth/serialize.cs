@@ -134,17 +134,26 @@ instead of passing silently. (The Go port's harness builds its C++ half without
 CI runs on x86-64, where the default is no contraction; worth flagging upstream.)
 
 CI runs this gate in its own job, with `CXX=clang++` and the C++ clone checked out
-at release tag `v1.6.2`. That tag is a floor, not a preference: `v1.6.2` is the C++
-release that relaxed the assert from `min < max` to `min <= max`, and the compat
-sequence carries a degenerate range (`min == max`), so an older `serialize.h` aborts
-the gate. The C++ half is built with asserts live (no `-DNDEBUG`), so that field has
-to pass against the library's own checks rather than around them. Bump deliberately,
-in its own commit. Locally the default compiler is fine and the clone may track HEAD.
+at release tag `v1.7.0` — the family's one interop pin: one policy, one version,
+every port's gate against the same current C++ release. Under the four different
+pins this replaced (`v1.6.2` here and in the Go port, `v1.4.3` in Rust, upstream
+`HEAD` in C), each port certified against a different wire. `v1.7.0` is also the
+release that pins the `compressed_float` write arithmetic to float32 with two
+roundings on every architecture — the arithmetic `QuantizeCompressedFloat` here
+mirrors — so the byte-identity `cmp` doubles as the cross-language proof of that
+pin. The old constraint still holds underneath: `serialize.h` before `v1.6.2`
+asserts `min < max`, and the compat sequence carries a degenerate range
+(`min == max`), so an older clone aborts the gate. The C++ half is built with
+asserts live (no `-DNDEBUG`), so that field has to pass against the library's own
+checks rather than around them. Bump family-wide, deliberately, in its own commit
+per repo. Locally the default compiler is fine and the clone may track HEAD.
 
-Each port pins on its own schedule — there is no family-wide tag. At the time of
-writing the Rust port pins `v1.4.3` (its interop harness has no degenerate field, so
-it has no reason to move) and the C port clones upstream `HEAD`; the Go port pins
-`v1.6.2` for the same degenerate-range reason as this one.
+The compat sequence's tail is the fixed point / 128 bit section: the six fields the
+C++ `GoldenWireData` carries (`Q8.8`, `Q16.16` signed and unsigned, `Q48.16`,
+`Q112.16` and `Q64.64` in 128 bit storage), values verbatim, with the golden
+message's byte-aligned section structure — so the gate proves the Q format codec
+and the emulated 128 bit pair against the real `serialize.h`, three group and four
+group offset encodings included.
 
 The spec-sync job deliberately does *not* use the interop tag: it diffs
 `STANDARD.md` against upstream `main`, because catching drift against the newest
@@ -152,8 +161,8 @@ spec text is the point.
 
 ## Fixed point and 128 bit integers
 
-The fixed point + 128 bit additions to the C++ library (its `fixed-point` branch)
-are ported in full. The 128 bit surface speaks `Int128Value` / `UInt128Value` — the
+The fixed point + 128 bit additions to the C++ library (merged upstream; in every
+release the interop gate can pin) are ported in full. The 128 bit surface speaks `Int128Value` / `UInt128Value` — the
 emulated pair in `src/Int128Pair.cs`, two's complement math on `(Hi, Lo)` ulong
 halves, mirroring the C++ emulated types — on every target framework, including
 `netstandard2.1` where `System.Int128` does not exist. One representation and one

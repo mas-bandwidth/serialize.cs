@@ -16,6 +16,13 @@
     zero bits: it proves the field is free on the wire AND that every field after it
     stays put, which a trailing field could not show. Because it writes nothing, adding
     it left the bytes identical -- the gate's byte-identity cmp is the proof.
+
+    The tail is the fixed point / 128 bit section, the six fields the C++
+    GoldenWireData carries, with the golden message's structure: the section starts
+    byte aligned, and the two wide (128 bit storage) fields start byte aligned again.
+    The values are the C++ golden values verbatim, so the gate proves the Q format
+    codec and the emulated 128 bit pair against the real serialize.h -- three group
+    and four group offset encodings included.
 */
 
 using System;
@@ -49,6 +56,12 @@ internal sealed class CompatData
     public long Int64Full;
     public long Int64Range;
     public float FmaBoundaryFloat;
+    public short FixedQ8_8;
+    public int FixedQ16_16;
+    public long FixedQ48_16;
+    public uint FixedQ16_16Unsigned;
+    public Int128Value FixedQ112_16Wide;
+    public Int128Value FixedQ64_64Wide;
 
     public static CompatData Init()
     {
@@ -82,6 +95,14 @@ internal sealed class CompatData
             // rounds down to 0. C# always evaluates strictly; the C++ half must be
             // built with -ffp-contract=off (strict evaluation is the normative wire)
             FmaBoundaryFloat = 0.005f,
+            // the C++ GoldenWireData fixed point values, verbatim
+            FixedQ8_8 = -(3 * 256 + 64),                        // -3.25 in Q8.8
+            FixedQ16_16 = 1234 * 65536 + 32768,                 // 1234.5 in Q16.16
+            FixedQ48_16 = -(54321L * 65536 + 12345),            // -54321.1883... in Q48.16
+            FixedQ16_16Unsigned = 29999u * 65536u + 65535u,     // 29999.99998... in Q16.16: every fraction bit set
+            FixedQ112_16Wide = -(98765432109L * 65536 + 4321),  // -98765432109.066 in Q112.16: 75 bits on the wire, three groups
+            FixedQ64_64Wide = ((Int128Value)0x0123456789ABCDEF << 64)
+                            + 0x0FEDCBA987654321,               // Q64.64 over the full unit range: 128 bits, four groups, every group distinct
         };
     }
 
@@ -114,6 +135,16 @@ internal sealed class CompatData
         stream.SerializeInt64(ref Int64Full, long.MinValue, long.MaxValue);
         stream.SerializeInt64(ref Int64Range, -5000000000, +5000000000);
         stream.SerializeCompressedFloat(ref FmaBoundaryFloat, 0.0f, 10.0f, 0.01f);
+        // the fixed point / 128 bit section, with the golden message's structure:
+        // it starts byte aligned, so every bit above it stays put
+        stream.SerializeAlign();
+        stream.SerializeFixed(ref FixedQ8_8, 8, 8, -100, +100);
+        stream.SerializeFixed(ref FixedQ16_16, 16, 16, -2000, +2000);
+        stream.SerializeFixed(ref FixedQ48_16, 48, 16, -100000, +100000);
+        stream.SerializeFixed(ref FixedQ16_16Unsigned, 16, 16, 0, 30000);
+        stream.SerializeAlign(); // the wide fixed section starts byte aligned too
+        stream.SerializeFixed(ref FixedQ112_16Wide, 112, 16, -144115188075855872, +144115188075855872); // ±2^57 units: 75 bits, the three group structure
+        stream.SerializeFixed(ref FixedQ64_64Wide, 64, 64, long.MinValue, long.MaxValue);               // full unit range: 128 bits, the four group structure
         return stream.Error == SerializeError.None;
     }
 
@@ -142,6 +173,12 @@ internal sealed class CompatData
             && Bits33 == other.Bits33
             && Int64Full == other.Int64Full
             && Int64Range == other.Int64Range
+            && FixedQ8_8 == other.FixedQ8_8
+            && FixedQ16_16 == other.FixedQ16_16
+            && FixedQ48_16 == other.FixedQ48_16
+            && FixedQ16_16Unsigned == other.FixedQ16_16Unsigned
+            && FixedQ112_16Wide == other.FixedQ112_16Wide
+            && FixedQ64_64Wide == other.FixedQ64_64Wide
             // compare within the resolution: 0.005 decodes to 0.01
             && Math.Abs(FmaBoundaryFloat - other.FmaBoundaryFloat) <= 0.01f;
     }

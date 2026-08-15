@@ -33,7 +33,7 @@ namespace Serialize.Tests;
 // aligned, so every byte pinned above it stays put"), so serializing it from a fresh
 // stream produces exactly the tail bytes of the C++ 112 byte golden vector. The
 // pre-existing 72 byte GoldenWireData message is untouched: it still matches the
-// C++ release the interop gate pins (v1.6.2, whose 112 byte golden vector opens
+// C++ release the interop gate pins (v1.7.0, whose 112 byte golden vector opens
 // with those same 72 bytes) and the Go and Rust ports.
 internal sealed class FixedWireData
 {
