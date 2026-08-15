@@ -489,38 +489,40 @@ internal static partial class Program
 
     private static void TestBatchErrorLatch()
     {
-        // an overflow inside a batch latches on the batch, later calls are no-ops, and
-        // End carries the error to the stream
+        // the write path no longer latches Overflow or ValueOutOfRange of its own
+        // (serialize#52: writes are trusted, contract violations are debug asserts),
+        // so the write-side latch these blocks exercise is the one the library still
+        // owns: a user abort through SerializeObject. an abort through a delegated
+        // batch call latches on the batch, later calls are no-ops, and End carries
+        // the error to the stream
         {
             WriteStream stream = new WriteStream(new byte[8]);
             WriteBatch batch = stream.BeginBatch();
-            ulong v = ~0ul;
-            Check(batch.SerializeBits64(ref v, 64), "the first 64 bits must fit");
-            Check(!batch.SerializeBits64(ref v, 64), "expected the second 64 bits to overflow");
-            Check(batch.Error == SerializeError.Overflow, $"expected Overflow, got {batch.Error}");
+            uint v = 5;
+            Check(batch.SerializeBits(ref v, 3), "the first write must succeed");
+            Check(!batch.SerializeObject(new FailingObject()), "expected the user abort to fail");
+            Check(batch.Error == SerializeError.ValueOutOfRange, $"expected ValueOutOfRange, got {batch.Error}");
             uint one = 1;
             Check(!batch.SerializeBits(ref one, 1), "calls after a latched error must be no-ops");
             // a delegated call after a latched error is a no-op too: the error rides
             // down to the stream and back
             string s = "abc";
             Check(!batch.SerializeString(ref s, 16), "delegated calls after a latched error must be no-ops");
-            Check(batch.Error == SerializeError.Overflow, $"expected Overflow to stay latched, got {batch.Error}");
+            Check(batch.Error == SerializeError.ValueOutOfRange, $"expected the error to stay latched, got {batch.Error}");
             batch.End();
-            Check(stream.Error == SerializeError.Overflow, $"expected Overflow on the stream, got {stream.Error}");
+            Check(stream.Error == SerializeError.ValueOutOfRange, $"expected the error on the stream, got {stream.Error}");
         }
 
         // a pre-latched stream error seeds the batch: it begins errored
         {
             WriteStream stream = new WriteStream(new byte[8]);
-            ulong v = 0;
-            Check(stream.SerializeBits64(ref v, 64), "the first 64 bits must fit");
-            uint one = 1;
-            Check(!stream.SerializeBits(ref one, 1), "expected the stream to overflow");
+            Check(!stream.SerializeObject(new FailingObject()), "expected the user abort to fail");
             WriteBatch batch = stream.BeginBatch();
             Check(!batch.Ok, "a batch begun on an errored stream must begin errored");
+            uint one = 1;
             Check(!batch.SerializeBits(ref one, 1), "batch calls on a carried-in error must be no-ops");
             batch.End();
-            Check(stream.Error == SerializeError.Overflow, $"expected Overflow to survive, got {stream.Error}");
+            Check(stream.Error == SerializeError.ValueOutOfRange, $"expected the error to survive, got {stream.Error}");
         }
 
         // a read align of nonzero padding fails with Align through the batch
