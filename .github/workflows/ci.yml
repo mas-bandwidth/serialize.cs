@@ -22,7 +22,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # windows-latest is Unity's authoring platform: the library is CONSUMED
+        # there more than anywhere else, so it compiles and tests there too.
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-dotnet@v6
@@ -51,13 +53,52 @@ jobs:
       # they check the pair against the framework type, which 2.1 lacks.
       - name: Tests (netstandard2.1 assembly, the Unity-class leg)
         run: dotnet run -c Release --project tests-ns21/TestsNs21.csproj
-      # no test framework, so the runner's exit code is the whole verdict; these
-      # keep the remaining executables compiling (compat is exercised for real in
-      # the cpp-interop job, redteam runs are manual)
+      # no test framework, so the runner's exit code is the whole verdict; this
+      # keeps the compat executable compiling everywhere (it is exercised for
+      # real in the cpp-interop job; the red team harness runs in its own job)
       - name: Build the compat harness
         run: dotnet build compat/Compat.csproj -c Release
-      - name: Build the red team harness
-        run: dotnet build redteam/RedTeam.csproj -c Release
+
+  redteam:
+    name: red team (hostile-input harness)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      # the harness records findings instead of stopping at the first one, then
+      # exits nonzero if any were recorded: the exit code is the verdict. It used
+      # to be build-only here, which meant nobody was reading the answers it was
+      # written to produce.
+      - name: Run the red team harness (exit code is the verdict)
+        run: dotnet run -c Release --project redteam/RedTeam.csproj
+
+  lint:
+    name: analyzers and style
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      # style (IDExxxx) and analyzer (CAxxxx) rules at warning severity, per
+      # project, --verify-no-changes so drift fails instead of being fixed
+      # silently. Deliberately NOT `dotnet format whitespace`: the repo indents
+      # block-namespace bodies flush left, the C++ single-header convention the
+      # whole family shares, and the whitespace formatter cannot be taught that.
+      # Deliberately NOT AnalysisMode=Recommended either: its naming rules
+      # (CA1711/CA1716/CA1051) would demand renaming WriteStream, Error and the
+      # 128 bit pair's fields — the API surface the family shares by design.
+      - name: dotnet format style + analyzers (verify, all projects)
+        run: |
+          for p in src/Serialize.csproj tests/Tests.csproj tests-ns21/TestsNs21.csproj compat/Compat.csproj redteam/RedTeam.csproj; do
+            echo "== $p"
+            dotnet format style "$p" --verify-no-changes --severity warn
+            dotnet format analyzers "$p" --verify-no-changes --severity warn
+          done
 
   cpp-interop:
     name: C++ wire compatibility
