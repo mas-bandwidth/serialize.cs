@@ -741,7 +741,11 @@ internal static class RedTeam
     {
         // build a packet with a long continuation chain, then truncate it everywhere.
         // the guarded loop must terminate within the packet's bit budget in every case.
-        byte[] full = new byte[64];
+        // the source buffer is sized for the full 200-entry chain (1800 bits = 225 bytes):
+        // writes are writer-trusted (serialize#52) — overflowing a write buffer is a harness
+        // bug, not an attack surface. the reader-side sweep below still uses only the first
+        // 64 bytes, so the hostile prefixes are unchanged.
+        byte[] full = new byte[256];
         {
             WriteStream w = new WriteStream(full);
             for (int i = 0; i < 200; i++)

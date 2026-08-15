@@ -13,6 +13,9 @@
 */
 
 using System;
+#if DEBUG
+using System.Diagnostics;
+#endif
 
 namespace Serialize.Tests;
 
@@ -386,7 +389,12 @@ internal static partial class Program
         RunTest("test_extended_wire_format", TestExtendedWireFormat);
         RunTest("test_fixed_wire_format", TestFixedWireFormat);
         RunTest("test_write_bytes_qword_phases", TestWriteBytesQwordPhases);
-        RunTest("test_write_overflow", TestWriteOverflow);
+        RunTest("test_write_trusted", TestWriteTrusted);
+#if DEBUG
+        // only in debug builds: the write-side contracts are Debug.Assert, compiled
+        // out without the DEBUG constant — in a release build there is nothing to fire
+        RunTest("test_write_contract_asserts", TestWriteContractAsserts);
+#endif
         RunTest("test_align_validation", TestAlignValidation);
         RunTest("test_measure_stream", TestMeasureStream);
         RunTest("test_continue", TestContinue);
@@ -955,15 +963,10 @@ internal static partial class Program
             Check(value == expected, $"expected \"{expected}\", got \"{value}\"");
         }
 
-        // strings that don't fit in the buffer size must be rejected on write
-        {
-            byte[] buffer = new byte[512];
-            WriteStream writeStream = new WriteStream(buffer);
-            string tooLong = new string('x', 256);
-            Check(!writeStream.SerializeString(ref tooLong, 256), "expected the write to fail");
-            Check(writeStream.Error == SerializeError.ValueOutOfRange,
-                $"expected ValueOutOfRange, got {writeStream.Error}");
-        }
+        // a string that does not fit in the buffer size is a writer contract
+        // violation, no longer rejected at runtime (serialize#52: writes are
+        // trusted): it asserts in debug builds — test_write_contract_asserts
+        // proves the assert fires — and is unchecked in release
 
         // string bytes that are not valid UTF-8 must be rejected on read
         {
@@ -1026,12 +1029,9 @@ internal static partial class Program
             Check(readStream.SerializeWideString(ref value, bufferSize), "read failed");
             Check(value == longest, "longest legal string did not round trip");
 
-            // one code point too many must fail on write
-            writeStream.Reset(buffer);
-            string tooLong = new string('a', bufferSize);
-            Check(!writeStream.SerializeWideString(ref tooLong, bufferSize), "expected the write to fail");
-            Check(writeStream.Error == SerializeError.ValueOutOfRange,
-                $"expected ValueOutOfRange, got {writeStream.Error}");
+            // one code point too many is a writer contract violation, no longer
+            // rejected at runtime (serialize#52: writes are trusted): it asserts in
+            // debug builds — test_write_contract_asserts proves the assert fires
         }
 
         // invalid code points (surrogates, values above 0x10FFFF) must be rejected on
@@ -1167,20 +1167,14 @@ internal static partial class Program
             Check(Math.Abs(value - written) <= 4096.0, $"expected {written} within 4096, got {value}");
         }
 
-        // a NaN value must quantize into range rather than corrupt the stream
-        {
-            byte[] buffer = new byte[8];
-
-            WriteStream writeStream = new WriteStream(buffer);
-            float written = BitConverter.UInt32BitsToSingle(0x7fc00000); // quiet NaN
-            Check(writeStream.SerializeCompressedFloat(ref written, 0, 10, 0.01f), "write failed");
-            writeStream.Flush();
-
-            ReadStream readStream = new ReadStream(buffer);
-            float value = -1.0f;
-            Check(readStream.SerializeCompressedFloat(ref value, 0, 10, 0.01f), "read failed");
-            Check(value >= 0.0f && value <= 10.0f, $"expected value in [0,10], got {value}"); // NaN clamps to the low end
-        }
+        // sending NaN or infinity through compressed float is NON-CONFORMING (ruled
+        // 2026-08-15: "attempting to send NaN or INF or anything else through
+        // compressed float is non-conforming and should assert out on write too"):
+        // it asserts on write in debug builds — test_write_contract_asserts proves
+        // both the NaN and infinity asserts fire — and in release the quantizer's
+        // clamp still forces non-finite values into range rather than corrupting
+        // the stream. The read path is untouched: a decoded value from a conforming
+        // declaration is always in [min,max].
     }
 
     private static void TestCompressedFloatQuantizationBoundaries()
@@ -1373,30 +1367,224 @@ internal static partial class Program
         }
     }
 
-    private static void TestWriteOverflow()
+    private static void TestWriteTrusted()
     {
+        // Writes are trusted (STANDARD.md doctrine; enacted for C# per serialize#52,
+        // the ruling verbatim: "Yes, then let C# match C++ too"): the write path
+        // performs no overflow or range checking in release builds. Exceeding the
+        // buffer is a writer contract violation, caught by Debug.Assert in debug
+        // builds (test_write_contract_asserts proves it fires). What the library
+        // still owes a conforming writer is exact capacity accounting, so the
+        // caller can preflight instead of relying on a rejection that no longer
+        // exists. This test replaces test_write_overflow, which pinned the removed
+        // write-side Overflow latch.
         byte[] buffer = new byte[8];
 
         WriteStream stream = new WriteStream(buffer);
         uint v = 1;
+        Check(stream.BitsAvailable == 64, $"expected 64 bits available, got {stream.BitsAvailable}");
         Check(stream.SerializeBits(ref v, 32), "write failed");
         Check(stream.SerializeBits(ref v, 32), "write failed");
-        Check(!stream.SerializeBits(ref v, 1), "expected the write to fail");
-        Check(stream.Error == SerializeError.Overflow, $"expected Overflow, got {stream.Error}");
+        Check(stream.BitsAvailable == 0, "a full buffer must report zero bits available");
+        Check(stream.Ok, "filling the buffer exactly is not an error");
+        stream.Flush();
+        Check(stream.BitsProcessed == 64, $"expected 64 bits processed, got {stream.BitsProcessed}");
 
-        // the error is sticky: every later call reports it without touching the stream
+        // the sticky error model survives on the write side for the one latch the
+        // library still owns there: a user abort through SerializeObject. after it,
+        // every later call is a no-op that returns false, and the first error wins.
+        WriteStream aborted = new WriteStream(new byte[8]);
+        uint a = 7;
+        Check(aborted.SerializeBits(ref a, 8), "write failed");
+        Check(!aborted.SerializeObject(new FailingObject()), "expected the user abort to fail");
+        Check(aborted.Error == SerializeError.ValueOutOfRange,
+            $"expected ValueOutOfRange from the abort, got {aborted.Error}");
         bool flag = true;
-        Check(!stream.SerializeBool(ref flag), "expected sticky failure");
-        Check(stream.Error == SerializeError.Overflow, "expected the error to stay latched");
-        Check(stream.BitsProcessed == 64, "failed serialize calls must not advance the stream");
-        Check(!stream.Ok, "Ok must be false once an error is latched");
-
-        // first error wins: a call that would fail with a different error on a healthy
-        // stream must not replace the latched one
-        int outOfRange = 999;
-        Check(!stream.SerializeInt(ref outOfRange, 0, 5), "expected sticky failure");
-        Check(stream.Error == SerializeError.Overflow, "the first latched error must win");
+        Check(!aborted.SerializeBool(ref flag), "expected sticky failure");
+        Check(aborted.BitsProcessed == 8, "failed serialize calls must not advance the stream");
+        Check(!aborted.Ok, "Ok must be false once an error is latched");
+        Check(aborted.Error == SerializeError.ValueOutOfRange, "the first latched error must win");
     }
+
+#if DEBUG
+    /// <summary>Thrown by the throwing trace listener so a fired Debug.Assert
+    /// surfaces as a catchable exception instead of terminating the process.</summary>
+    private sealed class AssertFiredException : Exception
+    {
+        public AssertFiredException(string? message)
+            : base(message)
+        {
+        }
+    }
+
+    private sealed class ThrowingTraceListener : TraceListener
+    {
+        public override void Write(string? message)
+        {
+        }
+
+        public override void WriteLine(string? message)
+        {
+        }
+
+        public override void Fail(string? message)
+        {
+            throw new AssertFiredException(message);
+        }
+
+        public override void Fail(string? message, string? detailMessage)
+        {
+            throw new AssertFiredException(message);
+        }
+    }
+
+    /// <summary>Runs the action with a trace listener that turns a fired
+    /// Debug.Assert into an exception; returns true if an assert fired.</summary>
+    private static bool AssertFires(Action action)
+    {
+        TraceListener[] saved = new TraceListener[Trace.Listeners.Count];
+        Trace.Listeners.CopyTo(saved, 0);
+        Trace.Listeners.Clear();
+        Trace.Listeners.Add(new ThrowingTraceListener());
+        try
+        {
+            action();
+            return false;
+        }
+        catch (AssertFiredException)
+        {
+            return true;
+        }
+        finally
+        {
+            Trace.Listeners.Clear();
+            Trace.Listeners.AddRange(saved);
+        }
+    }
+
+    private static void TestWriteContractAsserts()
+    {
+        // The proof that a deliberately-invalid write still asserts: every write-side
+        // contract that used to be a release check (removed per serialize#52) fires
+        // its Debug.Assert in a debug build. Ordered to cover each converted family:
+        // value range, buffer overflow (stream and batch), fixed point offset,
+        // string and wstring length, int relative ordering, the measure stream, and
+        // the two compressed float rulings (non-finite value, non-finite declaration).
+
+        // a fully conforming write sequence must not assert
+        Check(!AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[64]);
+            int i = 5;
+            stream.SerializeInt(ref i, 0, 100);
+            string s = "ok";
+            stream.SerializeString(ref s, 16);
+            float f = 2.5f;
+            stream.SerializeCompressedFloat(ref f, 0, 10, 0.01f);
+            stream.Flush();
+        }), "a conforming write sequence must not assert");
+
+        // value out of range
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[8]);
+            int outOfRange = 999;
+            stream.SerializeInt(ref outOfRange, 0, 5);
+        }), "an out of range write must assert in debug");
+
+        // write past the end of the buffer
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[8]);
+            uint v = 1;
+            stream.SerializeBits(ref v, 32);
+            stream.SerializeBits(ref v, 32);
+            stream.SerializeBits(ref v, 1); // the 65th bit
+        }), "a write past the end of the buffer must assert in debug");
+
+        // batch write past the end of the buffer
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[8]);
+            WriteBatch batch = stream.BeginBatch();
+            ulong v = ~0ul;
+            batch.SerializeBits64(ref v, 64);
+            ulong w = 1;
+            batch.SerializeBits64(ref w, 64); // past the end
+            batch.End();
+        }), "a batch write past the end of the buffer must assert in debug");
+
+        // fixed point raw value outside the declared bounds
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[16]);
+            long raw = 200000L << 16; // 200000.0 in Q48.16, bounds ±100000
+            stream.SerializeFixed(ref raw, 48, 16, -100000, +100000);
+        }), "an out of range fixed point write must assert in debug");
+
+        // string that does not fit its buffer size
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[512]);
+            string tooLong = new string('x', 256);
+            stream.SerializeString(ref tooLong, 256);
+        }), "an oversized string write must assert in debug");
+
+        // wide string that does not fit its buffer size
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[512]);
+            string tooLong = new string('a', 8);
+            stream.SerializeWideString(ref tooLong, 8);
+        }), "an oversized wide string write must assert in debug");
+
+        // int relative with previous >= current
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[8]);
+            int current = 50;
+            stream.SerializeIntRelative(100, ref current);
+        }), "an unordered int relative write must assert in debug");
+
+        // the measure stream shares the writer's contract
+        Check(AssertFires(() =>
+        {
+            MeasureStream measure = new MeasureStream();
+            int outOfRange = 999;
+            measure.SerializeInt(ref outOfRange, 0, 5);
+        }), "an out of range measure must assert in debug");
+
+        // sending NaN through compressed float is non-conforming (ruled 2026-08-15:
+        // "attempting to send NaN or INF or anything else through compressed float
+        // is non-conforming and should assert out on write too")
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[8]);
+            float nan = BitConverter.UInt32BitsToSingle(0x7fc00000); // quiet NaN
+            stream.SerializeCompressedFloat(ref nan, 0, 10, 0.01f);
+        }), "a NaN compressed float write must assert in debug");
+
+        // ...and infinity, through the batch write path (the quantizer is shared)
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[8]);
+            WriteBatch batch = stream.BeginBatch();
+            float inf = float.PositiveInfinity;
+            batch.SerializeCompressedFloat(ref inf, 0, 10, 0.01f);
+            batch.End();
+        }), "an infinite compressed float batch write must assert in debug");
+
+        // a compressed float declaration whose delta overflows to infinity is
+        // non-conforming (ruled 2026-08-15: "it's non-conforming") and asserts at
+        // the param site
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[8]);
+            float v = 0.0f;
+            stream.SerializeCompressedFloat(ref v, -3.4e38f, +3.4e38f, 1.0f);
+        }), "a non-finite compressed float declaration must assert in debug");
+    }
+#endif // DEBUG
 
     private static void TestAlignValidation()
     {

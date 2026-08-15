@@ -12,8 +12,13 @@ from the C++ test suite, and CI runs a live interop harness against the real
 
 Family values: zero third-party dependencies (including test frameworks); malicious
 packet data never throws — reads fail cleanly with a sticky latched error (exceptions
-are reserved for API misuse); no unsafe code; zero allocation on serialization paths
-(strings on the read path are the documented exception).
+are reserved for API misuse); writes are trusted — the write path performs no
+validation in release builds, and writer contract violations (out of range values,
+buffer overflow, oversized strings, non-finite compressed floats) are `Debug.Assert`,
+compiled out without the `DEBUG` constant, matching the C++ library's
+`serialize_assert` (STANDARD.md "Writes assume trusted data", enacted for C# per
+serialize#52); no unsafe code; zero allocation on serialization paths (strings on the
+read path are the documented exception).
 
 ## Layout
 
