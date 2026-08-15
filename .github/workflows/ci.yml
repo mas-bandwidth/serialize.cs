@@ -59,6 +59,42 @@ jobs:
       - name: Build the compat harness
         run: dotnet build compat/Compat.csproj -c Release
 
+  # THE DEBUG LEG: the write-side contracts are Debug.Assert, compiled out of
+  # Release builds — so the Release-only job above can never execute
+  # test_write_contract_asserts (it exists only under DEBUG: 53 tests in Debug
+  # vs 52 in Release). This job is the only place those contract tests run in
+  # CI. Same matrix, TFMs and dotnet setup as the Release job; tests only — the
+  # compat harness and the standalone netstandard2.1 compile gate are
+  # Release-job concerns (the Unity-class run below still builds the Debug
+  # netstandard2.1 library via its project reference).
+  test-debug:
+    name: test debug (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - name: Build tests (Debug, warnings are errors)
+        run: dotnet build tests/Tests.csproj -c Debug
+      - name: Tests (net10.0, Debug)
+        run: dotnet run -c Debug --project tests/Tests.csproj -f net10.0 --no-build
+      - name: Tests (net8.0, Debug)
+        run: dotnet run -c Debug --project tests/Tests.csproj -f net8.0 --no-build
+      # the Unity-class leg in Debug: Unity's editor is exactly where consumers
+      # run Debug-class builds, so the contract asserts are proven against the
+      # netstandard2.1 assembly surface too (51 tests: the two System.Int128
+      # oracle tests need a TFM that 2.1 lacks)
+      - name: Tests (netstandard2.1 assembly, Debug)
+        run: dotnet run -c Debug --project tests-ns21/TestsNs21.csproj
+
   redteam:
     name: red team (hostile-input harness)
     runs-on: ubuntu-latest
