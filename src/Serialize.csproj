@@ -25,7 +25,7 @@
        user has in hand can be traced back to a commit. The package metadata is
        here ahead of any NuGet push so the two cannot drift apart later. -->
   <PropertyGroup>
-    <Version>1.3.0</Version>
+    <Version>1.3.1</Version>
     <PackageId>MasBandwidth.Serialize</PackageId>
     <Authors>Mas Bandwidth LLC</Authors>
     <Description>C# bitpacking serialization library, wire compatible with the C, C++, Go and Rust serialize libraries. Zero dependencies, zero allocation on the serialization path, and reads that fail cleanly on hostile input.</Description>
