@@ -394,6 +394,14 @@ internal static partial class Program
         // only in debug builds: the write-side contracts are Debug.Assert, compiled
         // out without the DEBUG constant — in a release build there is nothing to fire
         RunTest("test_write_contract_asserts", TestWriteContractAsserts);
+        // ...and the API misuse parameter contracts, Debug.Assert on every stream
+        // since the 2026-08-16 check-model audit (the throws they replaced were this
+        // port's invention; the C++ library compiles serialize_assert out in release)
+        RunTest("test_api_misuse_asserts", TestApiMisuseAsserts);
+#else
+        // only in release builds: the production spine carries none of the misuse
+        // checks — the proof they compiled out (the release half of the audit)
+        RunTest("test_api_misuse_checks_absent_in_release", TestApiMisuseChecksAbsentInRelease);
 #endif
         RunTest("test_align_validation", TestAlignValidation);
         RunTest("test_measure_stream", TestMeasureStream);
@@ -553,19 +561,25 @@ internal static partial class Program
         Check(out64 == -42, $"degenerate 64 read back {out64}, expected -42");
 
         // Relaxing the guard was meant to admit the degenerate case, not to stop
-        // validating: an inverted range is still API misuse.
-        bool threw = false;
-        try
+        // validating: an inverted range is still API misuse — Debug.Assert on every
+        // stream, compiled out in release (the 2026-08-16 check-model audit; the
+        // standard verbatim: "We want MINIMAL runtime checking in release").
+#if DEBUG
+        Check(AssertFires(() =>
         {
             WriteStream bad = new WriteStream(buffer);
             int v = 0;
             bad.SerializeInt(ref v, 10, 5);
-        }
-        catch (ArgumentException)
+        }), "min > max must assert in debug");
+#else
         {
-            threw = true;
+            // the release twin: the misuse check is gone from the release binary —
+            // the call completes without throwing, and the result is GIGO
+            WriteStream bad = new WriteStream(buffer);
+            int v = 0;
+            Check(bad.SerializeInt(ref v, 10, 5), "in release the misuse check is compiled out");
         }
-        Check(threw, "min > max must still throw");
+#endif
     }
 
     private static void TestBitsRequired()
@@ -1541,9 +1555,14 @@ internal static partial class Program
         stream.Flush();
         Check(stream.BitsProcessed == 64, $"expected 64 bits processed, got {stream.BitsProcessed}");
 
-        // the sticky error model survives on the write side for the one latch the
-        // library still owns there: a user abort through SerializeObject. after it,
-        // every later call is a no-op that returns false, and the first error wins.
+        // the write-side latch: a user abort through SerializeObject latches the
+        // error, SerializeObject returns false, and the first error wins. The
+        // per-field write spine carries NO sticky branch (the 2026-08-16 check-model
+        // audit: the branch was this port's invention — the C++ write path has no
+        // per-field error check): later field calls stay trusted, keep writing and
+        // keep returning true, and the caller discards the packet by checking Error
+        // once at the end. SerializeObject still refuses to descend into an object
+        // after a latched error.
         WriteStream aborted = new WriteStream(new byte[8]);
         uint a = 7;
         Check(aborted.SerializeBits(ref a, 8), "write failed");
@@ -1551,8 +1570,9 @@ internal static partial class Program
         Check(aborted.Error == SerializeError.ValueOutOfRange,
             $"expected ValueOutOfRange from the abort, got {aborted.Error}");
         bool flag = true;
-        Check(!aborted.SerializeBool(ref flag), "expected sticky failure");
-        Check(aborted.BitsProcessed == 8, "failed serialize calls must not advance the stream");
+        Check(aborted.SerializeBool(ref flag), "field writes after an abort stay trusted and branch-free");
+        Check(aborted.BitsProcessed == 9, "trusted writes advance the stream even after a latched abort");
+        Check(!aborted.SerializeObject(new FailingObject()), "SerializeObject stays guarded after a latch");
         Check(!aborted.Ok, "Ok must be false once an error is latched");
         Check(aborted.Error == SerializeError.ValueOutOfRange, "the first latched error must win");
     }
@@ -1749,7 +1769,144 @@ internal static partial class Program
             stream.SerializeCompressedFloat(ref v, -3.4e38f, +3.4e38f, 1.0f);
         }), "a non-finite compressed float declaration must assert in debug");
     }
+
+    private static void TestApiMisuseAsserts()
+    {
+        // The 2026-08-16 six-language check-model audit: trusted call-site parameter
+        // validation (bits counts, min/max ordering, buffer sizes, Q formats) and the
+        // raw bitpacker API's checks were release throws — this port's invention,
+        // where the C++ library compiles serialize_assert out. They are Debug.Assert
+        // on every stream now. One representative per converted class, read side
+        // included: an argument is the caller's contract on every stream.
+
+        // bits out of [1,32], write stream
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[8]);
+            uint v = 0;
+            stream.SerializeBits(ref v, 0);
+        }), "bits below range must assert in debug (write)");
+
+        // bits out of [1,32], READ stream: same contract, same assert
+        Check(AssertFires(() =>
+        {
+            ReadStream stream = new ReadStream(new byte[8]);
+            uint v = 0;
+            stream.SerializeBits(ref v, 33);
+        }), "bits above range must assert in debug (read)");
+
+        // bits out of [1,64], batch
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[8]);
+            WriteBatch batch = stream.BeginBatch();
+            ulong v = 0;
+            batch.SerializeBits64(ref v, 65);
+            batch.End();
+        }), "bits64 above range must assert in debug (batch)");
+
+        // min > max on the read stream (the write-side twin is in
+        // test_degenerate_range)
+        Check(AssertFires(() =>
+        {
+            ReadStream stream = new ReadStream(new byte[8]);
+            int v = 0;
+            stream.SerializeInt(ref v, 10, 5);
+        }), "min > max must assert in debug (read)");
+
+        // string buffer size below 2
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[8]);
+            string s = "";
+            stream.SerializeString(ref s, 1);
+        }), "a string buffer size below 2 must assert in debug");
+
+        // fixed point Q format that does not fill its storage
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[8]);
+            long v = 0;
+            stream.SerializeFixed(ref v, 16, 8, 0, 100); // 16 + 8 != 64
+        }), "a Q format that does not fill its storage must assert in debug");
+
+        // compressed float with an invalid declaration (min >= max)
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[8]);
+            float v = 0.0f;
+            stream.SerializeCompressedFloat(ref v, 10, 0, 0.01f);
+        }), "an inverted compressed float declaration must assert in debug");
+
+        // the raw bitpacker API: width, capacity and construction contracts
+        Check(AssertFires(() =>
+        {
+            BitWriter writer = new BitWriter(new byte[8]);
+            writer.WriteBits(0, 33);
+        }), "a raw bitpacker width violation must assert in debug");
+
+        Check(AssertFires(() =>
+        {
+            BitWriter writer = new BitWriter(new byte[8]);
+            writer.WriteBits(0, 32);
+            writer.WriteBits(0, 32);
+            writer.WriteBits(0, 1); // the 65th bit
+        }), "a raw bitpacker write past the end must assert in debug");
+
+        Check(AssertFires(() =>
+        {
+            _ = new BitWriter(new byte[12]); // not a multiple of 8
+        }), "a misaligned writer buffer must assert in debug");
+
+        Check(AssertFires(() =>
+        {
+            _ = new BitReader(new byte[8], 9); // bytes past the buffer
+        }), "reader bytes past the buffer must assert in debug");
+
+        Check(AssertFires(() =>
+        {
+            BitReader reader = new BitReader(new byte[8]);
+            reader.ReadBits(1);
+            reader.ReadBits(32);
+            reader.ReadBits(32); // 65 bits: past the end
+        }), "a raw bitpacker read past the end must assert in debug");
+    }
 #endif // DEBUG
+
+#if !DEBUG
+    private static void TestApiMisuseChecksAbsentInRelease()
+    {
+        // The release half of the audit's proof: the misuse checks above are ABSENT
+        // from the release binary — the calls complete without throwing, the results
+        // are garbage-in-garbage-out, and memory safety is the runtime's own bounds
+        // checks (the named language floor). Deterministic representatives only.
+
+        // min > max: completes, GIGO (the write encodes against a wrapped range)
+        {
+            WriteStream stream = new WriteStream(new byte[64]);
+            int v = 0;
+            Check(stream.SerializeInt(ref v, 10, 5), "release: min > max write completes");
+            stream.Flush();
+            ReadStream read = new ReadStream(new byte[64]);
+            int r = 0;
+            Check(read.SerializeInt(ref r, 10, 5), "release: min > max read completes");
+        }
+
+        // bits = 0: completes as a zero-width write, no throw
+        {
+            WriteStream stream = new WriteStream(new byte[8]);
+            uint v = 7;
+            Check(stream.SerializeBits(ref v, 0), "release: zero-width write completes");
+        }
+
+        // string buffer size below 2: completes, no throw
+        {
+            WriteStream stream = new WriteStream(new byte[8]);
+            string s = "";
+            Check(stream.SerializeString(ref s, 1), "release: undersized string buffer completes");
+        }
+    }
+#endif // !DEBUG
 
     private static void TestAlignValidation()
     {
@@ -2165,13 +2322,19 @@ internal static partial class Program
 
     private static void TestSerializeObjectErrorPropagation()
     {
-        // an object that aborts its own serialization must fail the stream and latch,
-        // so later calls stay no-ops
+        // an object that aborts its own serialization must fail the stream and latch.
+        // On the write side the latch is for the caller's final Error check and for
+        // SerializeObject itself — the per-field write spine is branch-free and stays
+        // trusted (2026-08-16 check-model audit), so field calls after the abort
+        // keep returning true. The READ side keeps its sticky no-op model in full
+        // (TestContinue and the redteam suite pin it).
         WriteStream stream = new WriteStream(new byte[8]);
         Check(!stream.SerializeObject(new FailingObject()), "expected the object serialize to fail");
         Check(stream.Error != SerializeError.None, "expected an error to latch on the stream");
         uint v = 1;
-        Check(!stream.SerializeBits(ref v, 8), "expected later calls to be no-ops");
+        Check(stream.SerializeBits(ref v, 8), "field writes after an abort stay trusted and branch-free");
+        Check(!stream.SerializeObject(new FailingObject()), "SerializeObject stays guarded after a latch");
+        Check(!stream.Ok, "the latch survives for the caller's final check");
     }
 
     private static void TestStreamReset()

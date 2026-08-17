@@ -289,10 +289,11 @@ internal static partial class Program
         }
     }
 
-    /// <summary>All three streams must refuse an invalid Q format or bounds as API
-    /// misuse — the C# runtime analog of the C++ static_assert refusals, validated
-    /// before the stream state is consulted.</summary>
-    private static void CheckFixedThrows(
+    /// <summary>All three streams treat an invalid Q format or bounds as API misuse:
+    /// Debug.Assert — the C# analog of the C++ static_assert refusals — compiled out
+    /// of release builds (the 2026-08-16 check-model audit), where the call completes
+    /// garbage-in-garbage-out without throwing.</summary>
+    private static void CheckFixedMisuse(
         FixedStorage storage, int integerBits, int fractionBits, long minUnits, long maxUnits)
     {
         IBitStream[] streams =
@@ -303,18 +304,19 @@ internal static partial class Program
         };
         foreach (IBitStream stream in streams)
         {
-            bool threw = false;
-            try
+#if DEBUG
+            Check(AssertFires(() =>
             {
                 Int128Value value = 0;
                 SerializeFixedAs(storage, stream, ref value, integerBits, fractionBits, minUnits, maxUnits);
-            }
-            catch (ArgumentException)
-            {
-                threw = true;
-            }
-            Check(threw,
-                $"fixed {storage} Q{integerBits}.{fractionBits} [{minUnits},{maxUnits}]: expected ArgumentException");
+            }), $"fixed {storage} Q{integerBits}.{fractionBits} [{minUnits},{maxUnits}]: must assert in debug");
+#else
+            // completing without throwing IS the check: the misuse validation is
+            // compiled out of release builds (GIGO; a read may still latch a range
+            // error from the garbage, which is its normal packet-data behavior)
+            Int128Value value = 0;
+            _ = SerializeFixedAs(storage, stream, ref value, integerBits, fractionBits, minUnits, maxUnits);
+#endif
         }
     }
 
@@ -455,20 +457,20 @@ internal static partial class Program
         }
 
         // API misuse refusals: the C++ compile time static_asserts are runtime
-        // ArgumentExceptions here, so unlike the C++ suite they run instead of
-        // living in comments
-        CheckFixedThrows(FixedStorage.I32, 16, 8, 0, 100);          // 16 + 8 != 32: the Q format doesn't fill the storage type
-        CheckFixedThrows(FixedStorage.I32, 16, 16, -40000, +40000); // bounds exceed the Q16.16 whole unit capacity [-32768,32767]
+        // Debug.Asserts here (compiled out in release), so unlike the C++ suite
+        // they run instead of living in comments
+        CheckFixedMisuse(FixedStorage.I32, 16, 8, 0, 100);          // 16 + 8 != 32: the Q format doesn't fill the storage type
+        CheckFixedMisuse(FixedStorage.I32, 16, 16, -40000, +40000); // bounds exceed the Q16.16 whole unit capacity [-32768,32767]
         // [100,100] is NOT here: a degenerate range is legal and costs zero bits
         // (STANDARD.md), and CheckFixedDegenerate below pins that.
-        CheckFixedThrows(FixedStorage.I32, 16, 16, 200, 100);       // min must not be above max
-        CheckFixedThrows(FixedStorage.I32, 0, 32, 0, 100);          // at least one integer bit
-        CheckFixedThrows(FixedStorage.I32, 33, -1, 0, 100);         // fraction bits can't be negative
-        CheckFixedThrows(FixedStorage.U32, 16, 16, -5, 100);        // negative bound on unsigned storage
-        CheckFixedThrows(FixedStorage.U16, 16, 0, 0, 70000);        // bounds exceed the Q16.0 unsigned capacity [0,65535]
-        CheckFixedThrows(FixedStorage.I128, 16, 16, 0, 100);        // 16 + 16 != 128
-        CheckFixedThrows(FixedStorage.I128, 16, 112, -40000, +40000); // bounds exceed the wide Q16.112 whole unit capacity
-        CheckFixedThrows(FixedStorage.U128, 112, 16, -5, 100);      // negative bound on unsigned wide storage
+        CheckFixedMisuse(FixedStorage.I32, 16, 16, 200, 100);       // min must not be above max
+        CheckFixedMisuse(FixedStorage.I32, 0, 32, 0, 100);          // at least one integer bit
+        CheckFixedMisuse(FixedStorage.I32, 33, -1, 0, 100);         // fraction bits can't be negative
+        CheckFixedMisuse(FixedStorage.U32, 16, 16, -5, 100);        // negative bound on unsigned storage
+        CheckFixedMisuse(FixedStorage.U16, 16, 0, 0, 70000);        // bounds exceed the Q16.0 unsigned capacity [0,65535]
+        CheckFixedMisuse(FixedStorage.I128, 16, 16, 0, 100);        // 16 + 16 != 128
+        CheckFixedMisuse(FixedStorage.I128, 16, 112, -40000, +40000); // bounds exceed the wide Q16.112 whole unit capacity
+        CheckFixedMisuse(FixedStorage.U128, 112, 16, -5, 100);      // negative bound on unsigned wide storage
 
         CheckFixedDegenerate();
     }

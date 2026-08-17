@@ -493,8 +493,10 @@ internal static partial class Program
         // (serialize#52: writes are trusted, contract violations are debug asserts),
         // so the write-side latch these blocks exercise is the one the library still
         // owns: a user abort through SerializeObject. an abort through a delegated
-        // batch call latches on the batch, later calls are no-ops, and End carries
-        // the error to the stream
+        // batch call latches on the batch and End carries the error to the stream.
+        // Per the 2026-08-16 check-model audit the per-field write spine is
+        // branch-free — field and delegated write calls after the latch stay trusted
+        // and keep returning true; the caller discards via the latched Error
         {
             WriteStream stream = new WriteStream(new byte[8]);
             WriteBatch batch = stream.BeginBatch();
@@ -503,24 +505,25 @@ internal static partial class Program
             Check(!batch.SerializeObject(new FailingObject()), "expected the user abort to fail");
             Check(batch.Error == SerializeError.ValueOutOfRange, $"expected ValueOutOfRange, got {batch.Error}");
             uint one = 1;
-            Check(!batch.SerializeBits(ref one, 1), "calls after a latched error must be no-ops");
-            // a delegated call after a latched error is a no-op too: the error rides
-            // down to the stream and back
+            Check(batch.SerializeBits(ref one, 1), "field writes after a latched abort stay trusted and branch-free");
+            // a delegated call after a latched abort writes too: the error still
+            // rides down to the stream and back untouched
             string s = "abc";
-            Check(!batch.SerializeString(ref s, 16), "delegated calls after a latched error must be no-ops");
+            Check(batch.SerializeString(ref s, 16), "delegated writes after a latched abort stay trusted");
             Check(batch.Error == SerializeError.ValueOutOfRange, $"expected the error to stay latched, got {batch.Error}");
             batch.End();
             Check(stream.Error == SerializeError.ValueOutOfRange, $"expected the error on the stream, got {stream.Error}");
         }
 
-        // a pre-latched stream error seeds the batch: it begins errored
+        // a pre-latched stream error seeds the batch: it begins errored, and the
+        // latch survives trusted writes made through it
         {
             WriteStream stream = new WriteStream(new byte[8]);
             Check(!stream.SerializeObject(new FailingObject()), "expected the user abort to fail");
             WriteBatch batch = stream.BeginBatch();
             Check(!batch.Ok, "a batch begun on an errored stream must begin errored");
             uint one = 1;
-            Check(!batch.SerializeBits(ref one, 1), "batch calls on a carried-in error must be no-ops");
+            Check(batch.SerializeBits(ref one, 1), "batch field writes stay trusted on a carried-in error");
             batch.End();
             Check(stream.Error == SerializeError.ValueOutOfRange, $"expected the error to survive, got {stream.Error}");
         }
