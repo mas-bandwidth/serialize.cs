@@ -11,15 +11,17 @@ from the C++ test suite, and CI runs a live interop harness against the real
 `main`, on every pull request targeting `main`, and on manual dispatch.
 
 Family values: zero third-party dependencies (including test frameworks); malicious
-packet data never throws — reads fail cleanly with a sticky latched error (exceptions
-are reserved for API misuse); writes are trusted — the write path performs no
-validation in release builds, and writer contract violations (out of range values,
-buffer overflow, oversized strings, ill-formed UTF-16 wstring payloads, non-finite
-compressed floats) are `Debug.Assert`,
-compiled out without the `DEBUG` constant, matching the C++ library's
-`serialize_assert` (STANDARD.md "Writes assume trusted data", enacted for C# per
-serialize#52); no unsafe code; zero allocation on serialization paths (strings on the
-read path are the documented exception).
+packet data never throws — reads fail cleanly with a sticky latched error, and the
+library throws no exceptions of its own; API misuse — writer contract violations
+(out of range values, buffer overflow, oversized strings, ill-formed UTF-16 wstring
+payloads, non-finite compressed floats) and trusted call-site parameters (bits
+counts, min/max ordering, buffer sizes, Q formats) on every stream — is
+`Debug.Assert`, compiled out without the `DEBUG` constant, matching the C++
+library's `serialize_assert` (STANDARD.md "Writes assume trusted data", enacted for
+C# per serialize#52; parameters joined per the 2026-08-16 check-model audit,
+serialize.cs#15: minimal runtime checking in release); no unsafe code; zero
+allocation on serialization paths (strings on the read path are the documented
+exception).
 
 ## Layout
 
@@ -231,10 +233,13 @@ Two further rules:
 
 - **Ranges are trusted inputs.** `min`, `max`, `resolution`, `bufferSize` and
   fixed point Q format (`integerBits`, `fractionBits`, whole unit bounds)
-  parameters are validated as API misuse and throw `ArgumentException` — even on a
-  stream with a latched error. If you compute a range from previously decoded packet
-  data, validate it before passing it in, or one malicious packet becomes an
-  unhandled exception.
+  parameters are the caller's contract on every stream: `Debug.Assert` in debug
+  builds, compiled out in release — exactly like the C++ library, whose
+  `serialize_assert` and `static_assert` refusals vanish under `NDEBUG`. If you
+  compute a range from previously decoded packet data, validate it before passing
+  it in: in release a violated parameter contract yields garbage-in-garbage-out
+  bytes (never memory unsafety — the runtime's own bounds checks are the floor),
+  and a checked reader rejects the malformed stream.
 - **Compressed float ranges must have a finite difference.** When `max - min`
   overflows to infinity (e.g. `[-3.4e38, +3.4e38]`), the read can decode NaN or
   infinity and still report success — behavior inherited from the C++ library for

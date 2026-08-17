@@ -11,7 +11,8 @@
     Family invariants:
       1. Wire format frozen, proven by pinned golden bytes and a live C++ interop harness.
       2. Malicious packet data never throws: reads fail cleanly with a latched error.
-         Exceptions are reserved for API misuse only (the C++ debug-assert analog).
+         API misuse is Debug.Assert (the C++ serialize_assert analog), compiled out
+         of release builds — the library throws no exceptions of its own.
       3. Zero third-party dependencies.
       4. Zero allocation on serialization paths (strings on the read path are the
          documented exception, consistent with the Go and Rust ports).
@@ -26,11 +27,13 @@
     library's serialize_assert compiles out under NDEBUG. A misbehaving writer in a
     release build is owed nothing: the bytes are unspecified (garbage in, garbage
     out; memory safety is the runtime's, not the library's). Trusted call-site
-    PARAMETERS (bits counts, min/max ordering, buffer sizes, Q formats) keep their
-    ArgumentException validation on both paths: per the doctrine, misuse surfaces by
-    each implementation's own convention, and exceptions are this port's documented
-    convention. The read side is untouched: readers face untrusted data and keep
-    every check in every build mode.
+    PARAMETERS (bits counts, min/max ordering, buffer sizes, Q formats) are the
+    same contract on every stream, read and write alike: Debug.Assert in debug
+    builds, compiled out in release (the 2026-08-16 six-language check-model audit;
+    the standard verbatim: "We want MINIMAL runtime checking in release"). The
+    checks readers keep in every build mode validate PACKET DATA, never arguments:
+    buffer-end, range, align and string-content refusals all latch errors, and the
+    runtime's own array bounds checks remain the memory-safety floor.
 
     Error model (Go style, sticky): the first failure latches on the stream, every later
     serialize call returns false without touching the stream or the value, and the
@@ -438,11 +441,13 @@ public static class SerializeUtil
 }
 
 /// <summary>
-/// Shared internals: API-misuse exception messages, the int-relative difference
+/// Shared internals: API-misuse Debug.Assert messages, the int-relative difference
 /// buckets and the compressed float quantization parameters.
 /// </summary>
 internal static class SerializeInternal
 {
+    // API misuse assert messages (parameters are the caller's contract on every
+    // stream): Debug.Assert, never seen in release builds.
     internal const string BitsRangeMessage = "bits must be in [1,32]";
     internal const string BitsRange64Message = "bits must be in [1,64]";
     internal const string MinMaxMessage = "min must not be greater than max";
@@ -499,10 +504,7 @@ internal static class SerializeInternal
         float min, float max, float resolution,
         out uint maxIntegerValue, out int bits, out float delta)
     {
-        if (!(min < max) || !(resolution > 0))
-        {
-            throw new ArgumentException(FloatParamsMessage);
-        }
+        Debug.Assert(min < max && resolution > 0, FloatParamsMessage);
 
         delta = max - min;
 
@@ -571,43 +573,32 @@ internal static class SerializeInternal
         return (uint)Math.Floor((double)(float)(scaled + 0.5f));
     }
 
-    /// <summary>Throws if a string buffer size cannot express a valid length range.</summary>
+    /// <summary>Debug-asserts that a string buffer size can express a valid length
+    /// range. Conditional("DEBUG"): the whole call compiles out of release builds.</summary>
+    [Conditional("DEBUG")]
     internal static void ValidateBufferSize(int bufferSize)
     {
-        if (bufferSize < 2)
-        {
-            throw new ArgumentException(BufferSizeMessage, nameof(bufferSize));
-        }
+        Debug.Assert(bufferSize >= 2, BufferSizeMessage);
     }
 
     /// <summary>
     /// Validates a fixed point Q format against its storage and bounds. Everything
     /// here is a trusted parameter of the call site — part of the wire format like a
-    /// ranged integer's bounds — so a violation is API misuse and throws, the C#
-    /// analog of the static_asserts in the C++ library. The whole unit capacity math
-    /// runs in the unsigned domain so the widest formats (Q64.0 and friends) cannot
-    /// overflow signed arithmetic.
+    /// ranged integer's bounds — so a violation is API misuse: Debug.Assert, the C#
+    /// analog of the static_asserts in the C++ library, compiled out of release
+    /// builds along with the whole call (Conditional("DEBUG")). The whole unit
+    /// capacity math runs in the unsigned domain so the widest formats (Q64.0 and
+    /// friends) cannot overflow signed arithmetic.
     /// </summary>
+    [Conditional("DEBUG")]
     private static void ValidateFixedPointFormat(
         int storageBits, bool storageSigned, int integerBits, int fractionBits,
         long minUnits, long maxUnits)
     {
-        if (integerBits < 1)
-        {
-            throw new ArgumentException(FixedIntegerBitsMessage, nameof(integerBits));
-        }
-        if (fractionBits < 0)
-        {
-            throw new ArgumentException(FixedFractionBitsMessage, nameof(fractionBits));
-        }
-        if (integerBits + fractionBits != storageBits)
-        {
-            throw new ArgumentException(FixedWidthMessage);
-        }
-        if (minUnits > maxUnits)
-        {
-            throw new ArgumentException(MinMaxMessage);
-        }
+        Debug.Assert(integerBits >= 1, FixedIntegerBitsMessage);
+        Debug.Assert(fractionBits >= 0, FixedFractionBitsMessage);
+        Debug.Assert(integerBits + fractionBits == storageBits, FixedWidthMessage);
+        Debug.Assert(minUnits <= maxUnits, MinMaxMessage);
 
         // the whole unit capacity of the Q format, in the 64 bit domain: with 65 or
         // more integer bits (128 bit storage) the capacity covers any long bound
@@ -629,10 +620,7 @@ internal static class SerializeInternal
                 ? long.MaxValue
                 : (long)((1UL << integerBits) - 1);
         }
-        if (minUnits < minRepresentableUnits || maxUnits > maxRepresentableUnits)
-        {
-            throw new ArgumentException(FixedBoundsMessage);
-        }
+        Debug.Assert(minUnits >= minRepresentableUnits && maxUnits <= maxRepresentableUnits, FixedBoundsMessage);
     }
 
     /// <summary>
@@ -712,10 +700,7 @@ public sealed class BitWriter
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Reset(byte[] buffer)
     {
-        if (buffer.Length % 8 != 0)
-        {
-            throw new ArgumentException(SerializeInternal.BufferBytesMessage, nameof(buffer));
-        }
+        Debug.Assert(buffer.Length % 8 == 0, SerializeInternal.BufferBytesMessage);
         _data = buffer;
         _scratch = 0;
         _numBits = (long)buffer.Length * 8;
@@ -790,8 +775,10 @@ public sealed class BitWriter
 
     /// <summary>
     /// Writes the low order bits of value to the buffer, without padding to the nearest
-    /// byte. bits must be in [1,32]; bits of value above that count are ignored. Throws
-    /// if the write would go past the end of the buffer.
+    /// byte. bits must be in [1,32]; bits of value above that count are ignored. The
+    /// width and buffer capacity are the caller's contract: Debug.Assert in debug
+    /// builds, unchecked in release (a write past the end stops at the runtime's own
+    /// bounds check).
     ///
     /// IMPORTANT: When you have finished writing, call FlushBits, otherwise the last
     /// word of data will not get flushed to memory!
@@ -799,14 +786,8 @@ public sealed class BitWriter
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteBits(uint value, int bits)
     {
-        if (bits < 1 || bits > 32)
-        {
-            throw new ArgumentOutOfRangeException(nameof(bits), SerializeInternal.BitsRangeMessage);
-        }
-        if (_bitsWritten + bits > _numBits)
-        {
-            throw new InvalidOperationException(SerializeInternal.WriteOverflowMessage);
-        }
+        Debug.Assert(bits >= 1 && bits <= 32, SerializeInternal.BitsRangeMessage);
+        Debug.Assert(_bitsWritten + bits <= _numBits, SerializeInternal.WriteOverflowMessage);
         WriteBitsUnchecked(value, bits);
     }
 
@@ -869,14 +850,8 @@ public sealed class BitWriter
     /// boundary: call WriteAlign first.</summary>
     public void WriteBytes(ReadOnlySpan<byte> data)
     {
-        if (_bitsWritten % 8 != 0)
-        {
-            throw new InvalidOperationException(SerializeInternal.NotAlignedMessage);
-        }
-        if (_bitsWritten + (long)data.Length * 8 > _numBits)
-        {
-            throw new InvalidOperationException(SerializeInternal.WriteOverflowMessage);
-        }
+        Debug.Assert(_bitsWritten % 8 == 0, SerializeInternal.NotAlignedMessage);
+        Debug.Assert(_bitsWritten + (long)data.Length * 8 <= _numBits, SerializeInternal.WriteOverflowMessage);
         WriteBytesUnchecked(data);
     }
 
@@ -966,10 +941,7 @@ public sealed class BitReader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Reset(byte[] buffer, int bytes)
     {
-        if (bytes < 0 || bytes > buffer.Length)
-        {
-            throw new ArgumentOutOfRangeException(nameof(bytes), SerializeInternal.ReaderBytesMessage);
-        }
+        Debug.Assert(bytes >= 0 && bytes <= buffer.Length, SerializeInternal.ReaderBytesMessage);
         _data = buffer;
         _numBits = (long)bytes * 8;
         _bitsRead = 0;
@@ -1043,20 +1015,15 @@ public sealed class BitReader
     }
 
     /// <summary>Reads bits from the buffer and returns the integer value read, in range
-    /// [0,(1&lt;&lt;bits)-1]. bits must be in [1,32]. Throws if the read would go past the
-    /// end of the data: check WouldReadPastEnd first when reading untrusted data, or
-    /// use ReadStream, which performs all checks and latches errors instead.</summary>
+    /// [0,(1&lt;&lt;bits)-1]. bits must be in [1,32]. Staying inside the data is the
+    /// caller's contract on this raw API: Debug.Assert in debug builds, unchecked in
+    /// release — check WouldReadPastEnd first when reading untrusted data, or use
+    /// ReadStream, which performs all checks in every build and latches errors.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public uint ReadBits(int bits)
     {
-        if (bits < 1 || bits > 32)
-        {
-            throw new ArgumentOutOfRangeException(nameof(bits), SerializeInternal.BitsRangeMessage);
-        }
-        if (_bitsRead + bits > _numBits)
-        {
-            throw new InvalidOperationException(SerializeInternal.ReadOverflowMessage);
-        }
+        Debug.Assert(bits >= 1 && bits <= 32, SerializeInternal.BitsRangeMessage);
+        Debug.Assert(_bitsRead + bits <= _numBits, SerializeInternal.ReadOverflowMessage);
         return ReadBitsUnchecked(bits);
     }
 
@@ -1093,19 +1060,13 @@ public sealed class BitReader
 
     /// <summary>Reads data.Length bytes from the bit stream into data, corresponding to
     /// a WriteBytes call when the buffer was written. The reader must be aligned to a
-    /// byte boundary. Throws if the read would go past the end of the data: bounds
-    /// check with BitsRemaining first when reading untrusted data, or use
-    /// ReadStream.</summary>
+    /// byte boundary, and staying inside the data is the caller's contract: Debug.Assert
+    /// in debug builds, unchecked in release — bounds check with BitsRemaining first
+    /// when reading untrusted data, or use ReadStream.</summary>
     public void ReadBytes(Span<byte> data)
     {
-        if (_bitsRead % 8 != 0)
-        {
-            throw new InvalidOperationException(SerializeInternal.NotAlignedMessage);
-        }
-        if (_bitsRead + (long)data.Length * 8 > _numBits)
-        {
-            throw new InvalidOperationException(SerializeInternal.ReadOverflowMessage);
-        }
+        Debug.Assert(_bitsRead % 8 == 0, SerializeInternal.NotAlignedMessage);
+        Debug.Assert(_bitsRead + (long)data.Length * 8 <= _numBits, SerializeInternal.ReadOverflowMessage);
         ReadSliceUnchecked(data.Length).CopyTo(data);
     }
 
@@ -1174,10 +1135,6 @@ public sealed class WriteStream : IBitStream
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool WriteBits(uint value, int bits)
     {
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
         Debug.Assert(_writer.BitsWritten + bits <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
         _writer.WriteBitsUnchecked(value, bits);
         return true;
@@ -1193,10 +1150,7 @@ public sealed class WriteStream : IBitStream
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeBits(ref uint value, int bits)
     {
-        if (bits < 1 || bits > 32)
-        {
-            throw new ArgumentOutOfRangeException(nameof(bits), SerializeInternal.BitsRangeMessage);
-        }
+        Debug.Assert(bits >= 1 && bits <= 32, SerializeInternal.BitsRangeMessage);
         return WriteBits(value, bits);
     }
 
@@ -1204,17 +1158,10 @@ public sealed class WriteStream : IBitStream
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeBits64(ref ulong value, int bits)
     {
-        if (bits < 1 || bits > 64)
-        {
-            throw new ArgumentOutOfRangeException(nameof(bits), SerializeInternal.BitsRange64Message);
-        }
+        Debug.Assert(bits >= 1 && bits <= 64, SerializeInternal.BitsRange64Message);
         if (bits <= 32)
         {
             return WriteBits((uint)value, bits);
-        }
-        if (_error != SerializeError.None)
-        {
-            return false;
         }
         Debug.Assert(_writer.BitsWritten + bits <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
         // low dword first, then the high remainder
@@ -1227,14 +1174,7 @@ public sealed class WriteStream : IBitStream
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt(ref int value, int min, int max)
     {
-        if (min > max)
-        {
-            throw new ArgumentException(SerializeInternal.MinMaxMessage);
-        }
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
+        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         int v = value;
         Debug.Assert(v >= min && v <= max, SerializeInternal.WriteRangeAssertMessage);
         int bits = SerializeUtil.BitsRequired((uint)min, (uint)max);
@@ -1246,14 +1186,7 @@ public sealed class WriteStream : IBitStream
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt64(ref long value, long min, long max)
     {
-        if (min > max)
-        {
-            throw new ArgumentException(SerializeInternal.MinMaxMessage);
-        }
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
+        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         long v = value;
         Debug.Assert(v >= min && v <= max, SerializeInternal.WriteRangeAssertMessage);
         int bits = SerializeUtil.BitsRequired64((ulong)min, (ulong)max);
@@ -1303,14 +1236,7 @@ public sealed class WriteStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeInt128(ref Int128Value value, Int128Value min, Int128Value max)
     {
-        if (min > max)
-        {
-            throw new ArgumentException(SerializeInternal.MinMaxMessage);
-        }
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
+        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         Int128Value v = value;
         Debug.Assert(v >= min && v <= max, SerializeInternal.WriteRangeAssertMessage);
         int bits = SerializeUtil.BitsRequired128((UInt128Value)min, (UInt128Value)max);
@@ -1337,10 +1263,6 @@ public sealed class WriteStream : IBitStream
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeUInt64(ref ulong value)
     {
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
         Debug.Assert(_writer.BitsWritten + 64 <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
         _writer.WriteBitsUnchecked((uint)value, 32);
         _writer.WriteBitsUnchecked((uint)(value >> 32), 32);
@@ -1350,10 +1272,6 @@ public sealed class WriteStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeUInt128(ref UInt128Value value)
     {
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
         Debug.Assert(_writer.BitsWritten + 128 <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
         // the low 64 bit half first, then the high half, each half low dword first
         WriteGroups128(value, 128);
@@ -1385,10 +1303,6 @@ public sealed class WriteStream : IBitStream
     {
         SerializeInternal.CompressedFloatParams(min, max, resolution,
             out uint maxIntegerValue, out int bits, out float delta);
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
         uint integerValue = SerializeInternal.QuantizeCompressedFloat(value, min, delta, maxIntegerValue);
         return WriteBits(integerValue, bits);
     }
@@ -1399,10 +1313,6 @@ public sealed class WriteStream : IBitStream
     /// byte identical to SerializeInt64 of the raw value over the raw bounds.</summary>
     private bool WriteFixed(ulong raw, ulong rawMin, ulong rawMax, int bits)
     {
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
         // subtract in the unsigned domain: the raw range may be wider than 2^63
         ulong offset = raw - rawMin;
         Debug.Assert(offset <= rawMax - rawMin, SerializeInternal.WriteRangeAssertMessage);
@@ -1424,10 +1334,6 @@ public sealed class WriteStream : IBitStream
     /// in 32 bit groups, least significant group first.</summary>
     private bool WriteFixed128(UInt128Value raw, UInt128Value rawMin, UInt128Value rawMax, int bits)
     {
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
         // subtract in the unsigned domain: the raw range may be wider than 2^127
         UInt128Value offset = raw - rawMin;
         Debug.Assert(offset <= rawMax - rawMin, SerializeInternal.WriteRangeAssertMessage);
@@ -1516,10 +1422,6 @@ public sealed class WriteStream : IBitStream
     public bool SerializeString(ref string value, int bufferSize)
     {
         SerializeInternal.ValidateBufferSize(bufferSize);
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
         int byteCount = Encoding.UTF8.GetByteCount(value);
         Debug.Assert(byteCount < bufferSize, SerializeInternal.WriteStringAssertMessage);
         int length = byteCount;
@@ -1556,10 +1458,6 @@ public sealed class WriteStream : IBitStream
     public bool SerializeWideString(ref string value, int bufferSize)
     {
         SerializeInternal.ValidateBufferSize(bufferSize);
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
         // each 32-bit group carries one UTF-16 CODE UNIT, not one code point
         // (STANDARD.md, adopted 2026-08-15), and the length field counts units. A C#
         // string IS a sequence of UTF-16 code units, so the split a 4-byte wchar_t
@@ -1590,10 +1488,6 @@ public sealed class WriteStream : IBitStream
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeAlign()
     {
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
         int alignBits = _writer.AlignBits;
         if (alignBits == 0)
         {
@@ -1637,10 +1531,6 @@ public sealed class WriteStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeIntRelative(int previous, ref int current)
     {
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
         Debug.Assert(previous < current, SerializeInternal.WriteIntRelativeAssertMessage);
         // difference in the unsigned domain: gaps wider than 2^31 wrap and fall
         // through to the absolute 32 bit encoding
@@ -1812,10 +1702,7 @@ public sealed class ReadStream : IBitStream
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeBits(ref uint value, int bits)
     {
-        if (bits < 1 || bits > 32)
-        {
-            throw new ArgumentOutOfRangeException(nameof(bits), SerializeInternal.BitsRangeMessage);
-        }
+        Debug.Assert(bits >= 1 && bits <= 32, SerializeInternal.BitsRangeMessage);
         return ReadBits(ref value, bits);
     }
 
@@ -1823,10 +1710,7 @@ public sealed class ReadStream : IBitStream
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeBits64(ref ulong value, int bits)
     {
-        if (bits < 1 || bits > 64)
-        {
-            throw new ArgumentOutOfRangeException(nameof(bits), SerializeInternal.BitsRange64Message);
-        }
+        Debug.Assert(bits >= 1 && bits <= 64, SerializeInternal.BitsRange64Message);
         if (_error != SerializeError.None)
         {
             return false;
@@ -1851,10 +1735,7 @@ public sealed class ReadStream : IBitStream
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt(ref int value, int min, int max)
     {
-        if (min > max)
-        {
-            throw new ArgumentException(SerializeInternal.MinMaxMessage);
-        }
+        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         if (_error != SerializeError.None)
         {
             return false;
@@ -1878,10 +1759,7 @@ public sealed class ReadStream : IBitStream
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt64(ref long value, long min, long max)
     {
-        if (min > max)
-        {
-            throw new ArgumentException(SerializeInternal.MinMaxMessage);
-        }
+        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         if (_error != SerializeError.None)
         {
             return false;
@@ -1947,10 +1825,7 @@ public sealed class ReadStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeInt128(ref Int128Value value, Int128Value min, Int128Value max)
     {
-        if (min > max)
-        {
-            throw new ArgumentException(SerializeInternal.MinMaxMessage);
-        }
+        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         if (_error != SerializeError.None)
         {
             return false;
@@ -2593,10 +2468,6 @@ public sealed class MeasureStream : IBitStream
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool Measure(long bits)
     {
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
         _bitsWritten += bits;
         return true;
     }
@@ -2604,34 +2475,21 @@ public sealed class MeasureStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeBits(ref uint value, int bits)
     {
-        if (bits < 1 || bits > 32)
-        {
-            throw new ArgumentOutOfRangeException(nameof(bits), SerializeInternal.BitsRangeMessage);
-        }
+        Debug.Assert(bits >= 1 && bits <= 32, SerializeInternal.BitsRangeMessage);
         return Measure(bits);
     }
 
     /// <inheritdoc/>
     public bool SerializeBits64(ref ulong value, int bits)
     {
-        if (bits < 1 || bits > 64)
-        {
-            throw new ArgumentOutOfRangeException(nameof(bits), SerializeInternal.BitsRange64Message);
-        }
+        Debug.Assert(bits >= 1 && bits <= 64, SerializeInternal.BitsRange64Message);
         return Measure(bits);
     }
 
     /// <inheritdoc/>
     public bool SerializeInt(ref int value, int min, int max)
     {
-        if (min > max)
-        {
-            throw new ArgumentException(SerializeInternal.MinMaxMessage);
-        }
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
+        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         Debug.Assert(value >= min && value <= max, SerializeInternal.WriteRangeAssertMessage);
         return Measure(SerializeUtil.BitsRequired((uint)min, (uint)max));
     }
@@ -2639,14 +2497,7 @@ public sealed class MeasureStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeInt64(ref long value, long min, long max)
     {
-        if (min > max)
-        {
-            throw new ArgumentException(SerializeInternal.MinMaxMessage);
-        }
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
+        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         Debug.Assert(value >= min && value <= max, SerializeInternal.WriteRangeAssertMessage);
         return Measure(SerializeUtil.BitsRequired64((ulong)min, (ulong)max));
     }
@@ -2654,14 +2505,7 @@ public sealed class MeasureStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeInt128(ref Int128Value value, Int128Value min, Int128Value max)
     {
-        if (min > max)
-        {
-            throw new ArgumentException(SerializeInternal.MinMaxMessage);
-        }
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
+        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         Debug.Assert(value >= min && value <= max, SerializeInternal.WriteRangeAssertMessage);
         return Measure(SerializeUtil.BitsRequired128((UInt128Value)min, (UInt128Value)max));
     }
@@ -2704,10 +2548,6 @@ public sealed class MeasureStream : IBitStream
     /// involves no alignment, so the measurement is exact, not just conservative.</summary>
     private bool MeasureFixed(ulong raw, ulong rawMin, ulong rawMax, int bits)
     {
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
         // compare in the unsigned domain: the raw range may be wider than 2^63
         Debug.Assert(raw - rawMin <= rawMax - rawMin, SerializeInternal.WriteRangeAssertMessage);
         return Measure(bits);
@@ -2716,10 +2556,6 @@ public sealed class MeasureStream : IBitStream
     /// <summary>The 128 bit storage counterpart of MeasureFixed.</summary>
     private bool MeasureFixed128(UInt128Value raw, UInt128Value rawMin, UInt128Value rawMax, int bits)
     {
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
         // compare in the unsigned domain: the raw range may be wider than 2^127
         Debug.Assert(raw - rawMin <= rawMax - rawMin, SerializeInternal.WriteRangeAssertMessage);
         return Measure(bits);
@@ -2803,10 +2639,6 @@ public sealed class MeasureStream : IBitStream
     public bool SerializeString(ref string value, int bufferSize)
     {
         SerializeInternal.ValidateBufferSize(bufferSize);
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
         int byteCount = Encoding.UTF8.GetByteCount(value);
         Debug.Assert(byteCount < bufferSize, SerializeInternal.WriteStringAssertMessage);
         int length = byteCount;
@@ -2825,10 +2657,6 @@ public sealed class MeasureStream : IBitStream
     public bool SerializeWideString(ref string value, int bufferSize)
     {
         SerializeInternal.ValidateBufferSize(bufferSize);
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
         // counts UTF-16 code units -- value.Length is exactly the group count the
         // write transmits (STANDARD.md, adopted 2026-08-15), so measure and write
         // agree bit for bit
@@ -2880,10 +2708,6 @@ public sealed class MeasureStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeIntRelative(int previous, ref int current)
     {
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
         Debug.Assert(previous < current, SerializeInternal.WriteIntRelativeAssertMessage);
         uint difference = (uint)current - (uint)previous;
         int bits = 1;
@@ -3085,10 +2909,6 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool WriteBits(uint value, int bits)
     {
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
         Debug.Assert(_bitsWritten + bits <= _numBits, SerializeInternal.WriteOverflowMessage);
         WriteBitsUnchecked(value, bits);
         return true;
@@ -3099,10 +2919,7 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeBits(ref uint value, int bits)
     {
-        if (bits < 1 || bits > 32)
-        {
-            throw new ArgumentOutOfRangeException(nameof(bits), SerializeInternal.BitsRangeMessage);
-        }
+        Debug.Assert(bits >= 1 && bits <= 32, SerializeInternal.BitsRangeMessage);
         return WriteBits(value, bits);
     }
 
@@ -3111,17 +2928,10 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeBits64(ref ulong value, int bits)
     {
-        if (bits < 1 || bits > 64)
-        {
-            throw new ArgumentOutOfRangeException(nameof(bits), SerializeInternal.BitsRange64Message);
-        }
+        Debug.Assert(bits >= 1 && bits <= 64, SerializeInternal.BitsRange64Message);
         if (bits <= 32)
         {
             return WriteBits((uint)value, bits);
-        }
-        if (_error != SerializeError.None)
-        {
-            return false;
         }
         Debug.Assert(_bitsWritten + bits <= _numBits, SerializeInternal.WriteOverflowMessage);
         // low dword first, then the high remainder
@@ -3135,14 +2945,7 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt(ref int value, int min, int max)
     {
-        if (min > max)
-        {
-            throw new ArgumentException(SerializeInternal.MinMaxMessage);
-        }
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
+        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         int v = value;
         Debug.Assert(v >= min && v <= max, SerializeInternal.WriteRangeAssertMessage);
         int bits = SerializeUtil.BitsRequired((uint)min, (uint)max);
@@ -3155,14 +2958,7 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt64(ref long value, long min, long max)
     {
-        if (min > max)
-        {
-            throw new ArgumentException(SerializeInternal.MinMaxMessage);
-        }
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
+        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         long v = value;
         Debug.Assert(v >= min && v <= max, SerializeInternal.WriteRangeAssertMessage);
         int bits = SerializeUtil.BitsRequired64((ulong)min, (ulong)max);
@@ -3198,10 +2994,6 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeUInt64(ref ulong value)
     {
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
         Debug.Assert(_bitsWritten + 64 <= _numBits, SerializeInternal.WriteOverflowMessage);
         WriteBitsUnchecked((uint)value, 32);
         WriteBitsUnchecked((uint)(value >> 32), 32);
@@ -3237,10 +3029,6 @@ public ref struct WriteBatch
     {
         SerializeInternal.CompressedFloatParams(min, max, resolution,
             out uint maxIntegerValue, out int bits, out float delta);
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
         uint integerValue = SerializeInternal.QuantizeCompressedFloat(value, min, delta, maxIntegerValue);
         return WriteBits(integerValue, bits);
     }
@@ -3250,10 +3038,6 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeAlign()
     {
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
         int alignBits = (int)((8 - _bitsWritten % 8) % 8);
         if (alignBits == 0)
         {
@@ -3598,10 +3382,7 @@ public ref struct ReadBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeBits(ref uint value, int bits)
     {
-        if (bits < 1 || bits > 32)
-        {
-            throw new ArgumentOutOfRangeException(nameof(bits), SerializeInternal.BitsRangeMessage);
-        }
+        Debug.Assert(bits >= 1 && bits <= 32, SerializeInternal.BitsRangeMessage);
         return ReadBits(ref value, bits);
     }
 
@@ -3610,10 +3391,7 @@ public ref struct ReadBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeBits64(ref ulong value, int bits)
     {
-        if (bits < 1 || bits > 64)
-        {
-            throw new ArgumentOutOfRangeException(nameof(bits), SerializeInternal.BitsRange64Message);
-        }
+        Debug.Assert(bits >= 1 && bits <= 64, SerializeInternal.BitsRange64Message);
         if (_error != SerializeError.None)
         {
             return false;
@@ -3639,10 +3417,7 @@ public ref struct ReadBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt(ref int value, int min, int max)
     {
-        if (min > max)
-        {
-            throw new ArgumentException(SerializeInternal.MinMaxMessage);
-        }
+        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         if (_error != SerializeError.None)
         {
             return false;
@@ -3667,10 +3442,7 @@ public ref struct ReadBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt64(ref long value, long min, long max)
     {
-        if (min > max)
-        {
-            throw new ArgumentException(SerializeInternal.MinMaxMessage);
-        }
+        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         if (_error != SerializeError.None)
         {
             return false;
