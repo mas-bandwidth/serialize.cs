@@ -224,6 +224,30 @@ public interface IBitStream
     /// silently clamped into range (NaN to the low end).</summary>
     bool SerializeCompressedFloat(ref float value, float min, float max, float resolution);
 
+    /// <summary>Serializes a compressed float from precomputed wire constants — the
+    /// precomputed companion to SerializeCompressedFloat, designed for generated
+    /// code: a schema compiler derives maxIntegerValue, bits and delta from the
+    /// declaration at code generation time with the same arithmetic as
+    /// SerializeUtil.CompressedFloatParams and passes them as literals, so the
+    /// per-field derivation (a divide, a clamp, a ceiling and a BitsRequired) is
+    /// never paid at serialization time. Wire bytes are identical to
+    /// SerializeCompressedFloat by construction. The constants must be exactly what
+    /// SerializeUtil.CompressedFloatParams derives for a conforming declaration —
+    /// anything else is a caller bug, debug-asserted per the writer-trusted model.
+    /// On write the value is clamped into the declared range and quantized; sending
+    /// a non-finite value is non-conforming and asserts in debug builds. On read, an
+    /// integer above maxIntegerValue smuggled into the bit headroom fails with
+    /// SerializeError.ValueOutOfRange.</summary>
+    /// <param name="value">The float value to serialize. Written on write/measure,
+    /// filled in on read.</param>
+    /// <param name="maxIntegerValue">The quantization step count, in
+    /// [1,4294967040].</param>
+    /// <param name="bits">The wire width in bits. Must equal
+    /// SerializeUtil.BitsRequired(0, maxIntegerValue).</param>
+    /// <param name="delta">The range width max - min, in float32.</param>
+    /// <param name="min">The minimum float value of the range.</param>
+    bool SerializeCompressedFloatPrecomputed(ref float value, uint maxIntegerValue, int bits, float delta, float min);
+
     /// <summary>Serializes a fixed point value held in signed 64 bit storage as
     /// Q integerBits.fractionBits, where the raw integer is the real value scaled by
     /// 2^fractionBits and the sign bit counts toward integerBits (Q48.16 in a long is
@@ -401,6 +425,68 @@ public static class SerializeUtil
     }
 
     /// <summary>
+    /// Derives the compressed float wire constants from a (min, max, resolution)
+    /// declaration. This is the derivation SerializeCompressedFloat performs on
+    /// every call, exposed so it can be paid once instead: the constants depend only
+    /// on the declaration, never on the value, so a schema compiler runs the same
+    /// derivation at code generation time and passes the results to
+    /// SerializeCompressedFloatPrecomputed at every call site.
+    /// SerializeCompressedFloat itself derives with exactly this function and its
+    /// serialization is statement for statement the precomputed entry point, so the
+    /// two are wire identical by construction. The quantized range is clamped so it
+    /// always fits in a uint, even for pathological delta / resolution ratios; the
+    /// !&gt;= form of the clamp also catches NaN. A declaration whose
+    /// delta = max - min (or delta / resolution) overflows to infinity is
+    /// NON-CONFORMING — ruled 2026-08-15 ("it's non-conforming") — and asserts here
+    /// at the param site in debug builds. Declarations are trusted call-site
+    /// parameters, so the assert fires for whichever direction evaluates the
+    /// non-conforming declaration; no release path carries the check, and no
+    /// read-side check of packet data is affected. In release the old behavior
+    /// remains: the call succeeds and decoded values can be infinite or NaN
+    /// (garbage in, garbage out).
+    /// </summary>
+    /// <param name="min">The minimum float value. Must be less than max.</param>
+    /// <param name="max">The maximum float value.</param>
+    /// <param name="resolution">The resolution the float value is quantized
+    /// to.</param>
+    /// <param name="maxIntegerValue">The quantization step count:
+    /// ceiling((max - min) / resolution), clamped to [1,4294967040]. Values quantize
+    /// to integers in [0,maxIntegerValue].</param>
+    /// <param name="bits">The wire width: BitsRequired(0, maxIntegerValue), the
+    /// number of bits a quantized value occupies on the wire, in [1,32].</param>
+    /// <param name="delta">The range width max - min, computed in float32. The
+    /// quantization arithmetic is pinned to float32, so the wire depends on this
+    /// exact value, not on the real-number difference.</param>
+    public static void CompressedFloatParams(
+        float min, float max, float resolution,
+        out uint maxIntegerValue, out int bits, out float delta)
+    {
+        Debug.Assert(min < max && resolution > 0, SerializeInternal.FloatParamsMessage);
+
+        delta = max - min;
+
+        // finite min < max cannot produce NaN, only an infinite overflow
+        Debug.Assert(!float.IsInfinity(delta), SerializeInternal.FloatDeltaAssertMessage);
+
+        float values = delta / resolution;
+
+        Debug.Assert(!float.IsInfinity(values), SerializeInternal.FloatValuesAssertMessage);
+
+        if (!(values >= 1.0f))
+        {
+            values = 1.0f;
+        }
+        else if (values > 4294967040.0f) // largest float below 2^32
+        {
+            values = 4294967040.0f;
+        }
+
+        maxIntegerValue = (uint)Math.Ceiling((double)values);
+
+        bits = BitsRequired(0, maxIntegerValue);
+    }
+
+    /// <summary>
     /// Serializes <paramref name="more"/> as a single continuation bit and reports
     /// whether a sentinel-driven loop should proceed, folding the stream error state
     /// into the loop condition: it returns false as soon as the stream has an error, so
@@ -442,7 +528,8 @@ public static class SerializeUtil
 
 /// <summary>
 /// Shared internals: API-misuse Debug.Assert messages, the int-relative difference
-/// buckets and the compressed float quantization parameters.
+/// buckets and the compressed float quantization arithmetic (the derivation itself
+/// is public API: SerializeUtil.CompressedFloatParams).
 /// </summary>
 internal static class SerializeInternal
 {
@@ -472,6 +559,9 @@ internal static class SerializeInternal
     internal const string FloatDeltaAssertMessage = "compressed float declaration is non-conforming: max - min must be finite";
     internal const string FloatValuesAssertMessage = "compressed float declaration is non-conforming: (max - min) / resolution must be finite";
     internal const string FloatValueAssertMessage = "compressed float write value is non-conforming: NaN and infinities must not be sent";
+    internal const string FloatPrecomputedMaxIntegerValueMessage = "precomputed compressed float constants are the caller's contract: maxIntegerValue must be at least 1";
+    internal const string FloatPrecomputedBitsMessage = "precomputed compressed float constants are the caller's contract: bits must equal BitsRequired(0, maxIntegerValue)";
+    internal const string FloatPrecomputedDeltaMessage = "precomputed compressed float constants are the caller's contract: delta must be positive";
 
     /// <summary>
     /// The difference buckets used by SerializeIntRelative. Each bucket costs one
@@ -488,45 +578,22 @@ internal static class SerializeInternal
     };
 
     /// <summary>
-    /// Computes the quantization parameters shared by the write, read and measure
-    /// implementations of SerializeCompressedFloat. The quantized range is clamped so
-    /// it always fits in a uint, even for pathological delta / resolution ratios; the
-    /// !&gt;= form of the clamp also catches NaN. A declaration whose delta = max - min
-    /// (or delta / resolution) overflows to infinity is NON-CONFORMING — ruled
-    /// 2026-08-15 ("it's non-conforming") — and asserts here at the param site in
-    /// debug builds. Declarations are trusted call-site parameters, so the assert
-    /// fires for whichever direction evaluates the non-conforming declaration; no
-    /// release path carries the check, and no read-side check of packet data is
-    /// affected. In release the old behavior remains: the call succeeds and decoded
-    /// values can be infinite or NaN (garbage in, garbage out).
+    /// Debug-asserts that precomputed compressed float constants are what
+    /// SerializeUtil.CompressedFloatParams derives for a conforming declaration.
+    /// The constants are trusted call-site parameters, exactly like the (min, max,
+    /// resolution) declaration they were derived from, so a violation is API misuse:
+    /// in particular a wire width that disagrees with the step count would make the
+    /// field occupy a different number of bits than every other conforming
+    /// implementation of the declaration expects. Conditional("DEBUG"): the whole
+    /// call compiles out of release builds.
     /// </summary>
-    internal static void CompressedFloatParams(
-        float min, float max, float resolution,
-        out uint maxIntegerValue, out int bits, out float delta)
+    [Conditional("DEBUG")]
+    internal static void ValidatePrecomputedFloatParams(uint maxIntegerValue, int bits, float delta)
     {
-        Debug.Assert(min < max && resolution > 0, FloatParamsMessage);
-
-        delta = max - min;
-
-        // finite min < max cannot produce NaN, only an infinite overflow
+        Debug.Assert(maxIntegerValue >= 1, FloatPrecomputedMaxIntegerValueMessage);
+        Debug.Assert(bits == SerializeUtil.BitsRequired(0, maxIntegerValue), FloatPrecomputedBitsMessage);
+        Debug.Assert(delta > 0.0f, FloatPrecomputedDeltaMessage);
         Debug.Assert(!float.IsInfinity(delta), FloatDeltaAssertMessage);
-
-        float values = delta / resolution;
-
-        Debug.Assert(!float.IsInfinity(values), FloatValuesAssertMessage);
-
-        if (!(values >= 1.0f))
-        {
-            values = 1.0f;
-        }
-        else if (values > 4294967040.0f) // largest float below 2^32
-        {
-            values = 4294967040.0f;
-        }
-
-        maxIntegerValue = (uint)Math.Ceiling((double)values);
-
-        bits = SerializeUtil.BitsRequired(0, maxIntegerValue);
     }
 
     /// <summary>
@@ -571,6 +638,23 @@ internal static class SerializeInternal
         // (`const float scaled`) and serialize.c serialize_write_compressed_float.
         float scaled = (float)(normalizedValue * maxIntegerValue);
         return (uint)Math.Floor((double)(float)(scaled + 0.5f));
+    }
+
+    /// <summary>
+    /// The read-side dequantization of SerializeCompressedFloat, shared by the
+    /// stream and batch read paths (derive-per-call and precomputed alike) so the
+    /// normative arithmetic exists in exactly one place. Takes the integer that came
+    /// off the wire, already validated against maxIntegerValue, and returns the
+    /// decoded float. Statement for statement the read arithmetic that lived inline
+    /// in ReadStream and ReadBatch before the mas-bandwidth/schema#82 split;
+    /// test_compressed_float_precomputed_differential holds it to bit identity
+    /// against a frozen copy of the pre-split original.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static float DecodeCompressedFloat(uint integerValue, uint maxIntegerValue, float delta, float min)
+    {
+        float normalizedValue = (float)integerValue / maxIntegerValue;
+        return normalizedValue * delta + min;
     }
 
     /// <summary>Debug-asserts that a string buffer size can express a valid length
@@ -1301,8 +1385,17 @@ public sealed class WriteStream : IBitStream
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeCompressedFloat(ref float value, float min, float max, float resolution)
     {
-        SerializeInternal.CompressedFloatParams(min, max, resolution,
+        SerializeUtil.CompressedFloatParams(min, max, resolution,
             out uint maxIntegerValue, out int bits, out float delta);
+        uint integerValue = SerializeInternal.QuantizeCompressedFloat(value, min, delta, maxIntegerValue);
+        return WriteBits(integerValue, bits);
+    }
+
+    /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeCompressedFloatPrecomputed(ref float value, uint maxIntegerValue, int bits, float delta, float min)
+    {
+        SerializeInternal.ValidatePrecomputedFloatParams(maxIntegerValue, bits, delta);
         uint integerValue = SerializeInternal.QuantizeCompressedFloat(value, min, delta, maxIntegerValue);
         return WriteBits(integerValue, bits);
     }
@@ -1952,7 +2045,7 @@ public sealed class ReadStream : IBitStream
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeCompressedFloat(ref float value, float min, float max, float resolution)
     {
-        SerializeInternal.CompressedFloatParams(min, max, resolution,
+        SerializeUtil.CompressedFloatParams(min, max, resolution,
             out uint maxIntegerValue, out int bits, out float delta);
         uint integerValue = 0;
         if (!ReadBits(ref integerValue, bits))
@@ -1963,8 +2056,25 @@ public sealed class ReadStream : IBitStream
         {
             return Fail(SerializeError.ValueOutOfRange);
         }
-        float normalizedValue = (float)integerValue / maxIntegerValue;
-        value = normalizedValue * delta + min;
+        value = SerializeInternal.DecodeCompressedFloat(integerValue, maxIntegerValue, delta, min);
+        return true;
+    }
+
+    /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeCompressedFloatPrecomputed(ref float value, uint maxIntegerValue, int bits, float delta, float min)
+    {
+        SerializeInternal.ValidatePrecomputedFloatParams(maxIntegerValue, bits, delta);
+        uint integerValue = 0;
+        if (!ReadBits(ref integerValue, bits))
+        {
+            return false;
+        }
+        if (integerValue > maxIntegerValue)
+        {
+            return Fail(SerializeError.ValueOutOfRange);
+        }
+        value = SerializeInternal.DecodeCompressedFloat(integerValue, maxIntegerValue, delta, min);
         return true;
     }
 
@@ -2537,8 +2647,15 @@ public sealed class MeasureStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeCompressedFloat(ref float value, float min, float max, float resolution)
     {
-        SerializeInternal.CompressedFloatParams(min, max, resolution,
+        SerializeUtil.CompressedFloatParams(min, max, resolution,
             out _, out int bits, out _);
+        return Measure(bits);
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeCompressedFloatPrecomputed(ref float value, uint maxIntegerValue, int bits, float delta, float min)
+    {
+        SerializeInternal.ValidatePrecomputedFloatParams(maxIntegerValue, bits, delta);
         return Measure(bits);
     }
 
@@ -3027,8 +3144,18 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeCompressedFloat(ref float value, float min, float max, float resolution)
     {
-        SerializeInternal.CompressedFloatParams(min, max, resolution,
+        SerializeUtil.CompressedFloatParams(min, max, resolution,
             out uint maxIntegerValue, out int bits, out float delta);
+        uint integerValue = SerializeInternal.QuantizeCompressedFloat(value, min, delta, maxIntegerValue);
+        return WriteBits(integerValue, bits);
+    }
+
+    /// <summary>Serializes a compressed float from precomputed wire constants.
+    /// Identical semantics to WriteStream.SerializeCompressedFloatPrecomputed.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeCompressedFloatPrecomputed(ref float value, uint maxIntegerValue, int bits, float delta, float min)
+    {
+        SerializeInternal.ValidatePrecomputedFloatParams(maxIntegerValue, bits, delta);
         uint integerValue = SerializeInternal.QuantizeCompressedFloat(value, min, delta, maxIntegerValue);
         return WriteBits(integerValue, bits);
     }
@@ -3571,7 +3698,7 @@ public ref struct ReadBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeCompressedFloat(ref float value, float min, float max, float resolution)
     {
-        SerializeInternal.CompressedFloatParams(min, max, resolution,
+        SerializeUtil.CompressedFloatParams(min, max, resolution,
             out uint maxIntegerValue, out int bits, out float delta);
         uint integerValue = 0;
         if (!ReadBits(ref integerValue, bits))
@@ -3582,8 +3709,26 @@ public ref struct ReadBatch
         {
             return Fail(SerializeError.ValueOutOfRange);
         }
-        float normalizedValue = (float)integerValue / maxIntegerValue;
-        value = normalizedValue * delta + min;
+        value = SerializeInternal.DecodeCompressedFloat(integerValue, maxIntegerValue, delta, min);
+        return true;
+    }
+
+    /// <summary>Serializes a compressed float from precomputed wire constants.
+    /// Identical semantics to ReadStream.SerializeCompressedFloatPrecomputed.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeCompressedFloatPrecomputed(ref float value, uint maxIntegerValue, int bits, float delta, float min)
+    {
+        SerializeInternal.ValidatePrecomputedFloatParams(maxIntegerValue, bits, delta);
+        uint integerValue = 0;
+        if (!ReadBits(ref integerValue, bits))
+        {
+            return false;
+        }
+        if (integerValue > maxIntegerValue)
+        {
+            return Fail(SerializeError.ValueOutOfRange);
+        }
+        value = SerializeInternal.DecodeCompressedFloat(integerValue, maxIntegerValue, delta, min);
         return true;
     }
 
