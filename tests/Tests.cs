@@ -379,6 +379,9 @@ internal static partial class Program
         RunTest("test_int_relative_validation", TestIntRelativeValidation);
         RunTest("test_compressed_float_validation", TestCompressedFloatValidation);
         RunTest("test_compressed_float_quantization_boundaries", TestCompressedFloatQuantizationBoundaries);
+        RunTest("test_compressed_float_precomputed_validation", TestCompressedFloatPrecomputedValidation);
+        RunTest("test_compressed_float_precomputed_conformance", TestCompressedFloatPrecomputedConformance);
+        RunTest("test_compressed_float_precomputed_differential", TestCompressedFloatPrecomputedDifferential);
         RunTest("test_serialize_fixed", TestSerializeFixed);
         RunTest("test_serialize_fixed_validation", TestSerializeFixedValidation);
         RunTest("test_serialize_fixed_matches_int64", TestSerializeFixedMatchesInt64);
@@ -398,6 +401,9 @@ internal static partial class Program
         // since the 2026-08-16 check-model audit (the throws they replaced were this
         // port's invention; the C++ library compiles serialize_assert out in release)
         RunTest("test_api_misuse_asserts", TestApiMisuseAsserts);
+        // ...and the precomputed compressed float entry point's own contract: the
+        // constants must be what SerializeUtil.CompressedFloatParams derives
+        RunTest("test_compressed_float_precomputed_asserts", TestCompressedFloatPrecomputedAsserts);
 #else
         // only in release builds: the production spine carries none of the misuse
         // checks — the proof they compiled out (the release half of the audit)

@@ -208,6 +208,37 @@ fixed-point test suite; `test_fixed_wire_format` pins the byte aligned fixed
 point tail of the C++ 112 byte golden message, leaving the original 72 byte
 golden pin untouched.
 
+## Compressed floats from precomputed constants
+
+`SerializeCompressedFloat(ref value, min, max, resolution)` derives four wire
+constants on every call, and they depend only on the declaration, never on the
+value. `SerializeCompressedFloatPrecomputed` takes them already derived, for
+generated code that knows its declarations at code generation time:
+
+```csharp
+// once, at code generation time — or once per declaration at startup
+SerializeUtil.CompressedFloatParams(-100.0f, 100.0f, 0.01f,
+    out uint maxIntegerValue, out int bits, out float delta);   // 20000, 15, 200.0f
+
+// at every call site, on any stream: write, read, measure and both batch surfaces
+stream.SerializeCompressedFloatPrecomputed(ref value, maxIntegerValue, bits, delta, min);
+```
+
+A schema compiler emits the four literals per field and never pays the per-field
+divide, clamp, ceiling and `BitsRequired` at serialization time. The wire bytes are
+identical to `SerializeCompressedFloat` by construction: the derive-per-call entry
+point runs exactly `SerializeUtil.CompressedFloatParams` and then exactly the
+precomputed path's arithmetic. Both are additive — `SerializeCompressedFloat` is
+untouched. The constants are trusted call-site parameters like every other range in
+the library: constants that are not what `CompressedFloatParams` derives are API
+misuse, `Debug.Assert`ed and compiled out of release builds.
+
+`test_compressed_float_precomputed_differential` holds the derive-per-call path, the
+precomputed path and the batch surface to a frozen verbatim copy of the pre-split
+v1.4.0 arithmetic — identical measured bits, wire bytes, read acceptance and decoded
+bit patterns, compared by bit pattern rather than tolerance, over 18 declarations and
+4.4 million checks.
+
 ## Reading untrusted data
 
 Errors are sticky: the first failure latches on the stream and later serialize calls
