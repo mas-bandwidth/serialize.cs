@@ -654,7 +654,22 @@ internal static class SerializeInternal
     internal static float DecodeCompressedFloat(uint integerValue, uint maxIntegerValue, float delta, float min)
     {
         float normalizedValue = (float)integerValue / maxIntegerValue;
-        return normalizedValue * delta + min;
+        // STANDARD.md pins the DECODE the same way it pins the write quantization:
+        // "the quotient rounds, the product rounds BEFORE min is added, and the sum
+        // rounds", and an implementation "must not contract the multiply and the add
+        // into a fused multiply-add". Fused, the decode rounds once instead of twice
+        // and, whenever min is non-zero, lands one ulp from the conformant result --
+        // which never changes the bytes being read but does change the value read
+        // from them, so a value decoded here and re-encoded would produce different
+        // wire from every other conforming runtime. ECMA-334 permits floating point
+        // operations at higher precision than the result type, so, exactly as on the
+        // write side above, the explicit (float) cast and the float local are the
+        // language-level guarantee rather than an unwritten RyuJIT detail. This
+        // mirrors serialize.h serialize_compressed_float_precomputed_internal
+        // (`const float scaledValue`), whose comment carries the same instruction.
+        // Do not fold these back into one expression.
+        float scaledValue = (float)(normalizedValue * delta);
+        return (float)(scaledValue + min);
     }
 
     /// <summary>Debug-asserts that a string buffer size can express a valid length
