@@ -142,6 +142,13 @@ struct CompatData
         serialize_bits( stream, bits33, 33 );
         serialize_int64( stream, int64Full, INT64_MIN, INT64_MAX );
         serialize_int64( stream, int64Range, -5000000000LL, +5000000000LL );
+        // the C# twin writes THIS field through SerializeCompressedFloatPrecomputed
+        // (constants 1000, 10, 10.0f, 0.0f -- exactly what the declaration below
+        // derives), so the byte-identity cmp is what proves the C# port's precomputed
+        // entry point emits the reference's bytes, at the FMA boundary value. This
+        // side stays derive-per-call: the interop pin is serialize v1.7.0, which
+        // predates serialize_compressed_float_precomputed (added in v1.11.0). When
+        // the family bumps the pin past 1.11.0, this line can mirror it.
         serialize_compressed_float( stream, fmaBoundaryFloat, 0.0f, 10.0f, 0.01f );
         // the fixed point / 128 bit section, with the golden message's structure:
         // it starts byte aligned, so every bit above it stays put

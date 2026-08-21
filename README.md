@@ -141,6 +141,16 @@ instead of passing silently. (The Go port's harness builds its C++ half without
 `5.0f`, which quantizes identically either way — so it would not catch fusion. Its
 CI runs on x86-64, where the default is no contraction; worth flagging upstream.)
 
+That boundary field is also the one the C# half writes through
+`SerializeCompressedFloatPrecomputed` rather than deriving per call. The constants
+are what the declaration derives, so the bytes do not move and the C++ half still
+writes it plainly — but it puts the precomputed entry point under the byte-identity
+`cmp` against the reference implementation, at the value that discriminates a
+strictly evaluated quantization from a contracted one, in both directions. The
+in-repo differential proves precomputed equals derive-per-call in C#, and this gate
+proves derive-per-call equals C++; routing this one field through it is what closes
+the triangle against the reference directly.
+
 CI runs this gate in its own job, with `CXX=clang++` and the C++ clone checked out
 at release tag `v1.7.0` — the family's one interop pin: one policy, one version,
 every port's gate against the same current C++ release. Under the four different
@@ -224,14 +234,25 @@ SerializeUtil.CompressedFloatParams(-100.0f, 100.0f, 0.01f,
 stream.SerializeCompressedFloatPrecomputed(ref value, maxIntegerValue, bits, delta, min);
 ```
 
-A schema compiler emits the four literals per field and never pays the per-field
-divide, clamp, ceiling and `BitsRequired` at serialization time. The wire bytes are
-identical to `SerializeCompressedFloat` by construction: the derive-per-call entry
-point runs exactly `SerializeUtil.CompressedFloatParams` and then exactly the
-precomputed path's arithmetic. Both are additive — `SerializeCompressedFloat` is
-untouched. The constants are trusted call-site parameters like every other range in
-the library: constants that are not what `CompressedFloatParams` derives are API
-misuse, `Debug.Assert`ed and compiled out of release builds.
+A schema compiler emits the four literals per field, so the divide, clamp, ceiling
+and `BitsRequired` never run at serialization time. The wire bytes are identical to
+`SerializeCompressedFloat` by construction: the derive-per-call entry point runs
+exactly `SerializeUtil.CompressedFloatParams` and then exactly the precomputed
+path's arithmetic. Both are additive — `SerializeCompressedFloat` is untouched. The
+constants are trusted call-site parameters like every other range in the library:
+constants that are not what `CompressedFloatParams` derives are API misuse,
+`Debug.Assert`ed and compiled out of release builds.
+
+**What it is worth here, measured.** Where `min`, `max` and `resolution` reach the
+call site as literals — what a schema compiler emits — RyuJIT already constant-folds
+the entire derivation, so there is nothing left to hoist: on .NET 10 / arm64 the two
+forms compile to the same 2360 bytes of machine code, with no ceiling and no
+`BitsRequired` in either, and measure the same (1.99 vs 1.99 ns per field written,
+1.90 vs 1.91 read). Reach for this entry point for the single audited home, not for
+speed, and do not assume a C# emitter gets a win by switching to it. Where the
+declaration is **not** a compile-time constant — a codec holding its declarations in
+a table, or reading them from data — the derivation does run per field, and the
+precomputed path removes it: 2.82 to 2.19 ns per field written, 2.71 to 2.28 read.
 
 `test_compressed_float_precomputed_differential` holds the derive-per-call path, the
 precomputed path and the batch surface to a frozen verbatim copy of the pre-split

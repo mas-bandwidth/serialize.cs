@@ -134,7 +134,22 @@ internal sealed class CompatData
         stream.SerializeBits64(ref Bits33, 33);
         stream.SerializeInt64(ref Int64Full, long.MinValue, long.MaxValue);
         stream.SerializeInt64(ref Int64Range, -5000000000, +5000000000);
-        stream.SerializeCompressedFloat(ref FmaBoundaryFloat, 0.0f, 10.0f, 0.01f);
+        // THE PRECOMPUTED ENTRY POINT, ON THE CROSS LANGUAGE WIRE. Deliberately the
+        // one field that does not derive per call: 1000, 10 and 10.0f are exactly
+        // what SerializeUtil.CompressedFloatParams(0, 10, 0.01) derives, so the
+        // bytes are unchanged and the C++ twin below still writes this field with
+        // plain serialize_compressed_float. What that buys is the check the in-repo
+        // differential cannot make: the differential proves precomputed == legacy in
+        // C#, and this gate proves legacy == C++, but only routing a field through
+        // the precomputed path here puts it under the byte-identity cmp against the
+        // reference implementation directly. It is this field rather than
+        // CompressedFloatValue above because 0.005f sits exactly on the FMA rounding
+        // boundary — the value that discriminates a strictly evaluated quantization
+        // from a contracted one — so the newer entry point carries the harder value
+        // and the derive-per-call path keeps its own cross language coverage above.
+        // Both directions: this method is the reader too, so the precomputed READ is
+        // held to decoding the C++ writer's bytes to the same float.
+        stream.SerializeCompressedFloatPrecomputed(ref FmaBoundaryFloat, 1000u, 10, 10.0f, 0.0f);
         // the fixed point / 128 bit section, with the golden message's structure:
         // it starts byte aligned, so every bit above it stays put
         stream.SerializeAlign();
