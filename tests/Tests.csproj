@@ -13,6 +13,29 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <!-- the library TFMs referenced here carry the 128 bit surface -->
     <DefineConstants>$(DefineConstants);SERIALIZE_HAS_INT128</DefineConstants>
+    <!-- THIS RUNNER RUNS AT THE OPTIMIZING TIER FROM THE FIRST CALL. It is the C#
+         counterpart of the second -ffp-contract=on build serialize.c#38 and
+         serialize#86 added, and it exists for the same reason: a gate that never
+         runs in the configuration where the property could fail is not a gate.
+
+         The compressed float's arithmetic is pinned to float32 with TWO distinct
+         roundings on write and on read (STANDARD.md, mas-bandwidth/schema#82). In C
+         and C++ what could collapse them is a compiler contraction flag; here it
+         would be the JIT evaluating at higher precision, which ECMA-334 permits
+         except across an explicit conversion — and only the OPTIMIZING tier would
+         ever do it. With tiering on, a method runs at tier 0 (minimal optimization,
+         no inlining) until it has been called often enough to be promoted. The
+         differential's millions of iterations promote everything it touches, but the
+         conformance vectors that pin the exact decoded BIT PATTERNS run a handful of
+         times each — so with tiering on they were being checked against tier 0 code
+         and never against the tier the question is about. Cheap: the suite is
+         seconds either way.
+
+         Tier 0 codegen is not abandoned: tests-ns21 compiles these same test sources
+         and runs at the default tiered setting, in Release and in Debug, so both
+         codegen tiers are covered and the split falls on a project boundary that
+         already exists. -->
+    <TieredCompilation>false</TieredCompilation>
   </PropertyGroup>
 
   <ItemGroup>

@@ -45,6 +45,7 @@
 
 using System;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 
 namespace Serialize.Tests;
 
@@ -169,6 +170,159 @@ internal static partial class Program
         (0.0f, 10000000000.0f, 1.0f, 4294967040u, 32), // values clamps down to the largest float below 2^32
     };
 
+    // ---------------------------------------------------------------------------
+    // THE NEGATIVE CONTROLS — proof that this differential's eyes are open.
+    //
+    // Every check below compares implementations that are SUPPOSED to agree, and a
+    // test where everything agrees cannot distinguish "the split changed nothing"
+    // from "the comparison cannot see this class of change". The distinction is not
+    // hypothetical: the whole FMA discipline in the audited homes is a pair of
+    // (float) casts through float locals, and whether DELETING them is visible
+    // depends on machinery outside this source file.
+    //
+    // In C and C++ that machinery is a compiler flag, and the reference measured
+    // what it does (mas-bandwidth/schema#82, and serialize.c#38 / serialize#86):
+    // folding the reader's two roundings into one expression leaves the differential
+    // GREEN at -ffp-contract=off, GREEN at =fast and RED only at =on. The two "safe"
+    // settings are blind for opposite reasons — `off` forbids contraction in the
+    // frozen oracle too, so both spellings compute the same thing; `fast` fuses
+    // ACROSS statements, so the frozen oracle fuses as well and the two spellings
+    // stop being distinguishable. A differential built at either is decoration.
+    //
+    // C# has no such flag, and that is not a reason to skip this: it is the reason
+    // to do it in the only way that works here. RyuJIT does not contract today, so
+    // the same fold is currently a no-op in this language — which means the fold
+    // falsification proves nothing about C#, and a hand-driven sweep has nothing to
+    // sweep. What CAN change the arithmetic is a widened or single-rounding
+    // evaluation, which ECMA-334 explicitly permits an implementation to perform
+    // ("floating point operations may be performed with higher precision than the
+    // result type") and which the (float) casts in the audited homes exist to
+    // forbid. The two sentinels below are exactly that perturbation, spelled in
+    // DOUBLE so no JIT behaviour and no hardware is required to produce it.
+    //
+    // Each runs alongside the real path over the whole corpus, and the differential
+    // FAILS if either ever stops diverging — i.e. if a future edit, or a future JIT,
+    // ever leaves the wire bytes or the decoded bit patterns blind to a
+    // single-rounding quantization. That is the part that generalises: a sweep is
+    // something a person has to remember to run, and it proves the property once; a
+    // control that fails when it stops diverging is permanent and needs nobody to
+    // choose the right flag. In the C port the same control immediately paid for
+    // itself — at -ffp-contract=fast its read half drops to ZERO and fails the suite
+    // by name, which is the state the reference had to find by hand.
+    //
+    // The sentinels are deliberately NOT compared against the frozen oracle for
+    // equality. They are supposed to disagree. That is the whole point. The
+    // divergence counts print every run, so the mass is visible and not just the
+    // verdict.
+    // ---------------------------------------------------------------------------
+
+    private static ulong s_compressedFloatSentinelWriteDivergences;
+    private static ulong s_compressedFloatSentinelReadDivergences;
+
+    /// <summary>The writer's quantization with the two float roundings collapsed:
+    /// the product and the +0.5 both taken in double, rounded once by the floor.
+    /// The "widened to double" perturbation, permanently on watch.</summary>
+    private static uint SentinelWriteCodeOneRounding(float value, uint maxIntegerValue, float delta, float min)
+    {
+        float normalized = (value - min) / delta;
+        if (!(normalized >= 0.0f))
+        {
+            normalized = 0.0f;
+        }
+        else if (!(normalized <= 1.0f))
+        {
+            normalized = 1.0f;
+        }
+        return (uint)Math.Floor(((double)normalized * maxIntegerValue) + 0.5);
+    }
+
+    /// <summary>The reader's reconstruction with the multiply and the add collapsed
+    /// into one rounding — what an FMA contraction produces, spelled in double so it
+    /// happens on every runtime and every host regardless.</summary>
+    private static float SentinelReadValueOneRounding(uint integerValue, uint maxIntegerValue, float delta, float min)
+    {
+        float normalized = (float)integerValue / maxIntegerValue;
+        return (float)(((double)normalized * delta) + min);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Does THIS runtime fuse, and does it fuse ACROSS statements?
+    //
+    // Reported, never inferred. -ffp-contract has no C# counterpart and RyuJIT emits
+    // no fmadd for a * b + c today — serialize.cs#19 confirmed that against the
+    // instruction stream rather than against a green test — but "today" is a fact
+    // about a JIT version, not about the language, and ECMA-334 permits higher
+    // precision than the result type unless an explicit conversion intervenes. So
+    // the suite measures it and says which, and a green log never claims a
+    // discipline it did not exercise.
+    //
+    // The three spellings live in their own NoInlining methods on purpose: written
+    // as three expressions in one method they share the subexpression a * b, the
+    // compiler merges it, and the probe would then be a question about common
+    // subexpression elimination rather than about the runtime's rounding.
+    // ---------------------------------------------------------------------------
+
+    private static volatile float s_fpProbeSink;
+
+    /// <summary>Contractible: one expression with no cast, so a runtime permitted to
+    /// evaluate at higher precision may round it once.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static float FpProbeOneExpression(float a, float b, float c)
+    {
+        return (a * b) + c;
+    }
+
+    /// <summary>Two statements through a cast float local — the shape of both audited
+    /// homes. Only an implementation rounding ACROSS the statement boundary, in
+    /// defiance of the explicit conversion, can make this agree with the fused
+    /// spelling.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static float FpProbeTwoStatements(float a, float b, float c)
+    {
+        float product = (float)(a * b);
+        return (float)(product + c);
+    }
+
+    /// <summary>The reference: a volatile store forces the product to memory as
+    /// float32, so nothing can carry extra precision through it. The other two are
+    /// measured against this.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static float FpProbeForcedUnfused(float a, float b, float c)
+    {
+        s_fpProbeSink = a * b;
+        return s_fpProbeSink + c;
+    }
+
+    private static bool FpContractionIsLive()
+    {
+        for (uint code = 1; code < 20000; code++)
+        {
+            float norm = code / 20000.0f;
+            float fused = FpProbeOneExpression(norm, 200.0f, -100.0f);
+            float unfused = FpProbeForcedUnfused(norm, 200.0f, -100.0f);
+            if (BitConverter.SingleToUInt32Bits(fused) != BitConverter.SingleToUInt32Bits(unfused))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static bool FpContractionCrossesStatements()
+    {
+        for (uint code = 1; code < 20000; code++)
+        {
+            float norm = code / 20000.0f;
+            float across = FpProbeTwoStatements(norm, 200.0f, -100.0f);
+            float unfused = FpProbeForcedUnfused(norm, 200.0f, -100.0f);
+            if (BitConverter.SingleToUInt32Bits(across) != BitConverter.SingleToUInt32Bits(unfused))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // the coverage floor lives on this counter: if the differential ever silently
     // shrinks below the mass it was built with, that is a test bug, and it fails
     // instead of fading quietly
@@ -257,6 +411,19 @@ internal static partial class Program
         DifferentialCheck(patternFrozen == BitConverter.SingleToUInt32Bits(decodedLegacy), "legacy decode disagrees with frozen");
         DifferentialCheck(patternFrozen == BitConverter.SingleToUInt32Bits(decodedPrecomputed), "precomputed decode disagrees with frozen");
         DifferentialCheck(patternFrozen == BitConverter.SingleToUInt32Bits(decodedBatch), "batch precomputed decode disagrees with frozen");
+
+        // the write-side negative control: the one-rounding quantization must still
+        // be able to produce a DIFFERENT wire code than the audited home does, or
+        // the byte comparisons above have gone blind. The code is read back off the
+        // frozen wire rather than recomputed, so the control is measured against the
+        // bytes the comparison actually made.
+        ReadStream sentinelStream = new ReadStream(bufferFrozen);
+        uint wireCode = 0;
+        if (sentinelStream.SerializeBits(ref wireCode, bits)
+            && SentinelWriteCodeOneRounding(value, maxIntegerValue, delta, min) != wireCode)
+        {
+            s_compressedFloatSentinelWriteDivergences++;
+        }
     }
 
     /// <summary>One wire integer through all four read paths: acceptance must agree
@@ -300,6 +467,18 @@ internal static partial class Program
             DifferentialCheck(patternFrozen == BitConverter.SingleToUInt32Bits(decodedLegacy), "legacy code decode disagrees with frozen");
             DifferentialCheck(patternFrozen == BitConverter.SingleToUInt32Bits(decodedPrecomputed), "precomputed code decode disagrees with frozen");
             DifferentialCheck(patternFrozen == BitConverter.SingleToUInt32Bits(decodedBatch), "batch precomputed code decode disagrees with frozen");
+
+            // the read-side negative control: a one-rounding reconstruction must
+            // still be able to land on a DIFFERENT bit pattern, or the pattern
+            // comparisons above have gone blind. The divergence is one ulp, which is
+            // exactly why this differential never compares decoded values with a
+            // tolerance.
+            uint patternSentinel = BitConverter.SingleToUInt32Bits(
+                SentinelReadValueOneRounding(code, maxIntegerValue, delta, min));
+            if (patternSentinel != patternFrozen)
+            {
+                s_compressedFloatSentinelReadDivergences++;
+            }
         }
     }
 
@@ -418,6 +597,31 @@ internal static partial class Program
         const float floatMax = 3.402823466e+38f; // FLT_MAX, the C++ reference's spelling
 
         s_compressedFloatDifferentialChecks = 0;
+        s_compressedFloatSentinelWriteDivergences = 0;
+        s_compressedFloatSentinelReadDivergences = 0;
+
+        // what this runtime actually does with the arithmetic under test. Reported,
+        // not asserted: a runtime that keeps the roundings distinct is the expected
+        // and conforming case, and there is no flag here to have got wrong.
+        bool contractionIsLive = FpContractionIsLive();
+        bool contractionCrossesStatements = FpContractionCrossesStatements();
+        Console.WriteLine("    (this runtime "
+            + (!contractionIsLive ? "does NOT contract a * b + c: the audited homes' (float) casts are compiled but not exercised"
+                : contractionCrossesStatements ? "contracts ACROSS statements, in defiance of the explicit conversions — refused below"
+                : "contracts a * b + c but honours the explicit conversions: the audited homes' casts are under test")
+            + ")");
+
+        // An implementation that carried extra precision THROUGH an explicit (float)
+        // conversion would fuse the audited homes, the frozen pre-split oracle and
+        // every other spelling of this arithmetic all at once: the differential would
+        // agree with itself while the decode moved one ulp and the wire moved with
+        // it. STANDARD.md does not admit that, ECMA-334 does not permit it, and no
+        // shipping RyuJIT does it — but if one ever does, the honest report is the
+        // name of the problem, not a pinned bit pattern that reads like a port bug.
+        Check(!contractionCrossesStatements,
+            "this runtime evaluates float arithmetic across an explicit (float) conversion: the compressed float's two "
+            + "roundings collapse into one, the wire moves by one ulp, and every differential in this suite goes blind "
+            + "at the same time. The wire cannot be certified from this runtime.");
 
         ulong lcg = 0xC0FFEE1234567890UL; // fixed seed: failures reproduce
 
@@ -595,6 +799,22 @@ internal static partial class Program
             $"differential coverage collapsed: {s_compressedFloatDifferentialChecks} checks");
 
         Console.WriteLine($"    ({s_compressedFloatDifferentialChecks} checks, four implementations, {CompressedFloatShapes.Length} declarations)");
+
+        // the negative controls, CHECKED rather than merely reported: if a
+        // one-rounding writer ever stops producing a different wire code, or a
+        // one-rounding reader ever stops producing a different bit pattern, then
+        // everything above agrees for a reason that has nothing to do with the split
+        // being correct, and this differential is decoration.
+        Check(s_compressedFloatSentinelWriteDivergences > 0,
+            "the write negative control stopped diverging: a one-rounding quantization now produces the same wire "
+            + "codes as the audited home, so the byte comparisons above cannot see that class of change");
+        Check(s_compressedFloatSentinelReadDivergences > 0,
+            "the read negative control stopped diverging: a one-rounding reconstruction now produces the same decoded "
+            + "bit patterns as the audited home, so the pattern comparisons above cannot see that class of change");
+
+        Console.WriteLine($"    (negative controls diverge on {s_compressedFloatSentinelWriteDivergences} wire codes and "
+            + $"{s_compressedFloatSentinelReadDivergences} decoded patterns — both must be nonzero, or the comparison "
+            + "cannot see a single-rounding quantization)");
     }
 
 #if DEBUG
