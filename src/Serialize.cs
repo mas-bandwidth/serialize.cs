@@ -637,7 +637,21 @@ internal static class SerializeInternal
         // not drop the casts. Matches serialize.h serialize_compressed_float_internal
         // (`const float scaled`) and serialize.c serialize_write_compressed_float.
         float scaled = (float)(normalizedValue * maxIntegerValue);
-        return (uint)Math.Floor((double)(float)(scaled + 0.5f));
+        uint integerValue = (uint)Math.Floor((double)(float)(scaled + 0.5f));
+        // STANDARD.md: the integer clamp is normative (2026-08-23, schema#109). Once
+        // maxIntegerValue >= 2^23 the float32 ulp at the top of the range reaches 1,
+        // so the rounded sum can exceed maxIntegerValue itself: the writer emits a
+        // code its own reader rejects, or one bit wider than the field. Clamping
+        // after the floor closes both; no byte changes for any declaration outside
+        // [2^23, 2^24). This quantizer is the single write intake -- stream and
+        // batch, derive-per-call and precomputed -- so the clamp covers every
+        // writer entry point. Matches serialize.h serialize_compressed_float_internal
+        // (serialize#88).
+        if (integerValue > maxIntegerValue)
+        {
+            integerValue = maxIntegerValue;
+        }
+        return integerValue;
     }
 
     /// <summary>
