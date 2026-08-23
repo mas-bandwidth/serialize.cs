@@ -538,7 +538,7 @@ internal static class SerializeInternal
     internal const string BitsRangeMessage = "bits must be in [1,32]";
     internal const string BitsRange64Message = "bits must be in [1,64]";
     internal const string MinMaxMessage = "min must not be greater than max";
-    internal const string BufferSizeMessage = "string buffer size must be at least 2";
+    internal const string BufferSizeMessage = "string buffer size must be at least 1";
     internal const string FloatParamsMessage = "compressed float requires min < max and resolution > 0";
     internal const string WriteOverflowMessage = "bit writer overflow";
     internal const string ReadOverflowMessage = "bit reader would read past the end of the buffer";
@@ -677,7 +677,7 @@ internal static class SerializeInternal
     [Conditional("DEBUG")]
     internal static void ValidateBufferSize(int bufferSize)
     {
-        Debug.Assert(bufferSize >= 2, BufferSizeMessage);
+        Debug.Assert(bufferSize >= 1, BufferSizeMessage);
     }
 
     /// <summary>

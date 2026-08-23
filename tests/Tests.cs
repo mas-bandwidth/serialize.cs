@@ -363,6 +363,7 @@ internal static partial class Program
 
         RunTest("test_bitpacker", TestBitpacker);
         RunTest("test_degenerate_range", TestDegenerateRange);
+        RunTest("test_degenerate_string_buffer", TestDegenerateStringBuffer);
         RunTest("test_bits_required", TestBitsRequired);
         RunTest("test_bits_required64", TestBitsRequired64);
         RunTest("test_bits_required128", TestBitsRequired128);
@@ -525,6 +526,36 @@ internal static partial class Program
     // exactly that case. The C++ and C ports support it, so this was a
     // cross-language divergence: the same sequence works against one runtime
     // and throws against this one.
+    // STANDARD.md: a string bufferSize of 1 is the DEGENERATE STRING BUFFER -- it holds
+    // exactly the empty string, because the length must satisfy length < bufferSize.
+    //
+    // This port and Rust used to floor bufferSize at 2. Go floors at 1 (stream.go,
+    // "bufferSize < 1") and the C and C++ ports carry no floor at all, asserting only
+    // length < bufferSize -- so a floor of 2 was an invented check living in two ports and
+    // nowhere else in the family, which made the same call abort against one runtime and
+    // succeed against another. The floor is now 1 everywhere.
+    //
+    // ValidateBufferSize is a Debug.Assert, so this test only bites in a Debug build --
+    // which is where the suite runs.
+    private static void TestDegenerateStringBuffer()
+    {
+        byte[] buffer = new byte[64];
+
+        WriteStream write = new WriteStream(buffer);
+        string empty = "";
+        Check(write.SerializeString(ref empty, 1), "bufferSize 1 must accept the empty string");
+        write.Flush();
+
+        ReadStream read = new ReadStream(buffer, (int)write.BytesProcessed);
+        string readBack = "not empty";
+        Check(read.SerializeString(ref readBack, 1), "bufferSize 1 must round trip the empty string");
+        Check(readBack == "", $"the empty string read back as \"{readBack}\", expected \"\"");
+
+        MeasureStream measure = new MeasureStream();
+        string measured = "";
+        Check(measure.SerializeString(ref measured, 1), "measure must agree with write at bufferSize 1");
+    }
+
     private static void TestDegenerateRange()
     {
         byte[] buffer = new byte[64];
@@ -1820,13 +1851,17 @@ internal static partial class Program
             stream.SerializeInt(ref v, 10, 5);
         }), "min > max must assert in debug (read)");
 
-        // string buffer size below 2
+        // string buffer size below 1. The floor was 2 here and in Rust until 2026-08-23,
+        // which made bufferSize 1 -- the buffer that holds exactly the empty string -- an
+        // assert in two ports and a legal call in Go, C and C++. This case moved with the
+        // contract rather than being deleted: 0 admits no length at all, since no length
+        // satisfies length < 0, so it is still a violation and still guarded.
         Check(AssertFires(() =>
         {
             WriteStream stream = new WriteStream(new byte[8]);
             string s = "";
-            stream.SerializeString(ref s, 1);
-        }), "a string buffer size below 2 must assert in debug");
+            stream.SerializeString(ref s, 0);
+        }), "a string buffer size below 1 must assert in debug");
 
         // fixed point Q format that does not fill its storage
         Check(AssertFires(() =>
