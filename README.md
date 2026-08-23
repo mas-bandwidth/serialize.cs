@@ -42,6 +42,11 @@ exception).
   findings instead of stopping at the first one, so one run gives the whole picture,
   then exits nonzero if any were recorded. CI runs it on every push and pull request;
   the exit code is the verdict.
+- `bench/` — the throughput benchmark (first rows: string + wstring, per
+  mas-bandwidth/schema#64), family bench methodology on a corpus identical to the
+  Rust port's, plain Stopwatch with an untimed warmup pass per timed loop so the
+  optimizing JIT tier is what gets measured. Only Release numbers are meaningful:
+  `dotnet run --project bench/Bench.csproj -c Release -f net10.0`.
 - `scripts/interop.sh` — the interop gate as one runnable command.
 - `.github/workflows/ci.yml` — five jobs: the test matrix (all three TFM legs, on
   Linux, macOS and Windows — Unity's authoring platform), the red team run, the
