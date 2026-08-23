@@ -379,6 +379,7 @@ internal static partial class Program
         RunTest("test_wstring_validation", TestWStringValidation);
         RunTest("test_int_relative_validation", TestIntRelativeValidation);
         RunTest("test_compressed_float_validation", TestCompressedFloatValidation);
+        RunTest("test_compressed_float_top_of_range_clamp", TestCompressedFloatTopOfRangeClamp);
         RunTest("test_compressed_float_quantization_boundaries", TestCompressedFloatQuantizationBoundaries);
         RunTest("test_compressed_float_precomputed_validation", TestCompressedFloatPrecomputedValidation);
         RunTest("test_compressed_float_precomputed_conformance", TestCompressedFloatPrecomputedConformance);
@@ -1377,6 +1378,49 @@ internal static partial class Program
         // clamp still forces non-finite values into range rather than corrupting
         // the stream. The read path is untouched: a decoded value from a conforming
         // declaration is always in [min,max].
+    }
+
+    private static void TestCompressedFloatTopOfRangeClamp()
+    {
+        // STANDARD.md's normative integer clamp (2026-08-23, schema#109; ruling:
+        // Glenn, live). In [2^23, 2^24) the float32 ulp is 1, so scaled + 0.5f lands
+        // on a tie and round-to-even can push the code past maxIntegerValue. Before
+        // the clamp, witness A wrote a top-of-range code its own reader rejected,
+        // and witness B wrote a code one bit wider than the 24 bit field, which
+        // this port's bitpacker masked to zero on the wire.
+
+        // witness A: [0, 8388609] at resolution 1 -> maxIntegerValue 2^23+1, 24 bits
+        {
+            byte[] buffer = new byte[8];
+
+            WriteStream writeStream = new WriteStream(buffer);
+            float written = 8388609.0f;
+            Check(writeStream.SerializeCompressedFloat(ref written, 0.0f, 8388609.0f, 1.0f), "witness A write failed");
+            writeStream.Flush();
+
+            ReadStream readStream = new ReadStream(buffer);
+            float value = 0.0f;
+            Check(readStream.SerializeCompressedFloat(ref value, 0.0f, 8388609.0f, 1.0f),
+                $"witness A: the reader must accept the top-of-range write, got {readStream.Error}");
+            Check(value == 8388609.0f, $"witness A: max must round-trip, got {value}");
+        }
+
+        // witness B: [0, 16777215] at resolution 1 -> maxIntegerValue 2^24-1, 24 bits;
+        // the unclamped code was 2^24, one bit wider than the field
+        {
+            byte[] buffer = new byte[8];
+
+            WriteStream writeStream = new WriteStream(buffer);
+            float written = 16777215.0f;
+            Check(writeStream.SerializeCompressedFloat(ref written, 0.0f, 16777215.0f, 1.0f), "witness B write failed");
+            writeStream.Flush();
+
+            ReadStream readStream = new ReadStream(buffer);
+            float value = 0.0f;
+            Check(readStream.SerializeCompressedFloat(ref value, 0.0f, 16777215.0f, 1.0f),
+                $"witness B: the reader must accept the top-of-range write, got {readStream.Error}");
+            Check(value == 16777215.0f, $"witness B: max must round-trip, got {value}");
+        }
     }
 
     private static void TestCompressedFloatQuantizationBoundaries()

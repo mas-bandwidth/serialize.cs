@@ -105,6 +105,15 @@ internal static partial class Program
         }
         float scaled = (float)(normalizedValue * maxIntegerValue);
         uint integerValue = (uint)Math.Floor((double)(float)(scaled + 0.5f));
+        // STANDARD.md: the integer clamp is normative (2026-08-23, schema#109) --
+        // applied to this frozen oracle exactly as the C++ reference applied it to
+        // its serialize_compressed_float_frozen_reference (serialize#88): the wire
+        // the oracle pins moved with the standard. Same clamp as the audited home
+        // in SerializeInternal.QuantizeCompressedFloat, same reason.
+        if (integerValue > maxIntegerValue)
+        {
+            integerValue = maxIntegerValue;
+        }
 
         return stream.SerializeBits(ref integerValue, bits);
     }
@@ -174,6 +183,12 @@ internal static partial class Program
         // corpus could not see a swap (mas-bandwidth/schema#108).
         (0.0f, 10.0f, 0.3f, 34, 6),             // 33.333332 steps: ceil 34, round 33 -- same width, different step count
         (0.0f, 63.3f, 1.0f, 64, 7),             // 63.3 steps: ceil 64 (7 bits), round 63 (6 bits) -- straddles a power of two, so the WIRE WIDTH moves
+        // shapes in [2^23, 2^24), where the float32 ulp reaches 1 and the +0.5 rounding
+        // could push the code past maxIntegerValue before the normative clamp
+        // (STANDARD.md 2026-08-23, schema#109). The corpus was empty in this band,
+        // which is how the defect hid.
+        (0.0f, 8388609.0f, 1.0f, 8388609u, 24), // 2^23+1: the reader-rejects witness
+        (0.0f, 16777215.0f, 1.0f, 16777215u, 24), // 2^24-1: the wire-divergence witness
     };
 
     // ---------------------------------------------------------------------------
