@@ -626,11 +626,14 @@ internal static partial class Program
         // and conforming case, and there is no flag here to have got wrong.
         bool contractionIsLive = FpContractionIsLive();
         bool contractionCrossesStatements = FpContractionCrossesStatements();
-        Console.WriteLine("    (this runtime "
-            + (!contractionIsLive ? "does NOT contract a * b + c: the audited homes' (float) casts are compiled but not exercised"
-                : contractionCrossesStatements ? "contracts ACROSS statements, in defiance of the explicit conversions — refused below"
-                : "contracts a * b + c but honours the explicit conversions: the audited homes' casts are under test")
-            + ")");
+        if (Verbose.Enabled)
+        {
+            Console.WriteLine("    (this runtime "
+                + (!contractionIsLive ? "does NOT contract a * b + c: the audited homes' (float) casts are compiled but not exercised"
+                    : contractionCrossesStatements ? "contracts ACROSS statements, in defiance of the explicit conversions — refused below"
+                    : "contracts a * b + c but honours the explicit conversions: the audited homes' casts are under test")
+                + ")");
+        }
 
         // An implementation that carried extra precision THROUGH an explicit (float)
         // conversion would fuse the audited homes, the frozen pre-split oracle and
@@ -819,7 +822,10 @@ internal static partial class Program
         Check(s_compressedFloatDifferentialChecks >= 2000000,
             $"differential coverage collapsed: {s_compressedFloatDifferentialChecks} checks");
 
-        Console.WriteLine($"    ({s_compressedFloatDifferentialChecks} checks, four implementations, {CompressedFloatShapes.Length} declarations)");
+        if (Verbose.Enabled)
+        {
+            Console.WriteLine($"    ({s_compressedFloatDifferentialChecks} checks, four implementations, {CompressedFloatShapes.Length} declarations)");
+        }
 
         // the negative controls, CHECKED rather than merely reported: if a
         // one-rounding writer ever stops producing a different wire code, or a
@@ -833,9 +839,12 @@ internal static partial class Program
             "the read negative control stopped diverging: a one-rounding reconstruction now produces the same decoded "
             + "bit patterns as the audited home, so the pattern comparisons above cannot see that class of change");
 
-        Console.WriteLine($"    (negative controls diverge on {s_compressedFloatSentinelWriteDivergences} wire codes and "
-            + $"{s_compressedFloatSentinelReadDivergences} decoded patterns — both must be nonzero, or the comparison "
-            + "cannot see a single-rounding quantization)");
+        if (Verbose.Enabled)
+        {
+            Console.WriteLine($"    (negative controls diverge on {s_compressedFloatSentinelWriteDivergences} wire codes and "
+                + $"{s_compressedFloatSentinelReadDivergences} decoded patterns — both must be nonzero, or the comparison "
+                + "cannot see a single-rounding quantization)");
+        }
     }
 
 #if DEBUG
