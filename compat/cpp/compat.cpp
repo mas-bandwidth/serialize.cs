@@ -73,6 +73,8 @@ struct CompatData
     uint32_t fixedQ16_16Unsigned;
     serialize::int128_t fixedQ112_16Wide;
     serialize::int128_t fixedQ64_64Wide;
+    float clampRejectWitness;
+    float clampWideWitness;
 
     void Init()
     {
@@ -111,6 +113,8 @@ struct CompatData
         fixedQ48_16 = -( int64_t( 54321 ) * 65536 + 12345 );                        // -54321.1883... in Q48.16
         fixedQ16_16Unsigned = 29999u * 65536 + 65535;                               // 29999.99998... in Q16.16: every fraction bit set
         fixedQ112_16Wide = serialize::int128_t( -( int64_t( 98765432109LL ) * 65536 + 4321 ) );     // -98765432109.066 in Q112.16: 75 bits on the wire, three groups
+        clampRejectWitness = 8388609.0f;        // witness A: top of [0, 8388609] res 1 -- an unclamped writer emits a code its own reader rejects (schema#109; serialize#94)
+        clampWideWitness = 16777215.0f;         // witness B: top of [0, 16777215] res 1 -- an unclamped writer emits a code one bit wider than the field
         fixedQ64_64Wide = ( serialize::int128_t( 0x0123456789ABCDEFLL ) << 64 )
                         + serialize::int128_t( 0x0FEDCBA987654321LL );              // Q64.64 over the full unit range: 128 bits, four groups, every group distinct
     }
@@ -160,6 +164,12 @@ struct CompatData
         serialize_align( stream );              // the wide fixed section starts byte aligned too
         serialize_fixed( stream, fixedQ112_16Wide, 112, 16, -144115188075855872LL, +144115188075855872LL );     // ±2^57 units: 75 bits, the three group structure
         serialize_fixed( stream, fixedQ64_64Wide, 64, 64, INT64_MIN, INT64_MAX );                               // full unit range: 128 bits, the four group structure
+        // the clamp witnesses ride the derived-per-call entry point on both language
+        // halves: the clamp lives in the audited home both entry points share, and
+        // writing max makes it load-bearing -- an unclamped writer changes these bytes.
+        // Requires the C++ library at v1.12.0 or later (the first release carrying the clamp).
+        serialize_compressed_float( stream, clampRejectWitness, 0.0f, 8388609.0f, 1.0f );
+        serialize_compressed_float( stream, clampWideWitness, 0.0f, 16777215.0f, 1.0f );
         return true;
     }
 
@@ -194,6 +204,8 @@ struct CompatData
             && fixedQ16_16Unsigned == other.fixedQ16_16Unsigned
             && fixedQ112_16Wide == other.fixedQ112_16Wide
             && fixedQ64_64Wide == other.fixedQ64_64Wide
+            && clampRejectWitness == other.clampRejectWitness
+            && clampWideWitness == other.clampWideWitness
             && fabsf( fmaBoundaryFloat - other.fmaBoundaryFloat ) <= 0.01f;   // within the resolution: 0.005 decodes to 0.01
     }
 };

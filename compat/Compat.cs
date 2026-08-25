@@ -62,6 +62,8 @@ internal sealed class CompatData
     public uint FixedQ16_16Unsigned;
     public Int128Value FixedQ112_16Wide;
     public Int128Value FixedQ64_64Wide;
+    public float ClampRejectWitness;
+    public float ClampWideWitness;
 
     public static CompatData Init()
     {
@@ -103,6 +105,16 @@ internal sealed class CompatData
             FixedQ112_16Wide = -(98765432109L * 65536 + 4321),  // -98765432109.066 in Q112.16: 75 bits on the wire, three groups
             FixedQ64_64Wide = ((Int128Value)0x0123456789ABCDEF << 64)
                             + 0x0FEDCBA987654321,               // Q64.64 over the full unit range: 128 bits, four groups, every group distinct
+            // The normative integer clamp's witnesses (STANDARD.md, schema#109), writing max.
+            // Step counts in [2^23, 2^24) are where the float32 ulp of the scaled product
+            // reaches 1: an UNCLAMPED writer quantizes these to a code its own reader rejects
+            // (A) or to a code one bit wider than the field (B) -- the class where this port
+            // historically masked the extra bit while the C++ reference leaked it into the
+            // stream. Until these rows existed the clamp was proven in-language only
+            // (serialize#94): the gate stayed green against the pre-clamp v1.11.0 reference
+            // because no compat value exercised the band.
+            ClampRejectWitness = 8388609.0f,  // witness A: top of [0, 8388609] res 1 (2^23+1 steps)
+            ClampWideWitness = 16777215.0f,   // witness B: top of [0, 16777215] res 1 (2^24-1 steps)
         };
     }
 
@@ -160,6 +172,11 @@ internal sealed class CompatData
         stream.SerializeAlign(); // the wide fixed section starts byte aligned too
         stream.SerializeFixed(ref FixedQ112_16Wide, 112, 16, -144115188075855872, +144115188075855872); // ±2^57 units: 75 bits, the three group structure
         stream.SerializeFixed(ref FixedQ64_64Wide, 64, 64, long.MinValue, long.MaxValue);               // full unit range: 128 bits, the four group structure
+        // the clamp witnesses ride the derived-per-call entry point on both language halves:
+        // the clamp lives in the audited home both entry points share, and writing max makes
+        // it load-bearing -- an unclamped writer on either side changes these bytes
+        stream.SerializeCompressedFloat(ref ClampRejectWitness, 0.0f, 8388609.0f, 1.0f);
+        stream.SerializeCompressedFloat(ref ClampWideWitness, 0.0f, 16777215.0f, 1.0f);
         return stream.Error == SerializeError.None;
     }
 
@@ -195,7 +212,11 @@ internal sealed class CompatData
             && FixedQ112_16Wide == other.FixedQ112_16Wide
             && FixedQ64_64Wide == other.FixedQ64_64Wide
             // compare within the resolution: 0.005 decodes to 0.01
-            && Math.Abs(FmaBoundaryFloat - other.FmaBoundaryFloat) <= 0.01f;
+            && Math.Abs(FmaBoundaryFloat - other.FmaBoundaryFloat) <= 0.01f
+            // the witnesses sit at the top of their ranges, where the decode is exact:
+            // code == maxIntegerValue reconstructs 1.0 * delta + 0.0 with no rounding
+            && ClampRejectWitness == other.ClampRejectWitness
+            && ClampWideWitness == other.ClampWideWitness;
     }
 }
 
