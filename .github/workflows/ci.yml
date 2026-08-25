@@ -164,9 +164,13 @@ jobs:
           # float32 with two roundings on every architecture -- the arithmetic
           # QuantizeCompressedFloat mirrors -- so the byte-identity cmp below is
           # the cross-language proof of that pin. v1.11.0 carries it forward and
-          # adds serialize_compressed_float_precomputed.
+          # adds serialize_compressed_float_precomputed. v1.12.0 is the first
+          # release carrying the normative integer clamp (STANDARD.md,
+          # schema#109), which the compat sequence's two clamp witnesses make
+          # load-bearing -- against an older header those rows go red, the
+          # cross-language proof serialize#94 found missing.
           repository: mas-bandwidth/serialize
-          ref: v1.11.0
+          ref: v1.14.0
           path: cpp-serialize
       - uses: actions/setup-dotnet@v6
         with:
