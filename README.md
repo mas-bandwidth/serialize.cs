@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/mas-bandwidth/serialize.cs/actions/workflows/ci.yml/badge.svg)](https://github.com/mas-bandwidth/serialize.cs/actions/workflows/ci.yml)
 
+If this library helps you, please support it: **[Become a supporter](https://www.patreon.com/MasBandwidth/membership)**
+
 **Status: released.** See the [releases page](https://github.com/mas-bandwidth/serialize.cs/releases) for tagged versions.
 
 C# port of the C++ [serialize](https://github.com/mas-bandwidth/serialize) bitpacking
