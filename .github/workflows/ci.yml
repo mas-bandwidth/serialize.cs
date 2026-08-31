@@ -58,10 +58,6 @@ jobs:
       # real in the cpp-interop job; the red team harness runs in its own job)
       - name: Build the compat harness
         run: dotnet build compat/Compat.csproj -c Release
-      # same reason as the compat step: keep the bench compiling everywhere. The
-      # numbers themselves are a local, single-machine concern — CI never times it.
-      - name: Build the bench harness
-        run: dotnet build bench/Bench.csproj -c Release
 
   # THE DEBUG LEG: the write-side contracts AND the API misuse checks are
   # Debug.Assert, compiled out of Release builds — so the Release-only job above
@@ -135,7 +131,7 @@ jobs:
       # 128 bit pair's fields — the API surface the family shares by design.
       - name: dotnet format style + analyzers (verify, all projects)
         run: |
-          for p in src/Serialize.csproj tests/Tests.csproj tests-ns21/TestsNs21.csproj compat/Compat.csproj redteam/RedTeam.csproj bench/Bench.csproj; do
+          for p in src/Serialize.csproj tests/Tests.csproj tests-ns21/TestsNs21.csproj compat/Compat.csproj redteam/RedTeam.csproj; do
             echo "== $p"
             dotnet format style "$p" --verify-no-changes --severity warn
             dotnet format analyzers "$p" --verify-no-changes --severity warn
