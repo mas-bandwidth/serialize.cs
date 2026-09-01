@@ -538,6 +538,7 @@ internal static class SerializeInternal
     internal const string BitsRangeMessage = "bits must be in [1,32]";
     internal const string BitsRange64Message = "bits must be in [1,64]";
     internal const string MinMaxMessage = "min must not be greater than max";
+    internal const string MinMaxStrictMessage = "int128 requires min < max (the reference macro's strict form)";
     internal const string BufferSizeMessage = "string buffer size must be at least 1";
     internal const string FloatParamsMessage = "compressed float requires min < max and resolution > 0";
     internal const string WriteOverflowMessage = "bit writer overflow";
@@ -1349,7 +1350,7 @@ public sealed class WriteStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeInt128(ref Int128Value value, Int128Value min, Int128Value max)
     {
-        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
+        Debug.Assert(min < max, SerializeInternal.MinMaxStrictMessage);
         Int128Value v = value;
         Debug.Assert(v >= min && v <= max, SerializeInternal.WriteRangeAssertMessage);
         int bits = SerializeUtil.BitsRequired128((UInt128Value)min, (UInt128Value)max);
@@ -1947,7 +1948,7 @@ public sealed class ReadStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeInt128(ref Int128Value value, Int128Value min, Int128Value max)
     {
-        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
+        Debug.Assert(min < max, SerializeInternal.MinMaxStrictMessage);
         if (_error != SerializeError.None)
         {
             return false;
@@ -2644,7 +2645,7 @@ public sealed class MeasureStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeInt128(ref Int128Value value, Int128Value min, Int128Value max)
     {
-        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
+        Debug.Assert(min < max, SerializeInternal.MinMaxStrictMessage);
         Debug.Assert(value >= min && value <= max, SerializeInternal.WriteRangeAssertMessage);
         return Measure(SerializeUtil.BitsRequired128((UInt128Value)min, (UInt128Value)max));
     }
