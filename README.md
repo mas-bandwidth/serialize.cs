@@ -29,6 +29,31 @@ serialize.cs#15: minimal runtime checking in release); no unsafe code; zero
 allocation on serialization paths (strings on the read path are the documented
 exception).
 
+## Getting it
+
+serialize.cs ships as source today. The implementation is ready and the package
+is not yet published: `src/Serialize.csproj` carries the package identity
+`MasBandwidth.Serialize`, and nothing under that id exists on NuGet. Pushing it
+there is a separate round.
+
+Two ways to consume the source, both exact:
+
+**Project reference** — clone the repo beside yours and point at the library
+project:
+
+```sh
+git clone https://github.com/mas-bandwidth/serialize.cs.git
+dotnet add YourProject.csproj reference serialize.cs/src/Serialize.csproj
+```
+
+**Copy the files in** — the library is two files, `src/Serialize.cs` and
+`src/Int128Pair.cs`. Drop both into your source tree and they compile with the
+rest of it: there are no package references to satisfy, ever. This is the Unity
+path — put them anywhere under `Assets/`, where the `netstandard2.1` shape CI
+tests is the shape you get.
+
+Either way, pin a release tag rather than tracking `main`. v1.9.0 is current.
+
 ## Layout
 
 - `src/Serialize.cs` — the streams and the codec, one file (mirrors the C++ single
