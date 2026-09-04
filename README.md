@@ -52,7 +52,9 @@ rest of it: there are no package references to satisfy, ever. This is the Unity
 path — put them anywhere under `Assets/`, where the `netstandard2.1` shape CI
 tests is the shape you get.
 
-Either way, pin a release tag rather than tracking `main`. v1.9.0 is current.
+Either way, pin a release tag rather than tracking `main`. The newest is on the
+[releases page](https://github.com/mas-bandwidth/serialize.cs/releases): a release states
+a format version, and two endpoints interoperate only when they carry the same one.
 
 ## Layout
 
