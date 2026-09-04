@@ -167,10 +167,10 @@ proves derive-per-call equals C++; routing this one field through it is what clo
 the triangle against the reference directly.
 
 CI runs this gate in its own job, with `CXX=clang++` and the C++ clone checked out
-at release tag `v1.7.0` — the family's one interop pin: one policy, one version,
+at release tag `v1.16.0` — the family's one interop pin: one policy, one version,
 every port's gate against the same current C++ release. Under the four different
 pins this replaced (`v1.6.2` here and in the Go port, `v1.4.3` in Rust, upstream
-`HEAD` in C), each port certified against a different wire. `v1.7.0` is also the
+`HEAD` in C), each port certified against a different wire. `v1.7.0` remains the
 release that pins the `compressed_float` write arithmetic to float32 with two
 roundings on every architecture — the arithmetic `QuantizeCompressedFloat` here
 mirrors — so the byte-identity `cmp` doubles as the cross-language proof of that
