@@ -42,6 +42,16 @@
     <ProjectReference Include="../src/Serialize.csproj" />
   </ItemGroup>
 
+  <!-- the shared conformance corpus, vendored from mas-bandwidth/serialize and kept
+       in sync by CI. Embedded rather than copied beside the executable so the vectors
+       travel with the assembly and test_conformance_vectors needs no path discovery;
+       the logical name is the bare file name, identical here and in tests-ns21. -->
+  <ItemGroup>
+    <EmbeddedResource Include="../conformance/*.txt">
+      <LogicalName>%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
   <!-- family value: zero third-party dependencies, including test frameworks.
        this is a plain console runner: exit code is the verdict. -->
 

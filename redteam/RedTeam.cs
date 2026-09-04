@@ -755,7 +755,11 @@ internal static class RedTeam
                 byte[] buf = new byte[8];
                 buf[0] = (byte)raw;
                 buf[1] = (byte)(raw >> 8);
-                foreach (int previous in new[] { 100, 0, -1000, int.MaxValue, int.MinValue, int.MaxValue - 1 })
+                // previous is the caller's own state and lives in the int_relative
+                // domain, 0 to 2^31 - 1 (STANDARD.md, "int_relative"): the sweep draws
+                // from inside it, both ends included, because a previous outside the
+                // domain is caller error with no defined wire meaning to attack
+                foreach (int previous in new[] { 100, 0, 1, int.MaxValue, int.MaxValue - 1, int.MaxValue - 69914 })
                 {
                     for (int bytes = 0; bytes <= 8; bytes += 4)
                     {

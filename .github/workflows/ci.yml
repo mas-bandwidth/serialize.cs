@@ -62,7 +62,7 @@ jobs:
   # THE DEBUG LEG: the write-side contracts AND the API misuse checks are
   # Debug.Assert, compiled out of Release builds — so the Release-only job above
   # can never execute test_write_contract_asserts or test_api_misuse_asserts
-  # (they exist only under DEBUG: 54 tests in Debug vs 53 in Release, whose
+  # (they exist only under DEBUG: 62 tests in Debug vs 60 in Release, whose
   # extra test proves the misuse checks ABSENT from the release binary). This
   # job is the only place the assert-execution tests run in CI. Same matrix, TFMs and dotnet setup as the Release job; tests only — the
   # compat harness and the standalone netstandard2.1 compile gate are
@@ -91,7 +91,7 @@ jobs:
         run: dotnet run -c Debug --project tests/Tests.csproj -f net8.0 --no-build
       # the Unity-class leg in Debug: Unity's editor is exactly where consumers
       # run Debug-class builds, so the contract asserts are proven against the
-      # netstandard2.1 assembly surface too (52 tests: the two System.Int128
+      # netstandard2.1 assembly surface too (60 tests: the two System.Int128
       # oracle tests need a TFM that 2.1 lacks)
       - name: Tests (netstandard2.1 assembly, Debug)
         run: dotnet run -c Debug --project tests-ns21/TestsNs21.csproj
@@ -182,7 +182,7 @@ jobs:
         run: CXX=clang++ scripts/interop.sh cpp-serialize
 
   spec-sync:
-    name: STANDARD.md matches upstream
+    name: STANDARD.md and conformance/ match upstream
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -210,3 +210,25 @@ jobs:
             exit 1
           fi
           echo "STANDARD.md matches upstream"
+
+      # conformance/ is a VERBATIM VENDORED COPY of the shared conformance corpus
+      # that lives beside the spec in mas-bandwidth/serialize, vendored and checked
+      # for the same reason STANDARD.md is: the corpus is normative instrument, not
+      # local test data, and a port that regenerates its own expectations proves
+      # only that it agrees with itself (STANDARD.md, "The shared corpus is the
+      # conformance instrument"). test_conformance_vectors runs every file in this
+      # directory through the reader, so a vector added upstream and copied across
+      # runs here without a code change — and an operation this port does not
+      # implement fails loudly rather than being skipped.
+      #
+      # A recursive diff, so an added or deleted vector file is caught along with
+      # an edited one. Same upstream main, same reason: drift is the point.
+      - name: Compare conformance/ against mas-bandwidth/serialize
+        run: |
+          git clone --depth 1 --quiet https://github.com/mas-bandwidth/serialize.git /tmp/upstream-serialize
+          echo "upstream: mas-bandwidth/serialize@$(git -C /tmp/upstream-serialize rev-parse HEAD)"
+          if ! diff -ru /tmp/upstream-serialize/conformance conformance; then
+            echo "::error::conformance/ has diverged from mas-bandwidth/serialize"
+            exit 1
+          fi
+          echo "conformance/ matches upstream"

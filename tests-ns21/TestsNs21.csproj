@@ -22,6 +22,15 @@
     <ProjectReference Include="../src/Serialize.csproj" SetTargetFramework="TargetFramework=netstandard2.1" SkipGetTargetFrameworkProperties="true" />
   </ItemGroup>
 
+  <!-- the shared conformance corpus, vendored from mas-bandwidth/serialize and kept
+       in sync by CI. The same item as in Tests.csproj, so the Unity-class assembly
+       runs the corpus against the netstandard2.1 build of the library. -->
+  <ItemGroup>
+    <EmbeddedResource Include="../conformance/*.txt">
+      <LogicalName>%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
   <!-- family value: zero third-party dependencies, including test frameworks. -->
 
 </Project>

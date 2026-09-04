@@ -378,6 +378,9 @@ internal static partial class Program
         RunTest("test_string_validation", TestStringValidation);
         RunTest("test_wstring_validation", TestWStringValidation);
         RunTest("test_int_relative_validation", TestIntRelativeValidation);
+        // the shared corpus, vendored from mas-bandwidth/serialize: every vector run
+        // through this port's reader (Conformance.cs)
+        RunTest("test_conformance_vectors", TestConformanceVectors);
         RunTest("test_compressed_float_validation", TestCompressedFloatValidation);
         RunTest("test_compressed_float_top_of_range_clamp", TestCompressedFloatTopOfRangeClamp);
         RunTest("test_compressed_float_quantization_boundaries", TestCompressedFloatQuantizationBoundaries);
@@ -420,6 +423,7 @@ internal static partial class Program
         RunTest("test_serialize_object_struct", TestSerializeObjectStruct);
         RunTest("test_string_long_write", TestStringLongWrite);
         RunTest("test_serialize_object_error_propagation", TestSerializeObjectErrorPropagation);
+        RunTest("test_read_terminality", TestReadTerminality);
         RunTest("test_stream_reset", TestStreamReset);
         RunTest("test_differential_round_trip", TestDifferentialRoundTrip);
         RunTest("test_hostile_read", TestHostileRead);
@@ -597,6 +601,28 @@ internal static partial class Program
         long out64 = 0;
         Check(read64.SerializeInt64(ref out64, -42, -42), "read degenerate 64");
         Check(out64 == -42, $"degenerate 64 read back {out64}, expected -42");
+
+        // ...and on the 128 bit width, which the conformance corpus pins with a bound
+        // past 2^100: min <= max is the legal relation for every ranged operation, and
+        // a degenerate range is a field a conforming implementation must accept, not
+        // misuse (STANDARD.md, "int (ranged)" for the rule, "int128 (ranged)" for the
+        // width). The reader half runs from the corpus in test_conformance_vectors;
+        // this is the writer and the measure, in every build mode.
+        Int128Value bound = ((Int128Value)1 << 100) + 7;
+        WriteStream write128 = new WriteStream(buffer);
+        Int128Value v128 = bound;
+        Check(write128.SerializeInt128(ref v128, bound, bound), "write degenerate 128");
+        Check(write128.BitsProcessed == 0, $"degenerate 128 bit range wrote {write128.BitsProcessed} bits, expected 0");
+        write128.Flush();
+        ReadStream read128 = new ReadStream(buffer, 0);
+        Int128Value out128 = 0;
+        Check(read128.SerializeInt128(ref out128, bound, bound), "read degenerate 128");
+        Check(out128 == bound, "degenerate 128 must read back the value the range names");
+        Check(read128.BitsProcessed == 0, $"degenerate 128 bit range read {read128.BitsProcessed} bits, expected 0");
+        MeasureStream measure128 = new MeasureStream();
+        Int128Value m128 = bound;
+        Check(measure128.SerializeInt128(ref m128, bound, bound), "measure degenerate 128");
+        Check(measure128.BitsProcessed == 0, $"measure says the degenerate 128 bit range costs {measure128.BitsProcessed} bits, expected 0");
 
         // Relaxing the guard was meant to admit the degenerate case, not to stop
         // validating: an inverted range is still API misuse — Debug.Assert on every
@@ -1263,7 +1289,7 @@ internal static partial class Program
 
     private static void TestIntRelativeValidation()
     {
-        // the 32 bit fallback must reject values that violate the previous < current contract
+        // the absolute tier must reject values that violate the previous < current contract
         {
             byte[] buffer = new byte[8];
 
@@ -1297,40 +1323,84 @@ internal static partial class Program
             Check(current == written, $"expected {written}, got {current}");
         }
 
-        // gaps wider than 2^31 overflow if the difference is computed in signed arithmetic
+        // the widest gap the domain admits, from the bottom of the domain to the top:
+        // the difference overflows if it is computed in signed arithmetic
         {
             byte[] buffer = new byte[8];
 
             WriteStream writeStream = new WriteStream(buffer);
             int written = int.MaxValue;
-            Check(writeStream.SerializeIntRelative(-1000, ref written), "write failed");
+            Check(writeStream.SerializeIntRelative(0, ref written), "write failed");
             writeStream.Flush();
 
             ReadStream readStream = new ReadStream(buffer);
             int current = 0;
-            Check(readStream.SerializeIntRelative(-1000, ref current), "read failed");
+            Check(readStream.SerializeIntRelative(0, ref current), "read failed");
             Check(current == written, $"expected {written}, got {current}");
         }
 
-        // read side reconstructs current = previous + difference; a large previous must
-        // wrap in the unsigned domain rather than overflow
+        // THE DOMAIN, TIER BY TIER (STANDARD.md, "int_relative"): every tier
+        // reconstructs current in a width that cannot wrap and refuses a result outside
+        // 0 to 2^31 - 1. Each refusal here shares its bytes with an accepted read one
+        // step lower in the domain, so a reader that refuses on the bytes rather than
+        // on the reconstructed value fails the accept half. The wrapped reconstruction
+        // this replaced published previous + difference as a negative "sequence number"
+        // and called the read a success.
         {
-            int[] differences = { 1, 5 }; // 1 exercises the one bit branch, 5 exercises a bucket branch
+            // one per tier: the one bit tier, then the five bounded tiers in order
+            int[] differences = { 1, 5, 20, 200, 3000, 50000 };
 
             foreach (int difference in differences)
             {
                 byte[] buffer = new byte[8];
 
                 WriteStream writeStream = new WriteStream(buffer);
-                int written = 10 + difference;
-                Check(writeStream.SerializeIntRelative(10, ref written), "write failed");
+                int written = difference;
+                Check(writeStream.SerializeIntRelative(0, ref written), "write failed");
+                writeStream.Flush();
+                int bytes = (int)writeStream.BytesProcessed;
+
+                ReadStream accepted = new ReadStream(buffer, bytes);
+                int current = 0;
+                Check(accepted.SerializeIntRelative(int.MaxValue - difference, ref current),
+                    $"difference {difference}: the read at the top of the domain must be accepted");
+                Check(current == int.MaxValue, $"difference {difference}: expected {int.MaxValue}, got {current}");
+
+                ReadStream refused = new ReadStream(buffer, bytes);
+                current = 777; // sentinel: a failed read must not publish the bad value
+                Check(!refused.SerializeIntRelative(int.MaxValue, ref current),
+                    $"difference {difference}: a reconstruction past the domain must be refused");
+                Check(refused.Error == SerializeError.ValueOutOfRange,
+                    $"difference {difference}: expected ValueOutOfRange, got {refused.Error}");
+                Check(current == 777, $"difference {difference}: a failed read wrote {current}");
+            }
+        }
+
+        // the absolute tier's 32 raw bits are UNSIGNED, so a group with the top bit set
+        // is outside the domain and refused on every previous. Read into a signed
+        // sequence type it would decode as a negative value, and the two readings would
+        // disagree about the same bytes.
+        {
+            uint[] topBitSet = { 0x80000000, 0xFFFFFFFF };
+
+            foreach (uint raw in topBitSet)
+            {
+                byte[] buffer = new byte[8];
+
+                WriteStream writeStream = new WriteStream(buffer);
+                uint sixFalseBools = 0;
+                writeStream.SerializeBits(ref sixFalseBools, 6);
+                uint absolute = raw;
+                writeStream.SerializeBits(ref absolute, 32);
                 writeStream.Flush();
 
-                ReadStream readStream = new ReadStream(buffer);
-                int current = 0;
-                Check(readStream.SerializeIntRelative(int.MaxValue, ref current), "read failed");
-                int expected = (int)((uint)int.MaxValue + (uint)difference);
-                Check(current == expected, $"expected {expected}, got {current}");
+                ReadStream readStream = new ReadStream(buffer, (int)writeStream.BytesProcessed);
+                int current = 777;
+                Check(!readStream.SerializeIntRelative(100, ref current),
+                    $"raw {raw:x8}: a group with the top bit set must be refused");
+                Check(readStream.Error == SerializeError.ValueOutOfRange,
+                    $"raw {raw:x8}: expected ValueOutOfRange, got {readStream.Error}");
+                Check(current == 777, $"raw {raw:x8}: a failed read wrote {current}");
             }
         }
     }
@@ -1811,6 +1881,31 @@ internal static partial class Program
             int current = 50;
             stream.SerializeIntRelative(100, ref current);
         }), "an unordered int relative write must assert in debug");
+
+        // int relative's domain is 0 to 2^31 - 1 and previous lives in it: previous is
+        // the caller's own state and never arrives off the wire, so one outside the
+        // domain is caller error in checked builds, on the write side and on the read
+        // side alike (STANDARD.md, "int_relative")
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[8]);
+            int current = 50;
+            stream.SerializeIntRelative(-1000, ref current);
+        }), "an int relative write with previous outside the domain must assert in debug");
+
+        Check(AssertFires(() =>
+        {
+            MeasureStream measure = new MeasureStream();
+            int current = 50;
+            measure.SerializeIntRelative(-1000, ref current);
+        }), "an int relative measure with previous outside the domain must assert in debug");
+
+        Check(AssertFires(() =>
+        {
+            ReadStream stream = new ReadStream(new byte[8]);
+            int current = 0;
+            stream.SerializeIntRelative(-1000, ref current);
+        }), "an int relative read with previous outside the domain must assert in debug");
 
         // the measure stream shares the writer's contract
         Check(AssertFires(() =>
@@ -2420,6 +2515,165 @@ internal static partial class Program
         Check(stream.SerializeBits(ref v, 8), "field writes after an abort stay trusted and branch-free");
         Check(!stream.SerializeObject(new FailingObject()), "SerializeObject stays guarded after a latch");
         Check(!stream.Ok, "the latch survives for the caller's final check");
+    }
+
+    // Prepares a stream that has just failed a read, one per failure shape
+    // test_read_terminality covers. Each leaves at least 8 readable bits after the
+    // failure point, so the follow-up read the test performs is one that WOULD
+    // succeed on a stream that had not failed.
+    private static ReadStream FailedBeforeConsumption()
+    {
+        byte[] buffer = new byte[8];
+        WriteStream writeStream = new WriteStream(buffer);
+        uint filler = 0xBEEF;
+        writeStream.SerializeBits(ref filler, 16);
+        writeStream.Flush();
+
+        ReadStream stream = new ReadStream(buffer, 2);
+        uint tooWide = 0;
+        Check(!stream.SerializeUInt32(ref tooWide), "expected the read past the end to fail");
+        Check(stream.Error == SerializeError.Overflow, $"expected Overflow, got {stream.Error}");
+        Check(stream.BitsProcessed == 0, "a refused read must consume nothing before the end check");
+        return stream;
+    }
+
+    private static ReadStream FailedAfterPartialConsumption()
+    {
+        byte[] buffer = new byte[8];
+        WriteStream writeStream = new WriteStream(buffer);
+        uint nibble = 0xA;
+        writeStream.SerializeBits(ref nibble, 4);
+        int length = 200; // a length the stream cannot carry
+        writeStream.SerializeInt(ref length, 0, 255);
+        writeStream.SerializeAlign();
+        uint tail = 0x5A;
+        writeStream.SerializeBits(ref tail, 8);
+        writeStream.Flush();
+
+        ReadStream stream = new ReadStream(buffer, 3);
+        uint readNibble = 0;
+        Check(stream.SerializeBits(ref readNibble, 4), "the first field must read");
+        string value = "unchanged";
+        // the length field and the alignment are consumed, then the payload overflows
+        Check(!stream.SerializeString(ref value, 256), "expected the oversized string to fail");
+        Check(stream.Error == SerializeError.Overflow, $"expected Overflow, got {stream.Error}");
+        Check(value == "unchanged", "a failed string read must leave the value unmodified");
+        return stream;
+    }
+
+    private static ReadStream FailedOnRangeHeadroom()
+    {
+        byte[] buffer = new byte[8];
+        WriteStream writeStream = new WriteStream(buffer);
+        uint smuggled = 255; // above the range's max, in the bits the range leaves spare
+        writeStream.SerializeBits(ref smuggled, 8);
+        uint tail = 0x5A;
+        writeStream.SerializeBits(ref tail, 8);
+        writeStream.Flush();
+
+        ReadStream stream = new ReadStream(buffer, 2);
+        int value = 777;
+        Check(!stream.SerializeInt(ref value, 0, 200), "expected the out of range read to fail");
+        Check(stream.Error == SerializeError.ValueOutOfRange, $"expected ValueOutOfRange, got {stream.Error}");
+        Check(value == 777, "a failed read must leave the value unmodified");
+        return stream;
+    }
+
+    private static ReadStream FailedOnAlignment()
+    {
+        byte[] buffer = new byte[8];
+        WriteStream writeStream = new WriteStream(buffer);
+        uint nonZeroPadding = 0xFF; // the align bits must be zero on the wire
+        writeStream.SerializeBits(ref nonZeroPadding, 8);
+        uint tail = 0x5A;
+        writeStream.SerializeBits(ref tail, 8);
+        writeStream.Flush();
+
+        ReadStream stream = new ReadStream(buffer, 2);
+        uint nibble = 0;
+        Check(stream.SerializeBits(ref nibble, 4), "the first field must read");
+        Check(!stream.SerializeAlign(), "expected the nonzero padding to fail the align");
+        Check(stream.Error == SerializeError.Align, $"expected Align, got {stream.Error}");
+        return stream;
+    }
+
+    private static ReadStream FailedOnMalformedString()
+    {
+        byte[] buffer = new byte[8];
+        WriteStream writeStream = new WriteStream(buffer);
+        int length = 2;
+        writeStream.SerializeInt(ref length, 0, 255);
+        writeStream.SerializeBytes(new byte[] { 0xC3, 0x28 }); // truncated 2-byte sequence
+        uint tail = 0x5A;
+        writeStream.SerializeBits(ref tail, 8);
+        writeStream.Flush();
+
+        ReadStream stream = new ReadStream(buffer, 4);
+        string value = "unchanged";
+        Check(!stream.SerializeString(ref value, 256), "expected the malformed string to fail");
+        Check(stream.Error == SerializeError.InvalidString, $"expected InvalidString, got {stream.Error}");
+        Check(value == "unchanged", "a failed read must leave the value unmodified");
+        return stream;
+    }
+
+    private static ReadStream FailedOnIntRelative()
+    {
+        byte[] buffer = new byte[8];
+        WriteStream writeStream = new WriteStream(buffer);
+        uint oneBitTier = 1;
+        writeStream.SerializeBits(ref oneBitTier, 1);
+        uint tail = 0x5A;
+        writeStream.SerializeBits(ref tail, 8);
+        writeStream.Flush();
+
+        ReadStream stream = new ReadStream(buffer, 2);
+        int current = 777;
+        // previous is the top of the domain, so the one bit tier reconstructs past it
+        Check(!stream.SerializeIntRelative(int.MaxValue, ref current), "expected the domain refusal");
+        Check(stream.Error == SerializeError.ValueOutOfRange, $"expected ValueOutOfRange, got {stream.Error}");
+        Check(current == 777, "a failed read must leave the value unmodified");
+        return stream;
+    }
+
+    private static void TestReadTerminality()
+    {
+        // A FAILED READ IS TERMINAL (STANDARD.md, Reader Obligations): nothing after
+        // the failing operation has a defined position, so nothing after it is
+        // interpretable, and the STREAM enforces that rather than the caller's
+        // discipline. This port satisfies the rule by latch: the first failure records
+        // an error, and every public read checks it before touching the buffer.
+        //
+        // Six ways in, one per shape the standard names, then the same proof after
+        // each: a read that would succeed on a stream that had not failed must fail,
+        // consume nothing, write nothing, and leave the FIRST error latched. The
+        // failure survives until the stream is re-initialized — test_stream_reset
+        // pins that half.
+        (string Name, Func<ReadStream> Prepare)[] cases =
+        {
+            ("before consumption", FailedBeforeConsumption),
+            ("after partial consumption", FailedAfterPartialConsumption),
+            ("range headroom", FailedOnRangeHeadroom),
+            ("alignment", FailedOnAlignment),
+            ("malformed string", FailedOnMalformedString),
+            ("int relative", FailedOnIntRelative),
+        };
+
+        foreach ((string name, Func<ReadStream> prepare) in cases)
+        {
+            ReadStream stream = prepare();
+            Check(!stream.Ok, $"{name}: the failure must have latched");
+            SerializeError latched = stream.Error;
+            long position = stream.BitsProcessed;
+
+            const uint sentinel = 0xABCDEF;
+            uint value = sentinel;
+            Check(!stream.SerializeBits(ref value, 8), $"{name}: a read after a failure must fail");
+            Check(value == sentinel, $"{name}: a read after a failure wrote {value:x}");
+            Check(stream.BitsProcessed == position,
+                $"{name}: a read after a failure consumed {stream.BitsProcessed - position} bits");
+            Check(stream.Error == latched,
+                $"{name}: expected the first error {latched} to stay latched, got {stream.Error}");
+        }
     }
 
     private static void TestStreamReset()
