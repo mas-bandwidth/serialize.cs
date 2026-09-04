@@ -734,6 +734,25 @@ internal static partial class Program
                 if (words.Length != 1) return null;
                 step.Kind = StepKind.Float;
                 return step;
+            case "double":
+                if (words.Length != 1) return null;
+                step.Kind = StepKind.Double;
+                return step;
+            case "uint128":
+                if (words.Length != 1) return null;
+                step.Kind = StepKind.UInt128;
+                return step;
+            case "int_relative":
+                if (words.Length != 2 || !TryParseStepInt(words[1], out step.Previous)) return null;
+                step.Kind = StepKind.IntRelative;
+                return step;
+            case "compressed_float":
+                if (words.Length != 4 ||
+                    !TryParseStepFloat(words[1], out step.FloatMin) ||
+                    !TryParseStepFloat(words[2], out step.FloatMax) ||
+                    !TryParseStepFloat(words[3], out step.FloatResolution)) return null;
+                step.Kind = StepKind.CompressedFloat;
+                return step;
             case "bytes":
                 if (words.Length != 2 || !TryParseStepInt(words[1], out step.Width)) return null;
                 step.Kind = StepKind.Bytes;
@@ -747,10 +766,13 @@ internal static partial class Program
                 step.Kind = StepKind.WString;
                 return step;
             case "int":
+            case "int64":
+            case "int128":
                 if (words.Length != 3 ||
                     !TryParseConformanceNumber(words[1], out step.Min) ||
                     !TryParseConformanceNumber(words[2], out step.Max)) return null;
-                step.Kind = StepKind.Int;
+                step.Kind = words[0] == "int" ? StepKind.Int
+                    : words[0] == "int64" ? StepKind.Int64 : StepKind.Int128;
                 return step;
             case "fixed":
                 if (words.Length != 5 ||
@@ -1081,6 +1103,11 @@ internal static partial class Program
         {
             return false;
         }
+        return float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+    }
+
+    private static bool TryParseStepFloat(string text, out float value)
+    {
         return float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
     }
 
