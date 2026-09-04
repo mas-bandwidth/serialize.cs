@@ -388,7 +388,7 @@ public static class SerializeUtil
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int BitsRequired(uint min, uint max)
     {
-        return min == max ? 0 : 32 - SerializeCompat.LeadingZeroCount(max - min);
+        return min == max ? 0 : 32 - SerializeCompat.LeadingZeroCount(unchecked(max - min));
     }
 
     /// <summary>Returns the number of bits required to serialize a 64 bit integer in
@@ -397,7 +397,7 @@ public static class SerializeUtil
     public static int BitsRequired64(ulong min, ulong max)
     {
         // subtract in the unsigned domain: the range may be wider than 2^63
-        return min == max ? 0 : 64 - SerializeCompat.LeadingZeroCount(max - min);
+        return min == max ? 0 : 64 - SerializeCompat.LeadingZeroCount(unchecked(max - min));
     }
 
     /// <summary>Returns the number of bits required to serialize a 128 bit integer in
@@ -421,7 +421,7 @@ public static class SerializeUtil
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static uint SignedToUnsigned(int n)
     {
-        return ((uint)n << 1) ^ (0u - ((uint)n >> 31));
+        return unchecked(((uint)n << 1) ^ (0u - ((uint)n >> 31)));
     }
 
     /// <summary>Converts an unsigned integer to a signed integer with zig-zag encoding.
@@ -429,7 +429,7 @@ public static class SerializeUtil
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int UnsignedToSigned(uint n)
     {
-        return (int)((n >> 1) ^ (0u - (n & 1)));
+        return unchecked((int)((n >> 1) ^ (0u - (n & 1))));
     }
 
     /// <summary>
@@ -730,7 +730,7 @@ internal static class SerializeInternal
         {
             minRepresentableUnits = integerBits >= 65
                 ? long.MinValue
-                : (long)(0UL - (1UL << (integerBits - 1)));
+                : unchecked((long)(0UL - (1UL << (integerBits - 1))));
             maxRepresentableUnits = integerBits >= 64
                 ? long.MaxValue
                 : (long)((1UL << (integerBits - 1)) - 1);
@@ -758,8 +758,8 @@ internal static class SerializeInternal
         out ulong rawMin, out ulong rawMax, out int bits)
     {
         ValidateFixedPointFormat(storageBits, storageSigned, integerBits, fractionBits, minUnits, maxUnits);
-        rawMin = (ulong)minUnits << fractionBits;
-        rawMax = (ulong)maxUnits << fractionBits;
+        rawMin = unchecked((ulong)minUnits) << fractionBits;
+        rawMax = unchecked((ulong)maxUnits) << fractionBits;
         bits = SerializeUtil.BitsRequired64(rawMin, rawMax);
     }
 
@@ -785,7 +785,7 @@ internal static class SerializeInternal
         rawMax = (UInt128Value)(Int128Value)maxUnits << fractionBits;
         bits = minUnits == maxUnits
             ? 0
-            : SerializeUtil.BitsRequired64((ulong)minUnits, (ulong)maxUnits) + fractionBits;
+            : SerializeUtil.BitsRequired64(unchecked((ulong)minUnits), unchecked((ulong)maxUnits)) + fractionBits;
     }
 }
 
@@ -872,7 +872,7 @@ public sealed class BitWriter
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void WriteBitsUnchecked(uint value, int bits)
     {
-        value &= (uint)((1UL << bits) - 1);
+        value &= unchecked((uint)((1UL << bits) - 1));
 
         _scratch |= (ulong)value << _scratchBits;
 
@@ -1121,7 +1121,7 @@ public sealed class BitReader
             }
         }
 
-        uint output = (uint)(window >> (int)(_bitsRead & 7)) & (uint)((1UL << bits) - 1);
+        uint output = unchecked((uint)(window >> (int)(_bitsRead & 7)) & (uint)((1UL << bits) - 1));
 
         _bitsRead += bits;
 
@@ -1283,12 +1283,12 @@ public sealed class WriteStream : IBitStream
         Debug.Assert(bits >= 1 && bits <= 64, SerializeInternal.BitsRange64Message);
         if (bits <= 32)
         {
-            return WriteBits((uint)value, bits);
+            return WriteBits(unchecked((uint)value), bits);
         }
         Debug.Assert(_writer.BitsWritten + bits <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
         // low dword first, then the high remainder
-        _writer.WriteBitsUnchecked((uint)value, 32);
-        _writer.WriteBitsUnchecked((uint)(value >> 32), bits - 32);
+        _writer.WriteBitsUnchecked(unchecked((uint)value), 32);
+        _writer.WriteBitsUnchecked(unchecked((uint)(value >> 32)), bits - 32);
         return true;
     }
 
@@ -1299,9 +1299,9 @@ public sealed class WriteStream : IBitStream
         Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         int v = value;
         Debug.Assert(v >= min && v <= max, SerializeInternal.WriteRangeAssertMessage);
-        int bits = SerializeUtil.BitsRequired((uint)min, (uint)max);
+        int bits = SerializeUtil.BitsRequired(unchecked((uint)min), unchecked((uint)max));
         // subtract in the unsigned domain: the range may be wider than 2^31
-        return WriteBits((uint)v - (uint)min, bits);
+        return WriteBits(unchecked((uint)v - (uint)min), bits);
     }
 
     /// <inheritdoc/>
@@ -1311,17 +1311,17 @@ public sealed class WriteStream : IBitStream
         Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         long v = value;
         Debug.Assert(v >= min && v <= max, SerializeInternal.WriteRangeAssertMessage);
-        int bits = SerializeUtil.BitsRequired64((ulong)min, (ulong)max);
+        int bits = SerializeUtil.BitsRequired64(unchecked((ulong)min), unchecked((ulong)max));
         // subtract in the unsigned domain: the range may be wider than 2^63
-        ulong unsigned = (ulong)v - (ulong)min;
+        ulong unsigned = unchecked((ulong)v - (ulong)min);
         if (bits <= 32)
         {
-            return WriteBits((uint)unsigned, bits);
+            return WriteBits(unchecked((uint)unsigned), bits);
         }
         Debug.Assert(_writer.BitsWritten + bits <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
         // low dword first, then the high remainder: same convention as SerializeBits64
-        _writer.WriteBitsUnchecked((uint)unsigned, 32);
-        _writer.WriteBitsUnchecked((uint)(unsigned >> 32), bits - 32);
+        _writer.WriteBitsUnchecked(unchecked((uint)unsigned), 32);
+        _writer.WriteBitsUnchecked(unchecked((uint)(unsigned >> 32)), bits - 32);
         return true;
     }
 
@@ -1333,25 +1333,25 @@ public sealed class WriteStream : IBitStream
     {
         if (bits <= 32)
         {
-            _writer.WriteBitsUnchecked((uint)value, bits);
+            _writer.WriteBitsUnchecked(unchecked((uint)value), bits);
         }
         else if (bits <= 64)
         {
-            _writer.WriteBitsUnchecked((uint)value, 32);
-            _writer.WriteBitsUnchecked((uint)(value >> 32), bits - 32);
+            _writer.WriteBitsUnchecked(unchecked((uint)value), 32);
+            _writer.WriteBitsUnchecked(unchecked((uint)(value >> 32)), bits - 32);
         }
         else if (bits <= 96)
         {
-            _writer.WriteBitsUnchecked((uint)value, 32);
-            _writer.WriteBitsUnchecked((uint)(value >> 32), 32);
-            _writer.WriteBitsUnchecked((uint)(value >> 64), bits - 64);
+            _writer.WriteBitsUnchecked(unchecked((uint)value), 32);
+            _writer.WriteBitsUnchecked(unchecked((uint)(value >> 32)), 32);
+            _writer.WriteBitsUnchecked(unchecked((uint)(value >> 64)), bits - 64);
         }
         else
         {
-            _writer.WriteBitsUnchecked((uint)value, 32);
-            _writer.WriteBitsUnchecked((uint)(value >> 32), 32);
-            _writer.WriteBitsUnchecked((uint)(value >> 64), 32);
-            _writer.WriteBitsUnchecked((uint)(value >> 96), bits - 96);
+            _writer.WriteBitsUnchecked(unchecked((uint)value), 32);
+            _writer.WriteBitsUnchecked(unchecked((uint)(value >> 32)), 32);
+            _writer.WriteBitsUnchecked(unchecked((uint)(value >> 64)), 32);
+            _writer.WriteBitsUnchecked(unchecked((uint)(value >> 96)), bits - 96);
         }
     }
 
@@ -1386,8 +1386,8 @@ public sealed class WriteStream : IBitStream
     public bool SerializeUInt64(ref ulong value)
     {
         Debug.Assert(_writer.BitsWritten + 64 <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
-        _writer.WriteBitsUnchecked((uint)value, 32);
-        _writer.WriteBitsUnchecked((uint)(value >> 32), 32);
+        _writer.WriteBitsUnchecked(unchecked((uint)value), 32);
+        _writer.WriteBitsUnchecked(unchecked((uint)(value >> 32)), 32);
         return true;
     }
 
@@ -1445,18 +1445,18 @@ public sealed class WriteStream : IBitStream
     private bool WriteFixed(ulong raw, ulong rawMin, ulong rawMax, int bits)
     {
         // subtract in the unsigned domain: the raw range may be wider than 2^63
-        ulong offset = raw - rawMin;
-        Debug.Assert(offset <= rawMax - rawMin, SerializeInternal.WriteRangeAssertMessage);
+        ulong offset = unchecked(raw - rawMin);
+        Debug.Assert(offset <= unchecked(rawMax - rawMin), SerializeInternal.WriteRangeAssertMessage);
         Debug.Assert(_writer.BitsWritten + bits <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
         if (bits <= 32)
         {
-            _writer.WriteBitsUnchecked((uint)offset, bits);
+            _writer.WriteBitsUnchecked(unchecked((uint)offset), bits);
         }
         else
         {
             // low dword first, then the high remainder: same convention as SerializeInt64
-            _writer.WriteBitsUnchecked((uint)offset, 32);
-            _writer.WriteBitsUnchecked((uint)(offset >> 32), bits - 32);
+            _writer.WriteBitsUnchecked(unchecked((uint)offset), 32);
+            _writer.WriteBitsUnchecked(unchecked((uint)(offset >> 32)), bits - 32);
         }
         return true;
     }
@@ -1478,7 +1478,7 @@ public sealed class WriteStream : IBitStream
     {
         SerializeInternal.FixedPointParams(64, true, integerBits, fractionBits, min, max,
             out ulong rawMin, out ulong rawMax, out int bits);
-        return WriteFixed((ulong)value, rawMin, rawMax, bits);
+        return WriteFixed(unchecked((ulong)value), rawMin, rawMax, bits);
     }
 
     /// <inheritdoc/>
@@ -1494,7 +1494,7 @@ public sealed class WriteStream : IBitStream
     {
         SerializeInternal.FixedPointParams(32, true, integerBits, fractionBits, min, max,
             out ulong rawMin, out ulong rawMax, out int bits);
-        return WriteFixed((ulong)value, rawMin, rawMax, bits);
+        return WriteFixed(unchecked((ulong)value), rawMin, rawMax, bits);
     }
 
     /// <inheritdoc/>
@@ -1510,7 +1510,7 @@ public sealed class WriteStream : IBitStream
     {
         SerializeInternal.FixedPointParams(16, true, integerBits, fractionBits, min, max,
             out ulong rawMin, out ulong rawMax, out int bits);
-        return WriteFixed((ulong)value, rawMin, rawMax, bits);
+        return WriteFixed(unchecked((ulong)value), rawMin, rawMax, bits);
     }
 
     /// <inheritdoc/>
@@ -1665,7 +1665,7 @@ public sealed class WriteStream : IBitStream
         Debug.Assert(previous >= 0 && previous < current, SerializeInternal.WriteIntRelativeAssertMessage);
         // difference in the unsigned domain: exact for every gap the domain admits,
         // and gaps past the last bucket fall through to the absolute 32 bit encoding
-        uint difference = (uint)current - (uint)previous;
+        uint difference = unchecked((uint)current - (uint)previous);
         if (!WriteBool(difference == 1))
         {
             return false;
@@ -1687,7 +1687,7 @@ public sealed class WriteStream : IBitStream
                 return SerializeInt(ref v, (int)bucketMin, (int)bucketMax);
             }
         }
-        return WriteBits((uint)current, 32);
+        return WriteBits(unchecked((uint)current), 32);
     }
 
     /// <summary>Flushes the last word of bits to memory. Always call this after you
@@ -1871,18 +1871,18 @@ public sealed class ReadStream : IBitStream
         {
             return false;
         }
-        int bits = SerializeUtil.BitsRequired((uint)min, (uint)max);
+        int bits = SerializeUtil.BitsRequired(unchecked((uint)min), unchecked((uint)max));
         if (_reader.BitsRead + bits > _reader.NumBits)
         {
             return Fail(SerializeError.Overflow);
         }
         uint unsigned = _reader.ReadBitsUnchecked(bits);
         // compare and add in the unsigned domain: the range may be wider than 2^31
-        if (unsigned > (uint)max - (uint)min)
+        if (unsigned > unchecked((uint)max - (uint)min))
         {
             return Fail(SerializeError.ValueOutOfRange);
         }
-        value = (int)(unsigned + (uint)min);
+        value = unchecked((int)(unsigned + (uint)min));
         return true;
     }
 
@@ -1895,7 +1895,7 @@ public sealed class ReadStream : IBitStream
         {
             return false;
         }
-        int bits = SerializeUtil.BitsRequired64((ulong)min, (ulong)max);
+        int bits = SerializeUtil.BitsRequired64(unchecked((ulong)min), unchecked((ulong)max));
         if (_reader.BitsRead + bits > _reader.NumBits)
         {
             return Fail(SerializeError.Overflow);
@@ -1913,11 +1913,11 @@ public sealed class ReadStream : IBitStream
             unsigned = (ulong)hi << 32 | lo;
         }
         // compare and add in the unsigned domain: the range may be wider than 2^63
-        if (unsigned > (ulong)max - (ulong)min)
+        if (unsigned > unchecked((ulong)max - (ulong)min))
         {
             return Fail(SerializeError.ValueOutOfRange);
         }
-        value = (long)(unsigned + (ulong)min);
+        value = unchecked((long)(unsigned + (ulong)min));
         return true;
     }
 
@@ -2143,11 +2143,11 @@ public sealed class ReadStream : IBitStream
             offset = (ulong)hi << 32 | lo;
         }
         // compare and add in the unsigned domain: the raw range may be wider than 2^63
-        if (offset > rawMax - rawMin)
+        if (offset > unchecked(rawMax - rawMin))
         {
             return Fail(SerializeError.ValueOutOfRange);
         }
-        raw = rawMin + offset;
+        raw = unchecked(rawMin + offset);
         return true;
     }
 
@@ -2164,11 +2164,11 @@ public sealed class ReadStream : IBitStream
         }
         UInt128Value offset = ReadGroups128(bits);
         // compare and add in the unsigned domain: the raw range may be wider than 2^127
-        if (offset > rawMax - rawMin)
+        if (offset > unchecked(rawMax - rawMin))
         {
             return Fail(SerializeError.ValueOutOfRange);
         }
-        raw = rawMin + offset;
+        raw = unchecked(rawMin + offset);
         return true;
     }
 
@@ -2182,7 +2182,7 @@ public sealed class ReadStream : IBitStream
         {
             return false;
         }
-        value = (long)raw;
+        value = unchecked((long)raw);
         return true;
     }
 
@@ -2210,7 +2210,7 @@ public sealed class ReadStream : IBitStream
         {
             return false;
         }
-        value = (int)raw;
+        value = unchecked((int)raw);
         return true;
     }
 
@@ -2224,7 +2224,7 @@ public sealed class ReadStream : IBitStream
         {
             return false;
         }
-        value = (uint)raw;
+        value = unchecked((uint)raw);
         return true;
     }
 
@@ -2238,7 +2238,7 @@ public sealed class ReadStream : IBitStream
         {
             return false;
         }
-        value = (short)raw;
+        value = unchecked((short)raw);
         return true;
     }
 
@@ -2252,7 +2252,7 @@ public sealed class ReadStream : IBitStream
         {
             return false;
         }
-        value = (ushort)raw;
+        value = unchecked((ushort)raw);
         return true;
     }
 
@@ -2655,7 +2655,7 @@ public sealed class MeasureStream : IBitStream
     {
         Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         Debug.Assert(value >= min && value <= max, SerializeInternal.WriteRangeAssertMessage);
-        return Measure(SerializeUtil.BitsRequired((uint)min, (uint)max));
+        return Measure(SerializeUtil.BitsRequired(unchecked((uint)min), unchecked((uint)max)));
     }
 
     /// <inheritdoc/>
@@ -2663,7 +2663,7 @@ public sealed class MeasureStream : IBitStream
     {
         Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         Debug.Assert(value >= min && value <= max, SerializeInternal.WriteRangeAssertMessage);
-        return Measure(SerializeUtil.BitsRequired64((ulong)min, (ulong)max));
+        return Measure(SerializeUtil.BitsRequired64(unchecked((ulong)min), unchecked((ulong)max)));
     }
 
     /// <inheritdoc/>
@@ -2720,7 +2720,7 @@ public sealed class MeasureStream : IBitStream
     private bool MeasureFixed(ulong raw, ulong rawMin, ulong rawMax, int bits)
     {
         // compare in the unsigned domain: the raw range may be wider than 2^63
-        Debug.Assert(raw - rawMin <= rawMax - rawMin, SerializeInternal.WriteRangeAssertMessage);
+        Debug.Assert(unchecked(raw - rawMin) <= unchecked(rawMax - rawMin), SerializeInternal.WriteRangeAssertMessage);
         return Measure(bits);
     }
 
@@ -2728,7 +2728,7 @@ public sealed class MeasureStream : IBitStream
     private bool MeasureFixed128(UInt128Value raw, UInt128Value rawMin, UInt128Value rawMax, int bits)
     {
         // compare in the unsigned domain: the raw range may be wider than 2^127
-        Debug.Assert(raw - rawMin <= rawMax - rawMin, SerializeInternal.WriteRangeAssertMessage);
+        Debug.Assert(unchecked(raw - rawMin) <= unchecked(rawMax - rawMin), SerializeInternal.WriteRangeAssertMessage);
         return Measure(bits);
     }
 
@@ -2737,7 +2737,7 @@ public sealed class MeasureStream : IBitStream
     {
         SerializeInternal.FixedPointParams(64, true, integerBits, fractionBits, min, max,
             out ulong rawMin, out ulong rawMax, out int bits);
-        return MeasureFixed((ulong)value, rawMin, rawMax, bits);
+        return MeasureFixed(unchecked((ulong)value), rawMin, rawMax, bits);
     }
 
     /// <inheritdoc/>
@@ -2753,7 +2753,7 @@ public sealed class MeasureStream : IBitStream
     {
         SerializeInternal.FixedPointParams(32, true, integerBits, fractionBits, min, max,
             out ulong rawMin, out ulong rawMax, out int bits);
-        return MeasureFixed((ulong)value, rawMin, rawMax, bits);
+        return MeasureFixed(unchecked((ulong)value), rawMin, rawMax, bits);
     }
 
     /// <inheritdoc/>
@@ -2769,7 +2769,7 @@ public sealed class MeasureStream : IBitStream
     {
         SerializeInternal.FixedPointParams(16, true, integerBits, fractionBits, min, max,
             out ulong rawMin, out ulong rawMax, out int bits);
-        return MeasureFixed((ulong)value, rawMin, rawMax, bits);
+        return MeasureFixed(unchecked((ulong)value), rawMin, rawMax, bits);
     }
 
     /// <inheritdoc/>
@@ -2880,7 +2880,7 @@ public sealed class MeasureStream : IBitStream
     public bool SerializeIntRelative(int previous, ref int current)
     {
         Debug.Assert(previous >= 0 && previous < current, SerializeInternal.WriteIntRelativeAssertMessage);
-        uint difference = (uint)current - (uint)previous;
+        uint difference = unchecked((uint)current - (uint)previous);
         int bits = 1;
         if (difference != 1)
         {
@@ -3051,7 +3051,7 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void WriteBitsUnchecked(uint value, int bits)
     {
-        value &= (uint)((1UL << bits) - 1);
+        value &= unchecked((uint)((1UL << bits) - 1));
 
         _scratch |= (ulong)value << _scratchBits;
 
@@ -3102,12 +3102,12 @@ public ref struct WriteBatch
         Debug.Assert(bits >= 1 && bits <= 64, SerializeInternal.BitsRange64Message);
         if (bits <= 32)
         {
-            return WriteBits((uint)value, bits);
+            return WriteBits(unchecked((uint)value), bits);
         }
         Debug.Assert(_bitsWritten + bits <= _numBits, SerializeInternal.WriteOverflowMessage);
         // low dword first, then the high remainder
-        WriteBitsUnchecked((uint)value, 32);
-        WriteBitsUnchecked((uint)(value >> 32), bits - 32);
+        WriteBitsUnchecked(unchecked((uint)value), 32);
+        WriteBitsUnchecked(unchecked((uint)(value >> 32)), bits - 32);
         return true;
     }
 
@@ -3119,9 +3119,9 @@ public ref struct WriteBatch
         Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         int v = value;
         Debug.Assert(v >= min && v <= max, SerializeInternal.WriteRangeAssertMessage);
-        int bits = SerializeUtil.BitsRequired((uint)min, (uint)max);
+        int bits = SerializeUtil.BitsRequired(unchecked((uint)min), unchecked((uint)max));
         // subtract in the unsigned domain: the range may be wider than 2^31
-        return WriteBits((uint)v - (uint)min, bits);
+        return WriteBits(unchecked((uint)v - (uint)min), bits);
     }
 
     /// <summary>Serializes a signed 64 bit integer in [min,max]. Identical semantics
@@ -3132,17 +3132,17 @@ public ref struct WriteBatch
         Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         long v = value;
         Debug.Assert(v >= min && v <= max, SerializeInternal.WriteRangeAssertMessage);
-        int bits = SerializeUtil.BitsRequired64((ulong)min, (ulong)max);
+        int bits = SerializeUtil.BitsRequired64(unchecked((ulong)min), unchecked((ulong)max));
         // subtract in the unsigned domain: the range may be wider than 2^63
-        ulong unsigned = (ulong)v - (ulong)min;
+        ulong unsigned = unchecked((ulong)v - (ulong)min);
         if (bits <= 32)
         {
-            return WriteBits((uint)unsigned, bits);
+            return WriteBits(unchecked((uint)unsigned), bits);
         }
         Debug.Assert(_bitsWritten + bits <= _numBits, SerializeInternal.WriteOverflowMessage);
         // low dword first, then the high remainder: same convention as SerializeBits64
-        WriteBitsUnchecked((uint)unsigned, 32);
-        WriteBitsUnchecked((uint)(unsigned >> 32), bits - 32);
+        WriteBitsUnchecked(unchecked((uint)unsigned), 32);
+        WriteBitsUnchecked(unchecked((uint)(unsigned >> 32)), bits - 32);
         return true;
     }
 
@@ -3166,8 +3166,8 @@ public ref struct WriteBatch
     public bool SerializeUInt64(ref ulong value)
     {
         Debug.Assert(_bitsWritten + 64 <= _numBits, SerializeInternal.WriteOverflowMessage);
-        WriteBitsUnchecked((uint)value, 32);
-        WriteBitsUnchecked((uint)(value >> 32), 32);
+        WriteBitsUnchecked(unchecked((uint)value), 32);
+        WriteBitsUnchecked(unchecked((uint)(value >> 32)), 32);
         return true;
     }
 
@@ -3535,7 +3535,7 @@ public ref struct ReadBatch
             }
         }
 
-        uint output = (uint)(window >> (int)(_bitsRead & 7)) & (uint)((1UL << bits) - 1);
+        uint output = unchecked((uint)(window >> (int)(_bitsRead & 7)) & (uint)((1UL << bits) - 1));
 
         _bitsRead += bits;
 
@@ -3603,18 +3603,18 @@ public ref struct ReadBatch
         {
             return false;
         }
-        int bits = SerializeUtil.BitsRequired((uint)min, (uint)max);
+        int bits = SerializeUtil.BitsRequired(unchecked((uint)min), unchecked((uint)max));
         if (_bitsRead + bits > _numBits)
         {
             return Fail(SerializeError.Overflow);
         }
         uint unsigned = ReadBitsUnchecked(bits);
         // compare and add in the unsigned domain: the range may be wider than 2^31
-        if (unsigned > (uint)max - (uint)min)
+        if (unsigned > unchecked((uint)max - (uint)min))
         {
             return Fail(SerializeError.ValueOutOfRange);
         }
-        value = (int)(unsigned + (uint)min);
+        value = unchecked((int)(unsigned + (uint)min));
         return true;
     }
 
@@ -3628,7 +3628,7 @@ public ref struct ReadBatch
         {
             return false;
         }
-        int bits = SerializeUtil.BitsRequired64((ulong)min, (ulong)max);
+        int bits = SerializeUtil.BitsRequired64(unchecked((ulong)min), unchecked((ulong)max));
         if (_bitsRead + bits > _numBits)
         {
             return Fail(SerializeError.Overflow);
@@ -3646,11 +3646,11 @@ public ref struct ReadBatch
             unsigned = (ulong)hi << 32 | lo;
         }
         // compare and add in the unsigned domain: the range may be wider than 2^63
-        if (unsigned > (ulong)max - (ulong)min)
+        if (unsigned > unchecked((ulong)max - (ulong)min))
         {
             return Fail(SerializeError.ValueOutOfRange);
         }
-        value = (long)(unsigned + (ulong)min);
+        value = unchecked((long)(unsigned + (ulong)min));
         return true;
     }
 
@@ -4059,8 +4059,8 @@ internal static class SerializeCompat
     public static int LeadingZeroCount(ulong value)
     {
 #if !NET7_0_OR_GREATER
-        uint high = (uint)(value >> 32);
-        return high != 0 ? LeadingZeroCount(high) : 32 + LeadingZeroCount((uint)value);
+        uint high = unchecked(unchecked((uint)(value >> 32)));
+        return high != 0 ? LeadingZeroCount(high) : 32 + LeadingZeroCount(unchecked((uint)value));
 #else
         return System.Numerics.BitOperations.LeadingZeroCount(value);
 #endif

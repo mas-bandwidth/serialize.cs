@@ -112,6 +112,34 @@ jobs:
       - name: Run the red team harness (exit code is the verdict)
         run: dotnet run -c Release --project redteam/RedTeam.csproj
 
+  checked-arithmetic:
+    name: checked arithmetic (a reader must not trap)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      # STANDARD.md: a trap, a crash or an abort on malformed input is
+      # non-conforming, and this port's failure idiom is a return code plus a
+      # latched error. C# arithmetic in a CHECKED context throws on overflow and
+      # on an out of range conversion, and the wire arithmetic is two's
+      # complement by design -- a ranged read subtracts bounds in the unsigned
+      # domain, the bit window narrows a 64 bit load, a fixed point read
+      # reinterprets an offset at the storage width -- so every such site carries
+      # an explicit `unchecked`. This leg compiles the LIBRARY with the checked
+      # context on (SerializeCheckedArithmeticProbe, src/Serialize.csproj; the
+      # test projects keep the default) so a site that loses its annotation
+      # becomes an OverflowException the suite reports, rather than a rule nobody
+      # checks. What runs against it is the corpus, whose refused vectors are the
+      # malformed input the ruling is about, and the red team harness's tens of
+      # millions of hostile cases.
+      - name: Tests against the checked-arithmetic library
+        run: dotnet run -c Release --project tests/Tests.csproj -f net10.0 -p:SerializeCheckedArithmeticProbe=true
+      - name: Red team harness against the checked-arithmetic library
+        run: dotnet run -c Release --project redteam/RedTeam.csproj -p:SerializeCheckedArithmeticProbe=true
+
   lint:
     name: analyzers and style
     runs-on: ubuntu-latest

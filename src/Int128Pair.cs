@@ -193,7 +193,7 @@ public struct UInt128Value : IEquatable<UInt128Value>
     public static bool operator >=(UInt128Value a, UInt128Value b) => !(a < b);
 
     // word casts — the serialize group writers read the low words
-    public static explicit operator uint(UInt128Value v) => (uint)v.Lo;
+    public static explicit operator uint(UInt128Value v) => unchecked((uint)v.Lo);
     public static explicit operator ulong(UInt128Value v) => v.Lo;
 
     // the rest of the integer conversion matrix — System.UInt128 defines every
@@ -228,7 +228,7 @@ public struct UInt128Value : IEquatable<UInt128Value>
     public static implicit operator System.UInt128(UInt128Value v) =>
         new System.UInt128(v.Hi, v.Lo);
     public static implicit operator UInt128Value(System.UInt128 v) =>
-        new UInt128Value((ulong)(v >> 64), (ulong)v);
+        new UInt128Value(unchecked((ulong)(v >> 64)), unchecked((ulong)v));
 #endif // NET7_0_OR_GREATER
 
     public bool Equals(UInt128Value other) => this == other;
@@ -285,7 +285,7 @@ public struct Int128Value : IEquatable<Int128Value>
             return v;
         }
         UInt128Value u = (UInt128Value)v >> count;
-        if ((long)v.Hi < 0)
+        if (unchecked((long)v.Hi) < 0)
         {
             // fill the vacated top bits with ones
             u = u | (UInt128Value.MaxValue << (128 - count));
@@ -299,8 +299,8 @@ public struct Int128Value : IEquatable<Int128Value>
     /// the magnitudes in the unsigned domain, then apply the sign.</summary>
     public static Int128Value operator /(Int128Value a, Int128Value b)
     {
-        bool negA = (long)a.Hi < 0;
-        bool negB = (long)b.Hi < 0;
+        bool negA = unchecked((long)a.Hi) < 0;
+        bool negB = unchecked((long)b.Hi) < 0;
         UInt128Value magA = negA ? (UInt128Value)(Zero - a) : (UInt128Value)a;
         UInt128Value magB = negB ? (UInt128Value)(Zero - b) : (UInt128Value)b;
         UInt128Value q = magA / magB;
@@ -316,7 +316,7 @@ public struct Int128Value : IEquatable<Int128Value>
     public static bool operator !=(Int128Value a, Int128Value b) => !(a == b);
 
     public static bool operator <(Int128Value a, Int128Value b) =>
-        a.Hi != b.Hi ? (long)a.Hi < (long)b.Hi : a.Lo < b.Lo;
+        a.Hi != b.Hi ? unchecked((long)a.Hi) < unchecked((long)b.Hi) : a.Lo < b.Lo;
     public static bool operator >(Int128Value a, Int128Value b) => b < a;
     public static bool operator <=(Int128Value a, Int128Value b) => !(b < a);
     public static bool operator >=(Int128Value a, Int128Value b) => !(a < b);
@@ -355,7 +355,7 @@ public struct Int128Value : IEquatable<Int128Value>
     public static implicit operator System.Int128(Int128Value v) =>
         new System.Int128(v.Hi, v.Lo);
     public static implicit operator Int128Value(System.Int128 v) =>
-        new Int128Value((ulong)(v >> 64), unchecked((ulong)v));
+        new Int128Value(unchecked((ulong)(v >> 64)), unchecked((ulong)v));
 #endif // NET7_0_OR_GREATER
 
     public bool Equals(Int128Value other) => this == other;
