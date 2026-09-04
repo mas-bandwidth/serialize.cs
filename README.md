@@ -74,20 +74,24 @@ Either way, pin a release tag rather than tracking `main`. v1.9.0 is current.
   then exits nonzero if any were recorded. CI runs it on every push and pull request;
   the exit code is the verdict.
 - `scripts/interop.sh` — the interop gate as one runnable command.
-- `.github/workflows/ci.yml` — six jobs: the Release test matrix and the Debug test
+- `.github/workflows/ci.yml` — seven jobs: the Release test matrix and the Debug test
   matrix (all three TFM legs, on Linux, macOS and Windows — Unity's authoring
-  platform), the red team run, the analyzer/style check, the C++ interop gate, and the
-  spec-sync check over `STANDARD.md` and `conformance/`.
+  platform), the red team run, the checked-arithmetic leg, the analyzer/style check,
+  the C++ interop gate, and the spec-sync check over `STANDARD.md` and `conformance/`.
 - `STANDARD.md` — the wire format spec, vendored verbatim from the upstream
   `mas-bandwidth/serialize` repo; the spec-sync job diffs it against upstream and fails
   on drift.
 - `conformance/` — the shared conformance corpus, vendored verbatim from the same
-  place and checked the same way: one file per operation, holding the accepted and
-  refused vectors the standard's rules require. `test_conformance_vectors` runs every
-  vector in it through this port's reader, in Debug and Release and on every target the
-  test projects build for. The corpus is written once for the whole family and vendored
-  unchanged — a suite that regenerates its own expectations proves only that a port
-  agrees with itself.
+  place and checked the same way: one file per covered operation, holding the accepted
+  and refused vectors the standard's rules require. `test_conformance_vectors` runs
+  every vector in it through this port's reader, and a vector marked `writer =
+  canonical` back out through the writer, and one carrying `measure_at_least` through
+  the measure — in Debug and Release and on every target the test projects build for.
+  The files are discovered by a glob, so a vector added upstream and copied across runs
+  without a code change, and an operation this port cannot drive fails rather than being
+  skipped. The corpus is written once for the whole family and vendored unchanged — a
+  suite that regenerates its own expectations proves only that a port agrees with
+  itself.
 - `SECURITY.md` — how to report a vulnerability privately, and what is in scope.
 
 ## Build and test

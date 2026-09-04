@@ -20,12 +20,33 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
 
+  <!-- ARITHMETIC DISCIPLINE. STANDARD.md: a trap, a crash or an abort on malformed
+       input is non-conforming, and this port's failure idiom is a return code plus a
+       latched error. C# arithmetic in a checked context THROWS on overflow and on an
+       out of range conversion, and the wire arithmetic is two's complement by design:
+       a ranged read subtracts bounds in the unsigned domain, the bit window narrows a
+       64 bit load to 32 bits, and a fixed point read reinterprets an offset at the
+       storage width. Every such site carries an explicit `unchecked`, so the reader
+       cannot be made to throw by any input, and this property states the shipped
+       default rather than inheriting it from whatever a consuming build sets.
+
+       SerializeCheckedArithmeticProbe=true compiles this library — and only this
+       library, the test projects keep the default — with the checked context turned
+       on, which turns every unannotated wire arithmetic site into an exception the
+       suite reports. The ci workflow runs it. It is a gate, never a shipping
+       configuration: a released assembly that throws on a wrapping read would be the
+       defect the annotations exist to prevent. -->
+  <PropertyGroup>
+    <CheckForOverflowUnderflow>false</CheckForOverflowUnderflow>
+    <CheckForOverflowUnderflow Condition="'$(SerializeCheckedArithmeticProbe)' == 'true'">true</CheckForOverflowUnderflow>
+  </PropertyGroup>
+
   <!-- Version and package identity. Version travels with the tag: a release is
        tagged vX.Y.Z and this property carries the same X.Y.Z, so the assembly a
        user has in hand can be traced back to a commit. The package metadata is
        here ahead of any NuGet push so the two cannot drift apart later. -->
   <PropertyGroup>
-    <Version>1.9.0</Version>
+    <Version>1.9.1</Version>
     <PackageId>MasBandwidth.Serialize</PackageId>
     <Authors>Mas Bandwidth LLC</Authors>
     <Description>C# bitpacking serialization library, wire compatible with the C, C++, Go and Rust serialize libraries. Zero dependencies, zero allocation on the serialization path, and reads that fail cleanly on hostile input.</Description>
