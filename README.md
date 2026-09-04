@@ -21,8 +21,10 @@ library throws no exceptions of its own; API misuse — writer contract violatio
 payloads, non-finite compressed floats) and trusted call-site parameters (bits
 counts, min/max ordering, buffer sizes, Q formats) on every stream — is
 `Debug.Assert`, compiled out without the `DEBUG` constant, matching the C++
-library's `serialize_assert` (STANDARD.md "Writes assume trusted data", enacted for
-C# per serialize#52; parameters joined per the 2026-08-16 check-model audit,
+library's `serialize_assert`. A build with the `DEBUG` constant is what STANDARD.md
+calls a **checked build**, and every check that page makes conditional on the build
+is conditional on that constant here (STANDARD.md "Writes assume trusted data",
+enacted for C# per serialize#52; parameters joined per the 2026-08-16 check-model audit,
 serialize.cs#15: minimal runtime checking in release); no unsafe code; zero
 allocation on serialization paths (strings on the read path are the documented
 exception).
@@ -47,11 +49,20 @@ exception).
   then exits nonzero if any were recorded. CI runs it on every push and pull request;
   the exit code is the verdict.
 - `scripts/interop.sh` — the interop gate as one runnable command.
-- `.github/workflows/ci.yml` — five jobs: the test matrix (all three TFM legs, on
-  Linux, macOS and Windows — Unity's authoring platform), the red team run, the
-  analyzer/style check, the C++ interop gate, and the `STANDARD.md` spec-sync check.
-- `STANDARD.md` — the wire format spec, vendored verbatim from the C++ repo; the
-  spec-sync job diffs it against upstream and fails on drift.
+- `.github/workflows/ci.yml` — six jobs: the Release test matrix and the Debug test
+  matrix (all three TFM legs, on Linux, macOS and Windows — Unity's authoring
+  platform), the red team run, the analyzer/style check, the C++ interop gate, and the
+  spec-sync check over `STANDARD.md` and `conformance/`.
+- `STANDARD.md` — the wire format spec, vendored verbatim from the upstream
+  `mas-bandwidth/serialize` repo; the spec-sync job diffs it against upstream and fails
+  on drift.
+- `conformance/` — the shared conformance corpus, vendored verbatim from the same
+  place and checked the same way: one file per operation, holding the accepted and
+  refused vectors the standard's rules require. `test_conformance_vectors` runs every
+  vector in it through this port's reader, in Debug and Release and on every target the
+  test projects build for. The corpus is written once for the whole family and vendored
+  unchanged — a suite that regenerates its own expectations proves only that a port
+  agrees with itself.
 - `SECURITY.md` — how to report a vulnerability privately, and what is in scope.
 
 ## Build and test
@@ -202,7 +213,13 @@ against the framework type as an oracle:
   the unsigned domain (ranges wider than 2^127 are exact), written in 32 bit
   groups from least significant upward. Where the range fits 64 bits or fewer the
   bytes are identical to `SerializeInt64` over the same bounds, so a field can be
-  widened from 64 to 128 bits without a wire change.
+  widened from 64 to 128 bits without a wire change. `min <= max` is the legal
+  relation, as it is for every ranged operation: a degenerate range where
+  `min == max` costs zero bits on the 128 bit width exactly as on the narrower ones —
+  the writer emits nothing, the reader takes the value from `min` and consumes
+  nothing, and a measure adds zero. Only `SerializeCompressedFloat` is excluded, and
+  it requires `min < max`: it is not a ranged operation, and a zero delta has no
+  quantization to define.
 - `SerializeFixed` — Q format fixed point, one overload per integer storage type
   from 16 to 128 bits, signed and unsigned. The whole unit bounds are shifted to
   raw integer-exact bounds and the raw value is offset encoded in the minimal
@@ -266,13 +283,40 @@ bit patterns, compared by bit pattern rather than tolerance, over 18 declaration
 
 ## Reading untrusted data
 
-Errors are sticky: the first failure latches on the stream and later serialize calls
-are no-ops that leave values unmodified. One rule follows: a value that controls a loop
-must have its result checked before the loop uses it, otherwise a truncated or
-malicious packet spins the loop forever. Use `stream.Continue(ref more)` /
-`stream.Until(ref done)` for sentinel-driven loops, and check the result of any
-serialized loop count before looping — on a reused stream a failed read leaves the
-previous packet's count in place.
+**A failed read is terminal, and the stream enforces it.** Nothing after a failing
+operation has a defined position, so nothing after it is interpretable. This port
+satisfies that by latch: the first failure records an error on the stream, every public
+read checks it before touching the buffer, and every later read fails consuming no bits
+and writing nothing. The failure persists until `Reset` points the stream at a new
+buffer. `test_read_terminality` proves it after a failure before consumption, after
+partial consumption, on range headroom, on alignment, on a malformed string and on
+`SerializeIntRelative`.
+
+**A refused read leaves its destination unwritten.** When a read of a scalar fails,
+your value is exactly what it was before the call — no partial value, no zero fill, no
+wrap — so a caller who trusts the destination over the return code is not proceeding on
+a value the stream never carried. Two things that rule does not reach, per the
+standard: a read into a caller-owned buffer, which is `SerializeBytes`,
+`SerializeString` and `SerializeWideString`, leaves that buffer's contents
+**unspecified** after a refusal; and a composite read — `SerializeObject`, or any
+sequence of reads over an array — may leave earlier members written, because it is a
+sequence of primitive reads and each one carries the rule alone.
+
+One rule follows from the latch: a value that controls a loop must have its result
+checked before the loop uses it, otherwise a truncated or malicious packet spins the
+loop forever. Use `stream.Continue(ref more)` / `stream.Until(ref done)` for
+sentinel-driven loops, and check the result of any serialized loop count before looping
+— on a reused stream a failed read leaves the previous packet's count in place.
+
+`SerializeIntRelative` carries the non-negative int32 domain, 0 to 2^31 - 1: both
+`previous` and `current` lie in it, and there are no wrapping sequence numbers — a
+caller with a wrapping counter unwraps it before serializing. On read every tier
+reconstructs `current` in a width that cannot wrap and refuses the read unless the
+result is inside the domain and strictly greater than `previous`; the absolute tier's
+32 raw bits are unsigned, so a group with the top bit set is outside the domain and
+refused. `previous` is your own state and never arrives off the wire, so a `previous`
+outside the domain is API misuse: `Debug.Assert` on every stream, the read stream
+included, and compiled out of release builds.
 
 String content is validated on read (serialize#8): `SerializeString` refuses bytes
 that are not well-formed UTF-8 and any interior NUL; `SerializeWideString` refuses
