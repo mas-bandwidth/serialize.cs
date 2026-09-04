@@ -178,7 +178,9 @@ public interface IBitStream
     /// upward, so where the range fits 64 bits or fewer the bytes are identical to
     /// SerializeInt64 over the same bounds — a field can be widened from 64 to 128
     /// bits without changing the wire, provided the bounds do not change. On read the
-    /// value is guaranteed to be in [min,max] if the call succeeds.</summary>
+    /// value is guaranteed to be in [min,max] if the call succeeds. A degenerate range
+    /// where min == max is legal here exactly as on the narrower widths: it costs zero
+    /// bits, and the read takes the value from min without consuming any.</summary>
     bool SerializeInt128(ref Int128Value value, Int128Value min, Int128Value max);
 
     /// <summary>Serializes a byte (an unsigned 8 bit integer). Wire compatible with
@@ -341,7 +343,13 @@ public interface IBitStream
     bool SerializeObject<T>(ref T obj) where T : ISerializer;
 
     /// <summary>Serializes an integer relative to a previous integer, using fewer bits
-    /// the closer the two values are. previous must be less than current.</summary>
+    /// the closer the two values are. The domain is the non-negative int32 range, 0 to
+    /// 2^31 - 1: both previous and current lie in it, and previous must be less than
+    /// current. There are no wrapping sequence numbers — a caller with a wrapping
+    /// counter unwraps it before serializing. On read every tier's reconstruction is
+    /// checked against the domain and against previous, and a value outside either is
+    /// refused; previous is the caller's own state, so one outside the domain is
+    /// caller error, asserted in debug builds.</summary>
     bool SerializeIntRelative(int previous, ref int current);
 
     /// <summary>The number of bits required to align the stream to the next byte
@@ -538,7 +546,6 @@ internal static class SerializeInternal
     internal const string BitsRangeMessage = "bits must be in [1,32]";
     internal const string BitsRange64Message = "bits must be in [1,64]";
     internal const string MinMaxMessage = "min must not be greater than max";
-    internal const string MinMaxStrictMessage = "int128 requires min < max (the reference macro's strict form)";
     internal const string BufferSizeMessage = "string buffer size must be at least 1";
     internal const string FloatParamsMessage = "compressed float requires min < max and resolution > 0";
     internal const string WriteOverflowMessage = "bit writer overflow";
@@ -550,13 +557,14 @@ internal static class SerializeInternal
     internal const string FixedFractionBitsMessage = "fixed point fraction bits can't be negative";
     internal const string FixedWidthMessage = "fixed point integer bits plus fraction bits must equal the number of bits in the storage type";
     internal const string FixedBoundsMessage = "fixed point bounds in whole units do not fit the Q format";
+    internal const string IntRelativeDomainMessage = "int relative previous must be inside the non-negative int32 domain: it is the caller's own state, never off the wire";
 
     // Writer contract asserts (STANDARD.md writes-trusted doctrine, enacted for C#
     // per serialize#52): Debug.Assert messages, never seen in release builds.
     internal const string WriteRangeAssertMessage = "write value out of range: writes are trusted, the range is the writer's contract";
     internal const string WriteStringAssertMessage = "string does not fit in the buffer size: the writer's contract";
     internal const string WriteWideStringAssertMessage = "wstring payload is not well-formed UTF-16 (unpaired surrogate): the writer's contract";
-    internal const string WriteIntRelativeAssertMessage = "int relative requires previous < current: the writer's contract";
+    internal const string WriteIntRelativeAssertMessage = "int relative requires 0 <= previous < current, both inside the non-negative int32 domain: the writer's contract";
     internal const string FloatDeltaAssertMessage = "compressed float declaration is non-conforming: max - min must be finite";
     internal const string FloatValuesAssertMessage = "compressed float declaration is non-conforming: (max - min) / resolution must be finite";
     internal const string FloatValueAssertMessage = "compressed float write value is non-conforming: NaN and infinities must not be sent";
@@ -1350,7 +1358,7 @@ public sealed class WriteStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeInt128(ref Int128Value value, Int128Value min, Int128Value max)
     {
-        Debug.Assert(min < max, SerializeInternal.MinMaxStrictMessage);
+        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         Int128Value v = value;
         Debug.Assert(v >= min && v <= max, SerializeInternal.WriteRangeAssertMessage);
         int bits = SerializeUtil.BitsRequired128((UInt128Value)min, (UInt128Value)max);
@@ -1654,9 +1662,9 @@ public sealed class WriteStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeIntRelative(int previous, ref int current)
     {
-        Debug.Assert(previous < current, SerializeInternal.WriteIntRelativeAssertMessage);
-        // difference in the unsigned domain: gaps wider than 2^31 wrap and fall
-        // through to the absolute 32 bit encoding
+        Debug.Assert(previous >= 0 && previous < current, SerializeInternal.WriteIntRelativeAssertMessage);
+        // difference in the unsigned domain: exact for every gap the domain admits,
+        // and gaps past the last bucket fall through to the absolute 32 bit encoding
         uint difference = (uint)current - (uint)previous;
         if (!WriteBool(difference == 1))
         {
@@ -1948,7 +1956,7 @@ public sealed class ReadStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeInt128(ref Int128Value value, Int128Value min, Int128Value max)
     {
-        Debug.Assert(min < max, SerializeInternal.MinMaxStrictMessage);
+        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         if (_error != SerializeError.None)
         {
             return false;
@@ -2456,6 +2464,7 @@ public sealed class ReadStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeIntRelative(int previous, ref int current)
     {
+        Debug.Assert(previous >= 0, SerializeInternal.IntRelativeDomainMessage);
         if (_error != SerializeError.None)
         {
             return false;
@@ -2467,10 +2476,7 @@ public sealed class ReadStream : IBitStream
         }
         if (flag)
         {
-            // reconstruct in the unsigned domain: wraps rather than overflowing when
-            // previous is near the top of the int range
-            current = (int)((uint)previous + 1);
-            return true;
+            return AcceptRelative(previous, (long)previous + 1, ref current);
         }
         foreach ((uint bucketMin, uint bucketMax) in SerializeInternal.IntRelativeBuckets)
         {
@@ -2485,22 +2491,40 @@ public sealed class ReadStream : IBitStream
                 {
                     return false;
                 }
-                current = (int)((uint)previous + (uint)difference);
-                return true;
+                return AcceptRelative(previous, (long)previous + difference, ref current);
             }
         }
+        // the absolute tier's 32 raw bits are UNSIGNED: read into a signed sequence
+        // type first and a top-bit value reads as negative, which is a different
+        // answer about the same bytes. Widened to long, it is out of the domain and
+        // AcceptRelative refuses it.
         uint v = 0;
         if (!ReadBits(ref v, 32))
         {
             return false;
         }
-        // the absolute fallback encoding validates that the decoded value is greater
-        // than previous
-        if ((int)v <= previous)
+        return AcceptRelative(previous, v, ref current);
+    }
+
+    /// <summary>
+    /// The reconstruction check every int_relative tier ends in (STANDARD.md,
+    /// "int_relative"): the tier reconstructs current in a width that cannot wrap —
+    /// long, so previous + difference and the absolute tier's unsigned 32 bits are
+    /// both exact — and this refuses the read unless the result lies in the domain,
+    /// 0 to 2^31 - 1, and is strictly greater than previous. The domain's lower bound
+    /// needs no comparison of its own: current greater than previous, with previous in
+    /// the domain by the contract asserted above, puts current at 1 or above. The
+    /// destination is written only once the check passes: a refused read leaves it
+    /// exactly as the caller left it.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool AcceptRelative(int previous, long reconstructed, ref int current)
+    {
+        if (reconstructed > int.MaxValue || reconstructed <= previous)
         {
             return Fail(SerializeError.ValueOutOfRange);
         }
-        current = (int)v;
+        current = (int)reconstructed;
         return true;
     }
 
@@ -2645,7 +2669,7 @@ public sealed class MeasureStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeInt128(ref Int128Value value, Int128Value min, Int128Value max)
     {
-        Debug.Assert(min < max, SerializeInternal.MinMaxStrictMessage);
+        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         Debug.Assert(value >= min && value <= max, SerializeInternal.WriteRangeAssertMessage);
         return Measure(SerializeUtil.BitsRequired128((UInt128Value)min, (UInt128Value)max));
     }
@@ -2855,7 +2879,7 @@ public sealed class MeasureStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeIntRelative(int previous, ref int current)
     {
-        Debug.Assert(previous < current, SerializeInternal.WriteIntRelativeAssertMessage);
+        Debug.Assert(previous >= 0 && previous < current, SerializeInternal.WriteIntRelativeAssertMessage);
         uint difference = (uint)current - (uint)previous;
         int bits = 1;
         if (difference != 1)

@@ -197,16 +197,12 @@ internal static partial class Program
             }
             case 10:
             {
-                int previous = (int)(uint)rng.Next();
+                // the int_relative domain is 0 to 2^31 - 1, and both ends of the pair
+                // live in it: previous is drawn from the domain minus the gap, so
+                // current cannot leave it (STANDARD.md, "int_relative")
                 uint gap = (uint)rng.Range(1 << 20) + 1;
-                int current = (int)((uint)previous + gap);
-                // int relative requires previous < current in the signed domain on the
-                // write side
-                if (previous < current)
-                {
-                    return new Value { Kind = ValueKind.IntRelative, Previous = previous, Current = current };
-                }
-                return new Value { Kind = ValueKind.IntRelative, Previous = 0, Current = (int)gap };
+                int previous = (int)(rng.Next() % (uint)(int.MaxValue - gap));
+                return new Value { Kind = ValueKind.IntRelative, Previous = previous, Current = previous + (int)gap };
             }
             case 11:
                 return new Value { Kind = ValueKind.UInt128Value, U128 = Next128(rng) };
