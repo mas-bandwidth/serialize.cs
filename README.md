@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/mas-bandwidth/serialize.cs/actions/workflows/ci.yml/badge.svg)](https://github.com/mas-bandwidth/serialize.cs/actions/workflows/ci.yml)
 
-If this library helps you, please support it: **[Become a supporter](https://www.patreon.com/MasBandwidth/membership)**
+![serialize.cs logo with a packed row of colored blocks](images/serialize.png)
 
 **Status: released.** See the [releases page](https://github.com/mas-bandwidth/serialize.cs/releases) for tagged versions.
 
@@ -28,6 +28,8 @@ enacted for C# per serialize#52; parameters joined per the 2026-08-16 check-mode
 serialize.cs#15: minimal runtime checking in release); no unsafe code; zero
 allocation on serialization paths (strings on the read path are the documented
 exception).
+
+If this library helps you, **[please support it](https://www.patreon.com/MasBandwidth/membership)**
 
 ## Getting it
 
