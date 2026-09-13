@@ -378,6 +378,7 @@ internal static partial class Program
         RunTest("test_string_validation", TestStringValidation);
         RunTest("test_wstring_validation", TestWStringValidation);
         RunTest("test_string_reader_zero_buffer_size", TestStringReaderZeroBufferSize);
+        RunTest("test_wstring_reader_zero_buffer_size", TestWideStringReaderZeroBufferSize);
         RunTest("test_int_relative_validation", TestIntRelativeValidation);
         // the shared corpus, vendored from mas-bandwidth/serialize: every vector run
         // through this port's reader (Conformance.cs)
@@ -1103,25 +1104,29 @@ internal static partial class Program
         // and this guard preempts it in every build.
         byte[] hostile = { 0x10, 0x00, 0x00, 0x80 }; // little-endian 0x80000010: negative as int
 
-        {
-            ReadStream stream = new ReadStream(hostile);
-            string value = "unchanged";
-            Check(!stream.SerializeString(ref value, 0), "bufferSize 0 string read must fail");
-            Check(stream.Error == SerializeError.Overflow, $"expected Overflow, got {stream.Error}");
-            Check(value == "unchanged", "a failed bufferSize 0 string read must not write the destination");
-            Check(!stream.SerializeString(ref value, 0), "a latched stream must stay failed");
-            Check(value == "unchanged", "a second failed bufferSize 0 read must not write the destination");
-        }
+        ReadStream stream = new ReadStream(hostile);
+        string value = "unchanged";
+        Check(!stream.SerializeString(ref value, 0), "bufferSize 0 string read must fail");
+        Check(stream.Error == SerializeError.Overflow, $"expected Overflow, got {stream.Error}");
+        Check(value == "unchanged", "a failed bufferSize 0 string read must not write the destination");
+        Check(!stream.SerializeString(ref value, 0), "a latched stream must stay failed");
+        Check(value == "unchanged", "a second failed bufferSize 0 read must not write the destination");
+    }
 
-        {
-            ReadStream stream = new ReadStream(hostile);
-            string value = "unchanged";
-            Check(!stream.SerializeWideString(ref value, 0), "bufferSize 0 wide string read must fail");
-            Check(stream.Error == SerializeError.Overflow, $"expected Overflow, got {stream.Error}");
-            Check(value == "unchanged", "a failed bufferSize 0 wide string read must not write the destination");
-            Check(!stream.SerializeWideString(ref value, 0), "a latched stream must stay failed");
-            Check(value == "unchanged", "a second failed bufferSize 0 wide read must not write the destination");
-        }
+    private static void TestWideStringReaderZeroBufferSize()
+    {
+        // security#33-F1: the same degenerate [0, -1] length read on the wide path;
+        // the negative length slipped the (long)length * 32 bound and reached
+        // new char[length], throwing OverflowException.
+        byte[] hostile = { 0x10, 0x00, 0x00, 0x80 }; // little-endian 0x80000010: negative as int
+
+        ReadStream stream = new ReadStream(hostile);
+        string value = "unchanged";
+        Check(!stream.SerializeWideString(ref value, 0), "bufferSize 0 wide string read must fail");
+        Check(stream.Error == SerializeError.Overflow, $"expected Overflow, got {stream.Error}");
+        Check(value == "unchanged", "a failed bufferSize 0 wide string read must not write the destination");
+        Check(!stream.SerializeWideString(ref value, 0), "a latched stream must stay failed");
+        Check(value == "unchanged", "a second failed bufferSize 0 wide read must not write the destination");
     }
 
     private static void TestWStringValidation()
