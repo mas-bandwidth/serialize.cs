@@ -2303,6 +2303,10 @@ public sealed class ReadStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeString(ref string value, int bufferSize)
     {
+        if (bufferSize < 1)
+        {
+            return Fail(SerializeError.Overflow);
+        }
         SerializeInternal.ValidateBufferSize(bufferSize);
         if (_error != SerializeError.None)
         {
@@ -2341,6 +2345,10 @@ public sealed class ReadStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeWideString(ref string value, int bufferSize)
     {
+        if (bufferSize < 1)
+        {
+            return Fail(SerializeError.Overflow);
+        }
         SerializeInternal.ValidateBufferSize(bufferSize);
         if (_error != SerializeError.None)
         {

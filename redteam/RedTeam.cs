@@ -331,7 +331,7 @@ internal static class RedTeam
         }
 
         // b) wide string claiming a huge code point count (allocation attack)
-        foreach (int bufferSize in new[] { 8, 4096, 1 << 20, int.MaxValue })
+        foreach (int bufferSize in new[] { 0, 8, 4096, 1 << 20, int.MaxValue })
         {
             byte[] buf = new byte[16];
             WriteStream w = new WriteStream(buf);
@@ -362,7 +362,7 @@ internal static class RedTeam
         }
 
         // c) same allocation question for SerializeString
-        foreach (int bufferSize in new[] { 16, 4096, 1 << 24, int.MaxValue })
+        foreach (int bufferSize in new[] { 0, 16, 4096, 1 << 24, int.MaxValue })
         {
             byte[] buf = new byte[16];
             WriteStream w = new WriteStream(buf);
