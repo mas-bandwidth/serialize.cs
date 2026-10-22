@@ -20,7 +20,9 @@
 # degenerate range (min == max); v1.7.0 pins the compressed_float write arithmetic to
 # float32 with two roundings, which the FMA-boundary value discriminates; v1.12.0
 # carries the normative integer clamp (schema#109), which the two clamp witnesses
-# make load-bearing -- an older clone goes red on those rows.
+# make load-bearing -- an older clone goes red on those rows. v2.0.0 is format 2.0:
+# the sequence carries no wstring and closes with serialize_end, so nothing older
+# compiles it.
 #
 # The C++ half is built WITHOUT -DNDEBUG on purpose: serialize_assert stays live, so
 # the degenerate range has to pass with the library's own asserts enabled.

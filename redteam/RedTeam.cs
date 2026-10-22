@@ -20,7 +20,6 @@ internal static class RedTeam
     private static readonly List<string> Findings = new List<string>();
     private static readonly Dictionary<string, int> Classes = new Dictionary<string, int>();
     private static int _cases;
-    private static long InfiniteDeltaDecodes; // documented non-finite decodes from infinite-delta params: noted, never a finding
 
     // dedup by class (the text with digits stripped) so one bug cannot mask the others
     private static void Finding(string s)
@@ -61,7 +60,7 @@ internal static class RedTeam
         public long Int64Full, Int64Wide;
         public bool Flag;
         public float F, CF;
-        public float CFWide; // decoded from an infinite-delta field: non-finite by documented behavior
+        public float CFWide; // decoded from an infinite-delta field: every decode is non-finite, so every read of it is refused
         public double D;
         public byte U8;
         public ushort U16;
@@ -70,7 +69,7 @@ internal static class RedTeam
         public int RelNear, RelFar;
         public byte[] Bytes = new byte[7];
         public string Str = "";
-        public string WStr = "";
+        public string Stones = "";
     }
 
     // exactly the golden sequence: what a real server's read path looks like
@@ -96,11 +95,13 @@ internal static class RedTeam
         s.SerializeAlign();
         s.SerializeBytes(p.Bytes);
         s.SerializeString(ref p.Str, 16);
-        s.SerializeWideString(ref p.WStr, 8);
+        s.SerializeString(ref p.Stones, 8);
+        s.SerializeEnd();
         return s.Error == SerializeError.None;
     }
 
-    // a wider surface: hostile ranges, wide strings with big buffer sizes, 64 bit paths
+    // a wider surface: hostile ranges, strings with big buffer sizes, 64 bit paths, and
+    // the floats every NaN and infinity pattern of a hostile packet reaches
     private static bool ReadWide(IBitStream s, Packet p)
     {
         s.SerializeBits64(ref p.Bits64, 33);
@@ -113,10 +114,12 @@ internal static class RedTeam
         s.SerializeCompressedFloat(ref p.CFWide, -3.4e38f, 3.4e38f, 1e-30f); // pathological: delta overflows to +inf
         s.SerializeAlign();
         s.SerializeString(ref p.Str, 512);
-        s.SerializeWideString(ref p.WStr, 4096);
+        s.SerializeString(ref p.Stones, 4096);
         s.SerializeString(ref p.Str, int.MaxValue);      // length field takes 31 bits
-        s.SerializeWideString(ref p.WStr, int.MaxValue);
+        s.SerializeDouble(ref p.D);
+        s.SerializeIntRelative(0, ref p.RelFar);
         s.SerializeBytes(p.Bytes);
+        s.SerializeEnd();
         return s.Error == SerializeError.None;
     }
 
@@ -172,14 +175,13 @@ internal static class RedTeam
                     return $"{label}: compressed float decoded to {p.CF}";
                 }
                 // CFWide is decoded over [-3.4e38, 3.4e38], whose delta overflows to
-                // +inf. The library documents that an infinite delta is deliberately
-                // NOT rejected (parity with C++; rejecting it as API misuse is an open
-                // family decision), and its decode is non-finite: normalized * inf.
-                // Counted loudly in the summary rather than failing the verdict, so
-                // the exit code stays armed for what the rule actually promises.
+                // +inf: a non-conforming declaration, and every decode through it is
+                // non-finite. STANDARD.md 2.0, "The decode must be finite": a reader
+                // refuses a non-finite decode whatever the declaration, so no read
+                // that succeeded may hand one back.
                 if (float.IsNaN(p.CFWide) || float.IsInfinity(p.CFWide))
                 {
-                    InfiniteDeltaDecodes++;
+                    return $"{label}: compressed float over an infinite delta decoded to {p.CFWide} and was accepted";
                 }
             }
             return null;
@@ -330,37 +332,6 @@ internal static class RedTeam
             }
         }
 
-        // b) wide string claiming a huge code point count (allocation attack)
-        foreach (int bufferSize in new[] { 0, 8, 4096, 1 << 20, int.MaxValue })
-        {
-            byte[] buf = new byte[16];
-            WriteStream w = new WriteStream(buf);
-            int claim = bufferSize - 1;
-            w.SerializeInt(ref claim, 0, bufferSize - 1);
-            w.Flush();
-            for (int bytes = 1; bytes <= 16; bytes++)
-            {
-                _cases++;
-                long before = GC.GetAllocatedBytesForCurrentThread();
-                try
-                {
-                    ReadStream r = new ReadStream(buf, bytes);
-                    string s = "";
-                    r.SerializeWideString(ref s, bufferSize);
-                    long alloc = GC.GetAllocatedBytesForCurrentThread() - before;
-                    if (alloc > 4096 + (long)bytes * 8)
-                    {
-                        Finding($"wstring claim={claim} packet={bytes}B: allocated {alloc} bytes " +
-                                "(allocation not bounded by packet size)");
-                    }
-                }
-                catch (Exception e)
-                {
-                    Finding($"wstring claim={claim} bytes={bytes}: THREW {e.GetType().Name}: {e.Message}");
-                }
-            }
-        }
-
         // c) same allocation question for SerializeString
         foreach (int bufferSize in new[] { 0, 16, 4096, 1 << 24, int.MaxValue })
         {
@@ -391,91 +362,6 @@ internal static class RedTeam
             }
         }
 
-        // d) every 32 bit group value through the wide string reader. Each group is
-        // one UTF-16 CODE UNIT (STANDARD.md, adopted 2026-08-15): legal alone means
-        // a nonzero BMP unit — zero is an interior NUL (refused), any surrogate is
-        // unpaired at length 1 (refused), and anything above 0xFFFF is not a code
-        // unit at all (refused; this includes 0x10000..0x10FFFF, the pre-code-unit
-        // format's astral groups)
-        {
-            uint[] hostile =
-            {
-                0, 0x41, 0xD7FF, 0xD800, 0xDBFF, 0xDC00, 0xDFFF, 0xE000, 0xFFFE, 0xFFFF,
-                0x10000, 0x10FFFF, 0x110000, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF,
-            };
-            foreach (uint cp in hostile)
-            {
-                byte[] buf = new byte[16];
-                WriteStream w = new WriteStream(buf);
-                int one = 1;
-                w.SerializeInt(ref one, 0, 7);
-                uint v = cp;
-                w.SerializeBits(ref v, 32);
-                w.Flush();
-                _cases++;
-                try
-                {
-                    ReadStream r = new ReadStream(buf, 16);
-                    string s = "";
-                    bool ok = r.SerializeWideString(ref s, 8);
-                    bool legal = cp >= 1 && cp <= 0xFFFF && !(cp >= 0xD800 && cp <= 0xDFFF);
-                    if (ok != legal)
-                    {
-                        Finding($"wstring unit 0x{cp:X}: read returned {ok}, expected {legal}");
-                    }
-                }
-                catch (Exception e)
-                {
-                    Finding($"wstring unit 0x{cp:X}: THREW {e.GetType().Name}: {e.Message}");
-                }
-            }
-        }
-
-        // d2) surrogate pairing through the wide string reader: a well-formed pair
-        // is the ONLY multi-group shape involving surrogates that may pass — every
-        // unpaired arrangement, and a NUL riding behind a valid pair, must refuse
-        {
-            (uint[] units, bool legal)[] sequences =
-            {
-                (new uint[] { 0xD83D, 0xDE00 }, true),           // a valid pair: U+1F600
-                (new uint[] { 0xDBFF, 0xDFFF }, true),           // the last valid pair: U+10FFFF
-                (new uint[] { 0xD83D, 0x0041 }, false),          // high then BMP
-                (new uint[] { 0xD83D, 0xD83D }, false),          // high then high
-                (new uint[] { 0xDE00, 0xD83D }, false),          // reversed pair
-                (new uint[] { 0x0041, 0xD83D }, false),          // ends inside a pair
-                (new uint[] { 0xD83D, 0xDE00, 0x0000 }, false),  // NUL behind a valid pair
-            };
-            foreach ((uint[] units, bool legal) in sequences)
-            {
-                byte[] buf = new byte[32];
-                WriteStream w = new WriteStream(buf);
-                int count = units.Length;
-                w.SerializeInt(ref count, 0, 7);
-                foreach (uint unit in units)
-                {
-                    uint v = unit;
-                    w.SerializeBits(ref v, 32);
-                }
-                w.Flush();
-                _cases++;
-                string shape = string.Join(" ", Array.ConvertAll(units, x => x.ToString("X4")));
-                try
-                {
-                    ReadStream r = new ReadStream(buf, 32);
-                    string s = "";
-                    bool ok = r.SerializeWideString(ref s, 8);
-                    if (ok != legal)
-                    {
-                        Finding($"wstring units [{shape}]: read returned {ok}, expected {legal}");
-                    }
-                }
-                catch (Exception e)
-                {
-                    Finding($"wstring units [{shape}]: THREW {e.GetType().Name}: {e.Message}");
-                }
-            }
-        }
-
         // e) every refused payload shape through SerializeString: the invalid UTF-8
         // shapes, plus an interior NUL — valid UTF-8, refused anyway (serialize#8):
         // the wire length and the perceived C-string length would disagree
@@ -491,6 +377,7 @@ internal static class RedTeam
                 new byte[] { 0xE2, 0x28, 0xA1 },
                 new byte[] { 0xC2 },                   // truncated sequence
                 new byte[] { 0x61, 0x00, 0x62 },       // interior NUL (two-lengths smuggling)
+                new byte[] { 0xFF, 0x00 },             // both rules broken: the NUL wins
             };
             foreach (byte[] payload in bad)
             {
@@ -511,9 +398,9 @@ internal static class RedTeam
                     {
                         Finding($"invalid UTF-8 {Convert.ToHexString(payload)} accepted as \"{s}\"");
                     }
-                    else if (r.Error != SerializeError.InvalidString)
+                    else if (r.Error != (Array.IndexOf(payload, (byte)0) >= 0 ? SerializeError.EmbeddedNul : SerializeError.InvalidUtf8))
                     {
-                        Finding($"invalid UTF-8 {Convert.ToHexString(payload)}: error {r.Error}, expected InvalidString");
+                        Finding($"invalid UTF-8 {Convert.ToHexString(payload)}: error {r.Error}, expected EmbeddedNul for a NUL and InvalidUtf8 otherwise");
                     }
                     if (s != "SENTINEL" && !ok)
                     {
@@ -663,9 +550,9 @@ internal static class RedTeam
                     {
                         Finding($"align prefix={prefixBits} pad={expectPad}: returned {ok}");
                     }
-                    if (!ok && r.Error != SerializeError.Align)
+                    if (!ok && r.Error != SerializeError.NonzeroPadding)
                     {
-                        Finding($"align prefix={prefixBits} pad={expectPad}: error {r.Error}, expected Align");
+                        Finding($"align prefix={prefixBits} pad={expectPad}: error {r.Error}, expected NonzeroPadding");
                     }
                 }
                 catch (Exception e)
@@ -722,21 +609,19 @@ internal static class RedTeam
                         ReadStream r = new ReadStream(buf, 8);
                         float value = -12345f;
                         bool ok = r.SerializeCompressedFloat(ref value, min, max, res);
-                        if (ok && (float.IsNaN(value) || value < min || value > max))
+                        // STANDARD.md 2.0: an accepted decode is finite whatever the
+                        // declaration -- an infinite delta (max - min overflows float)
+                        // included, whose every decode is refused as non_finite_float
+                        if (ok && (float.IsNaN(value) || float.IsInfinity(value) || value < min || value > max))
                         {
-                            // an infinite delta (max - min overflows float) is documented
-                            // as deliberately not rejected -- parity with C++, rejecting
-                            // it as API misuse is an open family decision -- and every
-                            // decode through it is non-finite. Note it, do not fail on it.
-                            if (float.IsInfinity(max - min) && (float.IsNaN(value) || float.IsInfinity(value)))
-                            {
-                                InfiniteDeltaDecodes++;
-                            }
-                            else
-                            {
-                                Finding($"cfloat[{min},{max},{res}] raw={raw}: decoded {value} outside [min,max]");
-                                break;
-                            }
+                            Finding($"cfloat[{min},{max},{res}] raw={raw}: decoded {value}, outside [min,max] or not finite");
+                            break;
+                        }
+                        if (!ok && float.IsInfinity(max - min) && r.Error != SerializeError.NonFiniteFloat
+                            && r.Error != SerializeError.ValueOutOfRange && r.Error != SerializeError.PastEnd)
+                        {
+                            Finding($"cfloat[{min},{max},{res}] raw={raw}: refused as {r.Error}");
+                            break;
                         }
                     }
                     catch (Exception e)
@@ -1121,7 +1006,7 @@ internal static class RedTeam
             p.IntSmall, p.IntFull, p.Int64Full, p.Int64Wide, p.Flag,
             BitConverter.SingleToUInt32Bits(p.F), BitConverter.SingleToUInt32Bits(p.CF),
             BitConverter.DoubleToUInt64Bits(p.D), p.U8, p.U16, p.U32, p.U64,
-            p.RelNear, p.RelFar, Convert.ToHexString(p.Bytes), p.Str, p.WStr,
+            p.RelNear, p.RelFar, Convert.ToHexString(p.Bytes), p.Str, p.Stones,
             ok, err, bits);
     }
 
@@ -1233,7 +1118,6 @@ internal static class RedTeam
         Console.WriteLine($"hostile cases run: {_cases:N0} in {sw.Elapsed.TotalSeconds:F1}s");
         Console.WriteLine($"naive while(more) loops that spun past the cap: {NaiveHangs}");
         Console.WriteLine($"unchecked-count loops that over-worked: {CountAmplification}");
-        Console.WriteLine($"non-finite decodes from infinite-delta params (documented; open family decision): {InfiniteDeltaDecodes}");
         if (BitReaderAlignThrows.Count > 0)
         {
             Console.WriteLine($"BitReader.ReadAlign threw in {BitReaderAlignThrows.Count} cases, e.g. {BitReaderAlignThrows[0]}");

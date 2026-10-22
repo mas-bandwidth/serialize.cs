@@ -8,17 +8,20 @@
 
 C# port of the C++ [serialize](https://github.com/mas-bandwidth/serialize) bitpacking
 library. Produces bit-for-bit identical output to the C++ library (and to the Go and
-Rust ports), so streams written in one language can be read by any other. Wire
-compatibility is proven, not asserted: a golden wire test pins 72 bytes copied verbatim
-from the C++ test suite, and CI runs a live interop harness against the real
+Rust ports), so streams written in one language can be read by any other. It
+implements **format version 2.0** of [STANDARD.md](STANDARD.md). Wire compatibility is
+proven, not asserted: the shared conformance corpus runs on every build with every
+refusal checked for its stated reason, a golden wire test pins the standard's 106 byte
+whole message, and CI runs a live interop harness against the real
 `serialize.h`, compiled with clang++ from a pinned C++ release — on every push to
 `main`, on every pull request targeting `main`, and on manual dispatch.
 
 Family values: zero third-party dependencies (including test frameworks); malicious
 packet data never throws — reads fail cleanly with a sticky latched error, and the
 library throws no exceptions of its own; API misuse — writer contract violations
-(out of range values, buffer overflow, oversized strings, ill-formed UTF-16 wstring
-payloads, non-finite compressed floats) and trusted call-site parameters (bits
+(out of range values, buffer overflow, oversized strings, strings that are not
+well-formed UTF-16 or hold U+0000, NaN and infinite floats and doubles, non-finite
+compressed floats and declarations) and trusted call-site parameters (bits
 counts, min/max ordering, buffer sizes, Q formats) on every stream — is
 `Debug.Assert`, compiled out without the `DEBUG` constant, matching the C++
 library's `serialize_assert`. A build with the `DEBUG` constant is what STANDARD.md
@@ -58,6 +61,59 @@ Either way, pin a release tag rather than tracking `main`. The newest is on the
 [releases page](https://github.com/mas-bandwidth/serialize.cs/releases): a release states
 a format version, and two endpoints interoperate only when they carry the same one.
 
+## Format 2.0
+
+The principle 2.0 adopts (STANDARD.md, Glenn Fiedler, 2026-10-22): **the wire carries
+only integers and bytes, and every value has exactly one encoding.** Every finite
+value 1.1 could carry keeps its exact bytes. What changed for a C# caller:
+
+- **`SerializeWideString` is gone**, with the `wstring` operation. Text travels as
+  `SerializeString`, which is UTF-8. A 1.1 stream carrying a `wstring` field has no
+  2.0 reading.
+- **`float` and `double` carry finite values only.** A read refuses NaN, any payload
+  either sign, and both infinities as `NonFiniteFloat`, tested on the raw bits before
+  the destination is written; writing one is a writer contract violation, asserted
+  in debug. Negative zero and the subnormals travel bit exact.
+- **A compressed float decode is finite.** A read refuses a non-finite decode as
+  `NonFiniteFloat` whatever the declaration, and a declaration whose top integer
+  decodes to an infinity asserts on write and measure in debug.
+- **`int_relative` is canonical.** The absolute tier carrying a difference a bounded
+  tier would have taken (69914 or less) is refused as `NonCanonical`, after the domain
+  and ordering rule.
+- **`SerializeEnd` is new, and a packet reader calls it.** It reads the end of the
+  object: a whole byte left over is `TrailingData`, checked first, and a set bit in
+  the final byte's padding is `NonzeroPadding`. Writing and measuring it costs
+  nothing. Hand the reader exactly the bytes the writer reported:
+
+  ```csharp
+  // writer
+  WriteStream writer = new WriteStream(buffer);
+  writer.SerializeObject(ref packet);
+  writer.SerializeEnd();                       // emits nothing
+  writer.Flush();
+  Send(buffer, (int)writer.BytesProcessed);    // exactly these bytes
+
+  // reader
+  ReadStream reader = new ReadStream(received, receivedBytes);
+  if (!reader.SerializeObject(ref packet) || !reader.SerializeEnd())
+  {
+      // refused: reader.Error says why
+  }
+  ```
+
+  Without the end, trailing bytes and padding go unexamined, and the guarantee that
+  one value has one byte sequence does not hold for that read.
+- **Every refusal names its reason.** `SerializeError` is the standard's closed list —
+  `PastEnd`, `ValueOutOfRange`, `NonzeroPadding`, `TrailingData`, `NonFiniteFloat`,
+  `InvalidUtf8`, `EmbeddedNul`, `NonCanonical` — and `SerializeUtil.RefusalName`
+  spells each exactly as the standard does (`past_end`, `value_out_of_range`, ...).
+  The stream keeps the **first** refusal's reason; later refusals on a failed stream
+  are echoes. 1.x's `Overflow`, `Align` and `InvalidString` are `PastEnd`,
+  `NonzeroPadding` and the pair `InvalidUtf8` / `EmbeddedNul`. A string's NUL scan
+  runs before its UTF-8 check, so a payload that breaks both is `EmbeddedNul`.
+- **Wide integers are exact**, as they always were here: 64 and 128 bit values are
+  integers end to end, and the corpus now pins the edges a double would lose.
+
 ## Layout
 
 - `src/Serialize.cs` — the streams and the codec, one file (mirrors the C++ single
@@ -78,24 +134,37 @@ a format version, and two endpoints interoperate only when they carry the same o
   then exits nonzero if any were recorded. CI runs it on every push and pull request;
   the exit code is the verdict.
 - `scripts/interop.sh` — the interop gate as one runnable command.
-- `.github/workflows/ci.yml` — seven jobs: the Release test matrix and the Debug test
+- `tools/revendor.sh` — re-vendors `STANDARD.md`, `conformance/` and
+  `conformance-controls/` verbatim from a tag of the reference, and prints the diff.
+- `.github/workflows/ci.yml` — eight jobs: the Release test matrix and the Debug test
   matrix (all three TFM legs, on Linux, macOS and Windows — Unity's authoring
-  platform), the red team run, the checked-arithmetic leg, the analyzer/style check,
-  the C++ interop gate, and the spec-sync check over `STANDARD.md` and `conformance/`.
+  platform), the red team run, the checked-arithmetic leg, the conformance controls,
+  the analyzer/style check, the C++ interop gate, and the spec-sync check over
+  `STANDARD.md`, `conformance/` and `conformance-controls/`.
 - `STANDARD.md` — the wire format spec, vendored verbatim from the upstream
   `mas-bandwidth/serialize` repo; the spec-sync job diffs it against upstream and fails
   on drift.
 - `conformance/` — the shared conformance corpus, vendored verbatim from the same
   place and checked the same way: one file per covered operation, holding the accepted
   and refused vectors the standard's rules require. `test_conformance_vectors` runs
-  every vector in it through this port's reader, and a vector marked `writer =
-  canonical` back out through the writer, and one carrying `measure_at_least` through
-  the measure — in Debug and Release and on every target the test projects build for.
+  every vector in it through this port's two readers — the stream, with and without
+  slack past the data, and a `ReadBatch` held open across the whole vector — requiring
+  every refusal's stated reason; a vector marked `writer = canonical` back out through
+  the writer, one carrying `writer_input` through the writer from that input, and one
+  carrying `measure_at_least` through the measure — in Debug and Release and on every
+  target the test projects build for.
   The files are discovered by a glob, so a vector added upstream and copied across runs
   without a code change, and an operation this port cannot drive fails rather than being
   skipped. The corpus is written once for the whole family and vendored unchanged — a
   suite that regenerates its own expectations proves only that a port agrees with
   itself.
+- `conformance-controls/` — the negative controls, vendored the same way. A corpus file
+  whose operation has no runner must fail the run (`test_conformance_unknown_operation`,
+  every build), and for each refusal rule a reader with that one rule deleted must fail
+  exactly the vectors its `<rule>.expected` names. `-p:SerializeConformanceControls=true`
+  compiles the switch that deletes one rule at a time, and `test_conformance_controls`
+  runs all fifteen, through the stream and through the batch; CI runs it in its own
+  job. Without the property the switch is a constant the JIT folds away.
 - `SECURITY.md` — how to report a vulnerability privately, and what is in scope.
 
 ## Build and test
@@ -108,6 +177,8 @@ dotnet run --project tests/Tests.csproj -f net8.0          # the LTS leg (needs 
 dotnet run --project tests-ns21/TestsNs21.csproj           # the Unity-class leg: the same tests
                                                            # against the netstandard2.1 assembly
 dotnet run --project tests/Tests.csproj -f net10.0 -- golden   # run only tests matching a substring
+dotnet run -c Release --project tests/Tests.csproj -f net10.0 \
+    -p:SerializeConformanceControls=true -- conformance        # the negative controls
 ```
 
 The library targets `net8.0` (LTS game servers), `net10.0`, and `netstandard2.1`
@@ -122,7 +193,7 @@ fallback everywhere else — and the 128 bit surface runs there too, on the
 emulated pair (see below). CI runs the whole suite against the netstandard2.1
 assembly, golden wire pins included, which is what proves the shims wire-neutral.
 The only tests that leg skips are the two `System.Int128` oracle cross-checks,
-which need the framework type they check the pair against (49 tests there, 51 on
+which need the framework type they check the pair against (61 tests there, 63 on
 `net8.0`/`net10.0`).
 
 ## Batches: the hot path for tiny messages
@@ -200,7 +271,8 @@ proves derive-per-call equals C++; routing this one field through it is what clo
 the triangle against the reference directly.
 
 CI runs this gate in its own job, with `CXX=clang++` and the C++ clone checked out
-at release tag `v1.16.0` — the family's one interop pin: one policy, one version,
+at release tag `v2.0.0`, the first release carrying format 2.0 — the family's one
+interop pin: one policy, one version,
 every port's gate against the same current C++ release. Under the four different
 pins this replaced (`v1.6.2` here and in the Go port, `v1.4.3` in Rust, upstream
 `HEAD` in C), each port certified against a different wire. `v1.7.0` remains the
@@ -219,7 +291,8 @@ C++ `GoldenWireData` carries (`Q8.8`, `Q16.16` signed and unsigned, `Q48.16`,
 `Q112.16` and `Q64.64` in 128 bit storage), values verbatim, with the golden
 message's byte-aligned section structure — so the gate proves the Q format codec
 and the emulated 128 bit pair against the real `serialize.h`, three group and four
-group offset encodings included.
+group offset encodings included. The sequence closes with the end, so each side's
+reader refuses a file one byte longer than the other side wrote.
 
 The spec-sync job deliberately does *not* use the interop tag: it diffs
 `STANDARD.md` against upstream `main`, because catching drift against the newest
@@ -269,8 +342,8 @@ API misuse (see below), like every other range in the library.
 The wire pins for all three operations were derived from STANDARD.md's text by an
 independent oracle and cross-checked byte for byte against the pins in the C++
 fixed-point test suite; `test_fixed_wire_format` pins the byte aligned fixed
-point tail of the C++ 112 byte golden message, leaving the original 72 byte
-golden pin untouched.
+point tail of the golden message, whose whole 106 bytes `test_golden_wire_format`
+pins.
 
 ## Compressed floats from precomputed constants
 
@@ -329,8 +402,8 @@ partial consumption, on range headroom, on alignment, on a malformed string and 
 your value is exactly what it was before the call — no partial value, no zero fill, no
 wrap — so a caller who trusts the destination over the return code is not proceeding on
 a value the stream never carried. Two things that rule does not reach, per the
-standard: a read into a caller-owned buffer, which is `SerializeBytes`,
-`SerializeString` and `SerializeWideString`, leaves that buffer's contents
+standard: a read into a caller-owned buffer, which is `SerializeBytes` and
+`SerializeString`, leaves that buffer's contents
 **unspecified** after a refusal; and a composite read — `SerializeObject`, or any
 sequence of reads over an array — may leave earlier members written, because it is a
 sequence of primitive reads and each one carries the rule alone.
@@ -347,20 +420,21 @@ caller with a wrapping counter unwraps it before serializing. On read every tier
 reconstructs `current` in a width that cannot wrap and refuses the read unless the
 result is inside the domain and strictly greater than `previous`; the absolute tier's
 32 raw bits are unsigned, so a group with the top bit set is outside the domain and
-refused. `previous` is your own state and never arrives off the wire, so a `previous`
+refused. The absolute tier is canonical too: carrying a `current` no more than 69914
+above `previous`, which a bounded tier would have taken, it is refused as
+`NonCanonical`. `previous` is your own state and never arrives off the wire, so a `previous`
 outside the domain is API misuse: `Debug.Assert` on every stream, the read stream
 included, and compiled out of release builds.
 
-String content is validated on read (serialize#8): `SerializeString` refuses bytes
-that are not well-formed UTF-8 and any interior NUL; `SerializeWideString` refuses
-unpaired surrogates and interior NULs (each 32-bit group carries one UTF-16 code
-unit per STANDARD.md, so a well-formed surrogate pair — an astral character — is
-valid, and a group above `0xFFFF` fails with `ValueOutOfRange`). Malformed string
-content fails with `InvalidString`, and the refusal happens in every build mode:
-an interior NUL is the classic two-lengths smuggling primitive (the wire length
-and the C-string length a downstream consumer perceives disagree), and an
-unpaired surrogate would otherwise flow into the application as an ill-formed
-.NET string.
+String content is validated on read (serialize#8, STANDARD.md "string"):
+`SerializeString` refuses any NUL as `EmbeddedNul` — the classic two-lengths
+smuggling primitive, where the wire length and the C-string length a downstream
+consumer perceives disagree — and then bytes that are not well-formed UTF-8 as
+`InvalidUtf8`, in that order and in every build mode. An accepted payload decodes to
+exactly its characters: no normalization, no replacement character, no stripped byte
+order mark, every plane. On write, a string that is not well-formed UTF-16 is a
+writer contract violation asserted in debug, because `Encoding.UTF8` would silently
+write an unpaired surrogate as U+FFFD.
 
 Two further rules:
 
@@ -373,10 +447,11 @@ Two further rules:
   it in: in release a violated parameter contract yields garbage-in-garbage-out
   bytes (never memory unsafety — the runtime's own bounds checks are the floor),
   and a checked reader rejects the malformed stream.
-- **Compressed float ranges must have a finite difference.** When `max - min`
-  overflows to infinity (e.g. `[-3.4e38, +3.4e38]`), the read can decode NaN or
-  infinity and still report success — behavior inherited from the C++ library for
-  wire fidelity. Choose ranges whose difference is finite.
+- **Compressed float declarations must decode finite.** When `max - min` overflows to
+  infinity (e.g. `[-3.4e38, +3.4e38]`), or the top integer decodes past `FLT_MAX`, the
+  declaration is non-conforming: it asserts in debug, and in release a read refuses
+  every non-finite decode as `NonFiniteFloat` rather than hand it back. Choose
+  declarations whose difference and top decode are finite.
 
 ## Contributing
 

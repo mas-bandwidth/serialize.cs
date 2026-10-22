@@ -46,7 +46,7 @@ internal sealed class TestObject : ISerializer
     public long Int64Range;
     public byte[] Bytes = new byte[17];
     public string Str = "";
-    public string WStr = "";
+    public string Text = "";
 
     public void Init()
     {
@@ -81,7 +81,7 @@ internal sealed class TestObject : ISerializer
         }
 
         Str = "hello world!";
-        WStr = "привіт, світ!"; // "привіт, світ!"
+        Text = "привіт, світ!"; // real text, two bytes a letter in UTF-8
     }
 
     public bool Serialize(IBitStream stream)
@@ -133,7 +133,7 @@ internal sealed class TestObject : ISerializer
         stream.SerializeBytes(Bytes);
 
         stream.SerializeString(ref Str, 256);
-        stream.SerializeWideString(ref WStr, 256);
+        stream.SerializeString(ref Text, 256);
 
         return stream.Error == SerializeError.None;
     }
@@ -157,7 +157,7 @@ internal sealed class TestObject : ISerializer
             && Int64Range == other.Int64Range
             && Bytes.AsSpan().SequenceEqual(other.Bytes)
             && Str == other.Str
-            && WStr == other.WStr;
+            && Text == other.Text;
     }
 }
 
@@ -169,10 +169,12 @@ internal sealed class FailingObject : ISerializer
     }
 }
 
-// Golden wire format data. The exact bytes produced by the serializer are pinned down
-// here and must never change. They are copied verbatim from the C++ serialize library
-// test suite, so this test also proves the C# implementation is wire compatible with
-// the C++ implementation.
+// Golden wire format data: the whole message of STANDARD.md ("The whole message"), its
+// twenty-nine operations in order, ending with the end. The exact bytes are pinned
+// below and must never change. They are the 106 bytes STANDARD.md prints, which the
+// reference's document-only writer, the C++ library's pinned emission and the corpus's
+// message-golden-whole vector all agree on, so this test also proves the C# writer and
+// reader wire compatible with every one of them.
 internal sealed class GoldenWireData
 {
     public uint Bits4;
@@ -193,7 +195,8 @@ internal sealed class GoldenWireData
     public int RelativeFar;
     public byte[] Bytes = new byte[7];
     public string Str = "";
-    public string WStr = "";
+    public string Stones = "";
+    public FixedWireData Fixed = new FixedWireData();
 
     public static GoldenWireData Init()
     {
@@ -217,11 +220,22 @@ internal sealed class GoldenWireData
             RelativeFar = 2100, // difference of 2000 from the base: exercises the twelve bit bucket
             Bytes = new byte[] { 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01 },
             Str = "golden",
-            WStr = "мир", // "мир": cyrillic, BMP only, explicit code points so source encoding can never change the bytes
+            Stones = "\u7881\u77F3", // 碁石, go stones: E7 A2 81 E7 9F B3, explicit code points so source encoding can never change the bytes
+            Fixed = FixedWireData.Init(),
         };
     }
 
+    // the whole message, ending with its end: a packet reader reads the end after the
+    // last field of the top-level object (STANDARD.md, "end")
     public static bool Serialize(IBitStream stream, GoldenWireData data)
+    {
+        SerializeFields(stream, data);
+        stream.SerializeEnd();
+        return stream.Error == SerializeError.None;
+    }
+
+    // the fields alone, for a longer message built on top of them
+    public static bool SerializeFields(IBitStream stream, GoldenWireData data)
     {
         const int relativeBase = 100;
         stream.SerializeBits(ref data.Bits4, 4);
@@ -243,16 +257,40 @@ internal sealed class GoldenWireData
         stream.SerializeAlign();
         stream.SerializeBytes(data.Bytes);
         stream.SerializeString(ref data.Str, 16);
-        stream.SerializeWideString(ref data.WStr, 8);
+        stream.SerializeString(ref data.Stones, 8);
+        stream.SerializeAlign();                                    // the fixed point section starts byte aligned
+        FixedWireData.Serialize(stream, data.Fixed);
         return stream.Error == SerializeError.None;
+    }
+
+    public bool DataEquals(GoldenWireData other)
+    {
+        // 5.0 in [0,10] decodes exactly: it normalizes to 0.5, one quantum on the grid
+        return Bits4 == other.Bits4 && Bits11 == other.Bits11
+            && Bits24 == other.Bits24 && Bits32 == other.Bits32
+            && IntSmall == other.IntSmall && IntFull == other.IntFull
+            && Flag == other.Flag
+            && FloatValue == other.FloatValue
+            && CompressedFloatValue == other.CompressedFloatValue
+            && DoubleValue == other.DoubleValue
+            && UInt8Value == other.UInt8Value
+            && UInt16Value == other.UInt16Value
+            && UInt32Value == other.UInt32Value
+            && UInt64Value == other.UInt64Value
+            && RelativeNear == other.RelativeNear
+            && RelativeFar == other.RelativeFar
+            && Bytes.AsSpan().SequenceEqual(other.Bytes)
+            && Str == other.Str
+            && Stones == other.Stones
+            && Fixed.DataEquals(other.Fixed);
     }
 }
 
-// Extended wire format data: the golden sequence plus the 64 bit paths the golden test
-// does not cover (SerializeBits64 above 32 bits, SerializeInt64 full range and two
-// dword range) plus a compressed float pinned on an FMA rounding boundary. It mirrors
-// the compat harness sequence exactly (compat/Compat.cs / compat/cpp/compat.cpp): any
-// change there must be mirrored here, and never changes the wire format.
+// Extended wire format data: the golden message's fields plus the 64 bit paths the
+// golden test does not cover (SerializeBits64 above 32 bits, SerializeInt64 full range
+// and two dword range) plus a compressed float pinned on an FMA rounding boundary, and
+// then the end. The compat harness (compat/Compat.cs / compat/cpp/compat.cpp) carries
+// the same values in a longer sequence of its own.
 internal sealed class ExtendedWireData
 {
     public GoldenWireData Golden = new GoldenWireData();
@@ -279,45 +317,55 @@ internal sealed class ExtendedWireData
 
     public static bool Serialize(IBitStream stream, ExtendedWireData data)
     {
-        GoldenWireData.Serialize(stream, data.Golden);
+        GoldenWireData.SerializeFields(stream, data.Golden);
         stream.SerializeBits64(ref data.Bits33, 33);
         stream.SerializeInt64(ref data.Int64Full, long.MinValue, long.MaxValue);
         stream.SerializeInt64(ref data.Int64Range, -5000000000, +5000000000);
         stream.SerializeCompressedFloat(ref data.FmaBoundaryFloat, 0.0f, 10.0f, 0.01f);
+        stream.SerializeEnd();
         return stream.Ok;
     }
 }
 
 internal static partial class Program
 {
-    // goldenWireBytes are copied verbatim from the C++ serialize library test suite
-    // (transcribed from serialize.go/serialize_test.go:882, itself pinned to
-    // serialize/serialize.h:3195). Never regenerate these.
+    // GoldenWireBytes are the 106 bytes STANDARD.md prints under "The whole message",
+    // copied verbatim from the document: a writer written from the document alone, the
+    // C++ library's pinned emission and that byte block agree, and the corpus pins the
+    // same bytes as message-golden-whole. Never regenerate these from this port.
     private static readonly byte[] GoldenWireBytes =
     {
         0x5D, 0xDA, 0xF7, 0xE6, 0xD5, 0x77, 0xDF, 0x56, 0xEF, 0x9F, 0x75, 0x19,
         0x52, 0xBC, 0xDA, 0x0F, 0x49, 0x40, 0xF4, 0x55, 0x55, 0x55, 0x55, 0x55,
         0x55, 0x55, 0xFF, 0xFC, 0xD1, 0x48, 0xE0, 0x59, 0xD1, 0x48, 0xC0, 0x7B,
         0xF3, 0x6A, 0xE2, 0x59, 0xD1, 0x48, 0x84, 0xB7, 0x06, 0xDE, 0xAD, 0xBE,
-        0xEF, 0xCA, 0xFE, 0x01, 0x06, 0x67, 0x6F, 0x6C, 0x64, 0x65, 0x6E, 0xE3,
-        0x21, 0x00, 0x00, 0xC0, 0x21, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00,
+        0xEF, 0xCA, 0xFE, 0x01, 0x06, 0x67, 0x6F, 0x6C, 0x64, 0x65, 0x6E, 0x06,
+        0xE7, 0xA2, 0x81, 0xE7, 0x9F, 0xB3, 0xC0, 0x60, 0x00, 0x80, 0xA2, 0x7C,
+        0xFC, 0xEC, 0x26, 0xCB, 0xFF, 0xFF, 0x4B, 0x1D, 0x1F, 0xEF, 0xD2, 0x1A,
+        0x1F, 0x01, 0xE9, 0xFF, 0xFF, 0x09, 0x19, 0x2A, 0x3B, 0x4C, 0x5D, 0x6E,
+        0x7F, 0x78, 0x6F, 0x5E, 0x4D, 0x3C, 0x2B, 0x1A, 0x09, 0x04,
     };
 
-    // ExtendedWireBytes pin the extended sequence (golden + 64 bit paths + FMA
-    // boundary float). Transcribed from the output of compat/cpp/compat.cpp built
-    // against serialize/serialize.h with clang++ -O2 -std=c++17 -ffp-contract=off
-    // (strict IEEE evaluation is the normative wire; see compat/cpp/compat.cpp),
-    // cross-checked byte identical against the C# compat write. Never regenerate.
+    // ExtendedWireBytes pin the extended sequence: the golden message's fields, then the
+    // 64 bit paths and the FMA boundary float, then the end. Transcribed from the C++
+    // reference, mas-bandwidth/serialize v2.0.0's serialize.h, serializing the same
+    // fields with clang++ -O2 -std=c++17 -ffp-contract=off (strict IEEE evaluation is
+    // the normative wire) and reading them back there. The first 105 bytes are the
+    // golden message's; its final byte's padding carries the fields that follow.
+    // Never regenerate from this port.
     private static readonly byte[] ExtendedWireBytes =
     {
         0x5D, 0xDA, 0xF7, 0xE6, 0xD5, 0x77, 0xDF, 0x56, 0xEF, 0x9F, 0x75, 0x19,
         0x52, 0xBC, 0xDA, 0x0F, 0x49, 0x40, 0xF4, 0x55, 0x55, 0x55, 0x55, 0x55,
         0x55, 0x55, 0xFF, 0xFC, 0xD1, 0x48, 0xE0, 0x59, 0xD1, 0x48, 0xC0, 0x7B,
         0xF3, 0x6A, 0xE2, 0x59, 0xD1, 0x48, 0x84, 0xB7, 0x06, 0xDE, 0xAD, 0xBE,
-        0xEF, 0xCA, 0xFE, 0x01, 0x06, 0x67, 0x6F, 0x6C, 0x64, 0x65, 0x6E, 0xE3,
-        0x21, 0x00, 0x00, 0xC0, 0x21, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x78,
-        0xF7, 0x6D, 0xF5, 0x7E, 0x08, 0x22, 0x9F, 0x77, 0xFB, 0xF8, 0xFF, 0x57,
-        0x71, 0xCE, 0xFC, 0x61, 0x00,
+        0xEF, 0xCA, 0xFE, 0x01, 0x06, 0x67, 0x6F, 0x6C, 0x64, 0x65, 0x6E, 0x06,
+        0xE7, 0xA2, 0x81, 0xE7, 0x9F, 0xB3, 0xC0, 0x60, 0x00, 0x80, 0xA2, 0x7C,
+        0xFC, 0xEC, 0x26, 0xCB, 0xFF, 0xFF, 0x4B, 0x1D, 0x1F, 0xEF, 0xD2, 0x1A,
+        0x1F, 0x01, 0xE9, 0xFF, 0xFF, 0x09, 0x19, 0x2A, 0x3B, 0x4C, 0x5D, 0x6E,
+        0x7F, 0x78, 0x6F, 0x5E, 0x4D, 0x3C, 0x2B, 0x1A, 0x09, 0x7C, 0xF7, 0x6D,
+        0xF5, 0x7E, 0x08, 0x22, 0x9F, 0x77, 0xFB, 0xF8, 0xFF, 0x57, 0x71, 0xCE,
+        0xFC, 0x61, 0x00,
     };
 
     private static void Check(bool condition, string message)
@@ -376,13 +424,19 @@ internal static partial class Program
         RunTest("test_serialize_int64_validation", TestSerializeInt64Validation);
         RunTest("test_serialize_bytes_validation", TestSerializeBytesValidation);
         RunTest("test_string_validation", TestStringValidation);
-        RunTest("test_wstring_validation", TestWStringValidation);
         RunTest("test_string_reader_zero_buffer_size", TestStringReaderZeroBufferSize);
-        RunTest("test_wstring_reader_zero_buffer_size", TestWideStringReaderZeroBufferSize);
         RunTest("test_int_relative_validation", TestIntRelativeValidation);
+        RunTest("test_refusal_names", TestRefusalNames);
+        RunTest("test_serialize_end", TestSerializeEnd);
+        RunTest("test_length_claim_before_allocation", TestLengthClaimBeforeAllocation);
         // the shared corpus, vendored from mas-bandwidth/serialize: every vector run
         // through this port's reader (Conformance.cs)
         RunTest("test_conformance_vectors", TestConformanceVectors);
+        // the controls: a gate nobody has seen go red is a claim, not a measurement
+        RunTest("test_conformance_unknown_operation", TestConformanceUnknownOperation);
+#if SERIALIZE_CONFORMANCE_CONTROLS
+        RunTest("test_conformance_controls", TestConformanceControls);
+#endif
         RunTest("test_compressed_float_validation", TestCompressedFloatValidation);
         RunTest("test_compressed_float_top_of_range_clamp", TestCompressedFloatTopOfRangeClamp);
         RunTest("test_compressed_float_quantization_boundaries", TestCompressedFloatQuantizationBoundaries);
@@ -775,9 +829,9 @@ internal static partial class Program
         Check(readStream.SerializeString(ref str, 10), "read string failed");
         Check(str == "hello", $"expected \"hello\", got \"{str}\"");
 
-        string wstr = "";
-        Check(readStream.SerializeWideString(ref wstr, 20), "read wide string failed");
-        Check(wstr == "привіт", $"expected \"привіт\", got \"{wstr}\"");
+        string text = "";
+        Check(readStream.SerializeString(ref text, 20), "read text string failed");
+        Check(text == "привіт", $"expected \"привіт\", got \"{text}\"");
 
         Check(readStream.SerializeAlign(), "read align failed");
 
@@ -829,8 +883,8 @@ internal static partial class Program
         string str = "hello";
         writeStream.SerializeString(ref str, 10);
 
-        string wstr = "привіт"; // "привіт"
-        writeStream.SerializeWideString(ref wstr, 20);
+        string text = "привіт"; // twelve bytes of UTF-8
+        writeStream.SerializeString(ref text, 20);
 
         writeStream.SerializeAlign();
 
@@ -999,7 +1053,7 @@ internal static partial class Program
             ReadStream readStream = new ReadStream(buffer);
             long value = 424242; // sentinel
             Check(!readStream.SerializeInt64(ref value, long.MinValue, long.MaxValue), "expected the read to fail");
-            Check(readStream.Error == SerializeError.Overflow, $"expected Overflow, got {readStream.Error}");
+            Check(readStream.Error == SerializeError.PastEnd, $"expected PastEnd, got {readStream.Error}");
             Check(value == 424242, $"a failed read must leave the value unmodified, got {value}");
         }
     }
@@ -1013,14 +1067,14 @@ internal static partial class Program
             ReadStream readStream = new ReadStream(buffer);
             byte[] data = new byte[17];
             Check(!readStream.SerializeBytes(data), "expected the read to fail");
-            Check(readStream.Error == SerializeError.Overflow, $"expected Overflow, got {readStream.Error}");
+            Check(readStream.Error == SerializeError.PastEnd, $"expected PastEnd, got {readStream.Error}");
         }
 
         {
             ReadStream readStream = new ReadStream(buffer);
             byte[] data = new byte[1 << 20];
             Check(!readStream.SerializeBytes(data), "expected the read to fail");
-            Check(readStream.Error == SerializeError.Overflow, $"expected Overflow, got {readStream.Error}");
+            Check(readStream.Error == SerializeError.PastEnd, $"expected PastEnd, got {readStream.Error}");
         }
     }
 
@@ -1065,8 +1119,8 @@ internal static partial class Program
             ReadStream readStream = new ReadStream(buffer);
             string value = "unchanged";
             Check(!readStream.SerializeString(ref value, 256), "expected the read to fail");
-            Check(readStream.Error == SerializeError.InvalidString,
-                $"expected InvalidString, got {readStream.Error}");
+            Check(readStream.Error == SerializeError.InvalidUtf8,
+                $"expected InvalidUtf8, got {readStream.Error}");
             Check(value == "unchanged", "a failed read must leave the value unmodified");
         }
 
@@ -1088,8 +1142,8 @@ internal static partial class Program
             ReadStream readStream = new ReadStream(buffer);
             string value = "unchanged";
             Check(!readStream.SerializeString(ref value, 256), "expected the read to fail");
-            Check(readStream.Error == SerializeError.InvalidString,
-                $"expected InvalidString, got {readStream.Error}");
+            Check(readStream.Error == SerializeError.EmbeddedNul,
+                $"expected EmbeddedNul, got {readStream.Error}");
             Check(value == "unchanged", "a failed read must leave the value unmodified");
         }
     }
@@ -1107,220 +1161,191 @@ internal static partial class Program
         ReadStream stream = new ReadStream(hostile);
         string value = "unchanged";
         Check(!stream.SerializeString(ref value, 0), "bufferSize 0 string read must fail");
-        Check(stream.Error == SerializeError.Overflow, $"expected Overflow, got {stream.Error}");
+        Check(stream.Error == SerializeError.ValueOutOfRange, $"expected ValueOutOfRange, got {stream.Error}");
         Check(value == "unchanged", "a failed bufferSize 0 string read must not write the destination");
         Check(!stream.SerializeString(ref value, 0), "a latched stream must stay failed");
         Check(value == "unchanged", "a second failed bufferSize 0 read must not write the destination");
     }
 
-    private static void TestWideStringReaderZeroBufferSize()
+    private static void TestRefusalNames()
     {
-        // security#33-F1: the same degenerate [0, -1] length read on the wide path;
-        // the negative length slipped the (long)length * 32 bound and reached
-        // new char[length], throwing OverflowException.
-        byte[] hostile = { 0x10, 0x00, 0x00, 0x80 }; // little-endian 0x80000010: negative as int
+        // STANDARD.md, "Refusal reasons": the closed list, spelled identically in every
+        // implementation, and nothing else
+        (SerializeError Error, string Name)[] names =
+        {
+            (SerializeError.None, "none"),
+            (SerializeError.PastEnd, "past_end"),
+            (SerializeError.ValueOutOfRange, "value_out_of_range"),
+            (SerializeError.NonzeroPadding, "nonzero_padding"),
+            (SerializeError.TrailingData, "trailing_data"),
+            (SerializeError.NonFiniteFloat, "non_finite_float"),
+            (SerializeError.InvalidUtf8, "invalid_utf8"),
+            (SerializeError.EmbeddedNul, "embedded_nul"),
+            (SerializeError.NonCanonical, "non_canonical"),
+        };
+        Check(Enum.GetValues(typeof(SerializeError)).Length == names.Length,
+            "the refusal list is closed: SerializeError holds exactly the standard's eight reasons and None");
+        foreach ((SerializeError error, string name) in names)
+        {
+            Check(SerializeUtil.RefusalName(error) == name, $"{error} must be spelled {name}, got {SerializeUtil.RefusalName(error)}");
+        }
 
-        ReadStream stream = new ReadStream(hostile);
-        string value = "unchanged";
-        Check(!stream.SerializeWideString(ref value, 0), "bufferSize 0 wide string read must fail");
-        Check(stream.Error == SerializeError.Overflow, $"expected Overflow, got {stream.Error}");
-        Check(value == "unchanged", "a failed bufferSize 0 wide string read must not write the destination");
-        Check(!stream.SerializeWideString(ref value, 0), "a latched stream must stay failed");
-        Check(value == "unchanged", "a second failed bufferSize 0 wide read must not write the destination");
+        // the finite test is the exponent field and nothing wider: the patterns either
+        // side of every boundary
+        Check(SerializeUtil.FloatBitsAreFinite(0x7F7FFFFFu) && SerializeUtil.FloatBitsAreFinite(0xFF7FFFFFu)
+            && SerializeUtil.FloatBitsAreFinite(0x80000000u) && SerializeUtil.FloatBitsAreFinite(0x00000001u),
+            "the largest finite floats, negative zero and the smallest subnormal are finite");
+        Check(!SerializeUtil.FloatBitsAreFinite(0x7F800000u) && !SerializeUtil.FloatBitsAreFinite(0xFF800000u)
+            && !SerializeUtil.FloatBitsAreFinite(0x7F800001u) && !SerializeUtil.FloatBitsAreFinite(0xFFFFFFFFu),
+            "the infinities and every NaN are not finite");
+        Check(SerializeUtil.DoubleBitsAreFinite(0x7FEFFFFFFFFFFFFFUL) && SerializeUtil.DoubleBitsAreFinite(0x8000000000000000UL)
+            && SerializeUtil.DoubleBitsAreFinite(0x000FFFFFFFFFFFFFUL),
+            "the largest finite double, negative zero and the largest subnormal are finite");
+        Check(!SerializeUtil.DoubleBitsAreFinite(0x7FF0000000000000UL) && !SerializeUtil.DoubleBitsAreFinite(0xFFF0000000000000UL)
+            && !SerializeUtil.DoubleBitsAreFinite(0x7FF0000000000001UL) && !SerializeUtil.DoubleBitsAreFinite(0xFFF8000000000000UL),
+            "the double infinities and every double NaN are not finite");
+
+        // the first reason is kept: a later refusal on the failed stream is an echo
+        {
+            ReadStream stream = new ReadStream(new byte[] { 0x09 });
+            int value = 0;
+            Check(!stream.SerializeInt(ref value, 0, 8), "offset 9 over [0,8] must be refused");
+            Check(stream.Error == SerializeError.ValueOutOfRange, $"expected ValueOutOfRange, got {stream.Error}");
+            Check(!stream.SerializeEnd(), "an end on a failed stream must be refused");
+            float f = 0;
+            Check(!stream.SerializeFloat(ref f), "a float on a failed stream must be refused");
+            Check(stream.Error == SerializeError.ValueOutOfRange, $"the echoes must keep the first reason, got {stream.Error}");
+        }
     }
 
-    private static void TestWStringValidation()
+    private static void TestLengthClaimBeforeAllocation()
     {
-        // BMP and astral strings round trip; empty string round trips. The astral
-        // string rides as surrogate pairs — one UTF-16 code unit per 32-bit group
-        // (STANDARD.md, adopted 2026-08-15), four groups for the two emoji
-        string[] values = { "", "мир", "привіт, світ!", "\U0001F600\U0001F680" };
-
-        foreach (string expected in values)
+        // A length-prefixed read must check the claimed length against the bytes left
+        // AFTER its align, refuse a claim past them as past_end, and allocate nothing
+        // until it has: a tiny stream claiming a huge string must not be able to make
+        // the reader allocate the claim. SerializeString reads its payload as a slice
+        // of the buffer and allocates only the decoded string, after the length, NUL
+        // and UTF-8 checks; SerializeBytes reads into the caller's span. Both read
+        // paths — the stream and the batch, which delegates strings — are held to it.
+        const int bufferSize = int.MaxValue;
+        byte[] packet = new byte[8];
         {
-            byte[] buffer = new byte[512];
-
-            WriteStream writeStream = new WriteStream(buffer);
-            string v = expected;
-            Check(writeStream.SerializeWideString(ref v, 64), "write failed");
-            writeStream.Flush();
-
-            ReadStream readStream = new ReadStream(buffer, (int)writeStream.BytesProcessed);
-            string value = "";
-            Check(readStream.SerializeWideString(ref value, 64), "read failed");
-            Check(value == expected, $"expected \"{expected}\", got \"{value}\"");
+            WriteStream writer = new WriteStream(packet);
+            int claim = bufferSize - 1;     // 2^31 - 2 bytes claimed, 31 bits on the wire
+            writer.SerializeInt(ref claim, 0, bufferSize - 1);
+            writer.Flush();
         }
-
-        // the longest legal string (bufferSize-1 UTF-16 code units) round trips, and
-        // the measure stream agrees with the write
+        for (int path = 0; path < 2; path++)
         {
-            const int bufferSize = 8;
-            string longest = new string('a', bufferSize - 1);
-
-            byte[] buffer = new byte[64];
-            WriteStream writeStream = new WriteStream(buffer);
-            string v = longest;
-            Check(writeStream.SerializeWideString(ref v, bufferSize), "write failed");
-            writeStream.Flush();
-
-            MeasureStream measureStream = new MeasureStream();
-            string m = longest;
-            Check(measureStream.SerializeWideString(ref m, bufferSize), "measure failed");
-            Check(measureStream.BitsProcessed == writeStream.BitsProcessed,
-                $"measure {measureStream.BitsProcessed} != write {writeStream.BitsProcessed}");
-
-            ReadStream readStream = new ReadStream(buffer, (int)writeStream.BytesProcessed);
-            string value = "";
-            Check(readStream.SerializeWideString(ref value, bufferSize), "read failed");
-            Check(value == longest, "longest legal string did not round trip");
-
-            // one code unit too many is a writer contract violation, no longer
-            // rejected at runtime (serialize#52: writes are trusted): it asserts in
-            // debug builds — test_write_contract_asserts proves the assert fires
-        }
-
-        // THE CONFORMANCE PIN: "a\U0001F600" in a wchar_t[8] buffer is exactly these
-        // 13 bytes — 3-bit length 3 (UNITS: 0x0061, then the surrogate pair 0xD83D
-        // 0xDE00), then three unaligned 32-bit groups. Byte-for-byte what
-        // serialize.c (mas-bandwidth/serialize.c#12) and the C++
-        // wstring-surrogate-boundary branch emit for L"a\U0001F600" on EVERY
-        // wchar_t width; derived with a reference bit packer validated against the
-        // STANDARD.md worked example. Never regenerate these.
-        //
-        // Before the code-unit fix this pin was doubly unreachable: the writer
-        // emitted CODE POINTS (3-bit length 2, groups 0x0061 and 0x1F600 — the bytes
-        // were 0A 03 00 00 00 B0 0F 00 00), and the reader REFUSED these very bytes
-        // at its group check, `codePoint > 0x10FFFF || (codePoint >= 0xD800 &&
-        // codePoint <= 0xDFFF)` → ValueOutOfRange on the 0xD83D group — so a valid
-        // astral wstring from a conforming port could never be read at all.
-        {
-            byte[] astralWireBytes =
-            {
-                0x0B, 0x03, 0x00, 0x00, 0xE8, 0xC1, 0x06, 0x00, 0x00, 0xF0, 0x06,
-                0x00, 0x00,
-            };
-            const string astral = "a\U0001F600";
-            const int bufferSize = 8;
-
-            // write side: the writer must emit exactly the conforming bytes
-            byte[] buffer = new byte[64];
-            WriteStream writeStream = new WriteStream(buffer);
-            string v = astral;
-            Check(writeStream.SerializeWideString(ref v, bufferSize), "write failed");
-            writeStream.Flush();
-            Check(writeStream.BytesProcessed == astralWireBytes.Length,
-                $"expected {astralWireBytes.Length} bytes, got {writeStream.BytesProcessed}");
-            Check(writeStream.Data.SequenceEqual(astralWireBytes),
-                $"astral bytes mismatch:\nexpected {Convert.ToHexString(astralWireBytes)}\ngot      {Convert.ToHexString(writeStream.Data)}");
-
-            // measure agrees: 3 bits of length + 3 * 32 bits of units = 99 bits
-            MeasureStream measureStream = new MeasureStream();
-            string m = astral;
-            Check(measureStream.SerializeWideString(ref m, bufferSize), "measure failed");
-            Check(measureStream.BitsProcessed == 99,
-                $"expected 99 bits measured, got {measureStream.BitsProcessed}");
-
-            // read side: the conforming bytes (as another port would send them) must
-            // decode — the pair recombines into the astral character
-            ReadStream readStream = new ReadStream(astralWireBytes);
-            string value = "";
-            Check(readStream.SerializeWideString(ref value, bufferSize),
-                $"read of the conforming astral vector failed: {readStream.Error}");
-            Check(value == astral, $"expected \"{astral}\", got \"{value}\"");
-        }
-
-        // a group above 0xFFFF is not a UTF-16 code unit and must be rejected on
-        // read — including 0x10000..0x10FFFF, the OLD format's astral code point
-        // groups: under the code-unit format (STANDARD.md, adopted 2026-08-15) an
-        // astral character is a surrogate pair, never a single group. This is also
-        // the C# analog of the C 2-byte wchar_t path: char cannot hold the value,
-        // so fail rather than truncate
-        uint[] invalidUnits = { 0x10000, 0x10FFFF, 0x110000, 0xFFFFFFFF };
-        foreach (uint invalidUnit in invalidUnits)
-        {
-            byte[] buffer = new byte[16];
-
-            WriteStream writeStream = new WriteStream(buffer);
-            int length = 1;
-            writeStream.SerializeInt(ref length, 0, 63); // length prefix for bufferSize 64
-            uint u = invalidUnit;
-            writeStream.SerializeBits(ref u, 32);
-            writeStream.Flush();
-
-            ReadStream readStream = new ReadStream(buffer);
-            string value = "unchanged"; // sentinel: a failed read must not publish a partial string
-            Check(!readStream.SerializeWideString(ref value, 64), $"unit {invalidUnit:x}: expected the read to fail");
-            Check(readStream.Error == SerializeError.ValueOutOfRange,
-                $"unit {invalidUnit:x}: expected ValueOutOfRange, got {readStream.Error}");
-            Check(value == "unchanged", "a failed read must leave the value unmodified");
-        }
-
-        // refusal (serialize#8): unpaired or invalid surrogates must be rejected on
-        // read — an unpaired surrogate is a refusal, not a pass-through. INVERTED
-        // CHECK — if the reader stored lone surrogates as they arrived instead of
-        // refusing (dropping the pendingHigh/lone-low branches), each of these would
-        // succeed and publish an ill-formed .NET string: one that
-        // char.IsSurrogate flags, that Encoding.UTF8.GetBytes silently rewrites to
-        // U+FFFD, and that a conforming peer would itself refuse if echoed back.
-        {
-            uint[][] unpairedShapes =
-            {
-                new uint[] { 0xD83D },                    // lone high surrogate
-                new uint[] { 0xD83D, 0x0041 },            // high followed by a BMP unit
-                new uint[] { 0xD83D, 0xD83D },            // high followed by another high
-                new uint[] { 0xDE00 },                    // lone low surrogate
-                new uint[] { 0x0041, 0xDE00 },            // low with no high before it
-                new uint[] { 0xD83D, 0xDE00, 0xD83D },    // valid pair, then ends inside a pair
-            };
-            foreach (uint[] units in unpairedShapes)
-            {
-                byte[] buffer = new byte[32];
-
-                WriteStream writeStream = new WriteStream(buffer);
-                int length = units.Length;
-                writeStream.SerializeInt(ref length, 0, 63); // length prefix for bufferSize 64
-                foreach (uint unit in units)
-                {
-                    uint u = unit;
-                    writeStream.SerializeBits(ref u, 32);
-                }
-                writeStream.Flush();
-
-                ReadStream readStream = new ReadStream(buffer);
-                string value = "unchanged";
-                string shape = string.Join(" ", Array.ConvertAll(units, x => x.ToString("x4")));
-                Check(!readStream.SerializeWideString(ref value, 64), $"units [{shape}]: expected the read to fail");
-                Check(readStream.Error == SerializeError.InvalidString,
-                    $"units [{shape}]: expected InvalidString, got {readStream.Error}");
-                Check(value == "unchanged", "a failed read must leave the value unmodified");
-            }
-        }
-
-        // refusal (serialize#8): an interior NUL unit must be rejected on read — the
-        // wide twin of the narrow smuggling primitive: wire length 3 versus the
-        // length 1 a wcslen consumer perceives. INVERTED CHECK — if the reader
-        // tested `unit != 0` instead of `unit == 0` (or skipped it), this read would
-        // succeed and publish "a\0b" with value.Length == 3.
-        {
-            byte[] buffer = new byte[32];
-
-            WriteStream writeStream = new WriteStream(buffer);
-            int length = 3;
-            writeStream.SerializeInt(ref length, 0, 63); // length prefix for bufferSize 64
-            uint[] units = { 0x0061, 0x0000, 0x0062 }; // "a", NUL, "b"
-            foreach (uint unit in units)
-            {
-                uint u = unit;
-                writeStream.SerializeBits(ref u, 32);
-            }
-            writeStream.Flush();
-
-            ReadStream readStream = new ReadStream(buffer);
+            ReadStream stream = new ReadStream(packet, 8);
             string value = "unchanged";
-            Check(!readStream.SerializeWideString(ref value, 64), "expected the read to fail");
-            Check(readStream.Error == SerializeError.InvalidString,
-                $"expected InvalidString, got {readStream.Error}");
-            Check(value == "unchanged", "a failed read must leave the value unmodified");
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            bool ok;
+            if (path == 0)
+            {
+                ok = stream.SerializeString(ref value, bufferSize);
+            }
+            else
+            {
+                ReadBatch batch = stream.BeginBatch();
+                ok = batch.SerializeString(ref value, bufferSize);
+                batch.End();
+            }
+            long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+            string reader = path == 0 ? "stream" : "batch";
+            Check(!ok && stream.Error == SerializeError.PastEnd,
+                $"{reader}: a claim past the remaining bytes must be refused as past_end, got {stream.Error}");
+            Check(value == "unchanged", $"{reader}: the refused read wrote its destination");
+            Check(allocated < 1024, $"{reader}: the refused claim allocated {allocated} bytes before refusing");
+        }
+
+        // the reversed witness: the same claim with the bytes behind it is accepted, and
+        // the check is against the bytes after the align, not before it
+        {
+            byte[] exact = new byte[2];
+            WriteStream writer = new WriteStream(new byte[8]);
+            int one = 1;
+            writer.SerializeInt(ref one, 0, 7);     // 3 bits, then 5 bits of align
+            writer.SerializeAlign();
+            writer.Flush();
+            exact[0] = writer.Data[0];
+            exact[1] = (byte)'x';
+            ReadStream stream = new ReadStream(exact, 2);
+            string value = "";
+            Check(stream.SerializeString(ref value, 8) && value == "x", $"a claim the stream holds must be accepted, got {stream.Error}");
+            stream = new ReadStream(exact, 1);
+            Check(!stream.SerializeString(ref value, 8) && stream.Error == SerializeError.PastEnd,
+                "a claim of one byte with none left after the align must be past_end");
+        }
+    }
+
+    private static void TestSerializeEnd()
+    {
+        // a writer's end emits nothing and a measure's costs nothing
+        {
+            WriteStream stream = new WriteStream(new byte[16]);
+            uint v = 5;
+            stream.SerializeBits(ref v, 3);
+            Check(stream.SerializeEnd(), "a writer's end must succeed");
+            Check(stream.BitsProcessed == 3, $"a writer's end must emit nothing, wrote {stream.BitsProcessed} bits");
+            stream.Flush();
+            Check(stream.BytesProcessed == 1 && stream.Data[0] == 0x05, "the final byte's padding must be zero");
+
+            MeasureStream measure = new MeasureStream();
+            Check(measure.SerializeEnd() && measure.BitsProcessed == 0, "a measure's end must cost nothing");
+        }
+
+        // a reader's end looks at the stream's stated length and never at the slack
+        // past it: the same three bits accepted with a slack byte of 0xFF behind them
+        {
+            byte[] buffer = { 0x05, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+            ReadStream stream = new ReadStream(buffer, 1);
+            uint v = 0;
+            Check(stream.SerializeBits(ref v, 3) && v == 5, "the field must read");
+            Check(stream.SerializeEnd(), $"the end must accept the stated stream, got {stream.Error}");
+            Check(stream.BitsProcessed == 8 && stream.BitsRemaining == 0, "an accepted end consumes the final byte's padding");
+            Check(!stream.SerializeBits(ref v, 1) && stream.Error == SerializeError.PastEnd,
+                "nothing is left after an accepted end");
+        }
+
+        // the reversed witnesses: the same buffer handed over with its slack counted is
+        // trailing data, and a set padding bit is nonzero padding — trailing data first
+        {
+            byte[] buffer = { 0x05, 0x00 };
+            ReadStream stream = new ReadStream(buffer, 2);
+            uint v = 0;
+            stream.SerializeBits(ref v, 3);
+            Check(!stream.SerializeEnd() && stream.Error == SerializeError.TrailingData,
+                $"a whole zero byte after the object is trailing data, got {stream.Error}");
+
+            stream = new ReadStream(new byte[] { 0x0D, 0x00 }, 2);
+            stream.SerializeBits(ref v, 3);
+            Check(!stream.SerializeEnd() && stream.Error == SerializeError.TrailingData,
+                $"trailing data is checked before padding, got {stream.Error}");
+
+            stream = new ReadStream(new byte[] { 0x0D }, 1);
+            stream.SerializeBits(ref v, 3);
+            Check(!stream.SerializeEnd() && stream.Error == SerializeError.NonzeroPadding,
+                $"a set padding bit is nonzero padding, got {stream.Error}");
+        }
+
+        // the batch reads the same end, and stores it back
+        {
+            ReadStream stream = new ReadStream(new byte[] { 0x0D }, 1);
+            ReadBatch batch = stream.BeginBatch();
+            uint v = 0;
+            batch.SerializeBits(ref v, 3);
+            Check(!batch.SerializeEnd() && batch.Error == SerializeError.NonzeroPadding,
+                $"the batch end must refuse a set padding bit, got {batch.Error}");
+            batch.End();
+            Check(stream.Error == SerializeError.NonzeroPadding, "the batch must store its refusal back");
+
+            stream = new ReadStream(new byte[] { 0x05 }, 1);
+            batch = stream.BeginBatch();
+            batch.SerializeBits(ref v, 3);
+            Check(batch.SerializeEnd() && batch.BitsProcessed == 8, "the batch end must accept and consume the padding");
+            batch.End();
+            Check(stream.Ok && stream.BitsProcessed == 8, "the batch must store its cursor back");
         }
     }
 
@@ -1611,25 +1636,26 @@ internal static partial class Program
             GoldenWireData data = new GoldenWireData();
             Check(GoldenWireData.Serialize(stream, data), $"read failed: {stream.Error}");
 
-            GoldenWireData expected = GoldenWireData.Init();
-            Check(Math.Abs(data.CompressedFloatValue - expected.CompressedFloatValue) <= 0.01,
-                $"compressed float mismatch: expected {expected.CompressedFloatValue}, got {data.CompressedFloatValue}");
-            Check(data.Bits4 == expected.Bits4 && data.Bits11 == expected.Bits11
-                && data.Bits24 == expected.Bits24 && data.Bits32 == expected.Bits32
-                && data.IntSmall == expected.IntSmall && data.IntFull == expected.IntFull
-                && data.Flag == expected.Flag
-                && data.FloatValue == expected.FloatValue
-                && data.DoubleValue == expected.DoubleValue
-                && data.UInt8Value == expected.UInt8Value
-                && data.UInt16Value == expected.UInt16Value
-                && data.UInt32Value == expected.UInt32Value
-                && data.UInt64Value == expected.UInt64Value
-                && data.RelativeNear == expected.RelativeNear
-                && data.RelativeFar == expected.RelativeFar
-                && data.Bytes.AsSpan().SequenceEqual(expected.Bytes)
-                && data.Str == expected.Str
-                && data.WStr == expected.WStr,
-                "golden decode mismatch");
+            Check(data.DataEquals(GoldenWireData.Init()), "golden decode mismatch");
+            // the end consumed the final byte's five bits of padding: 843 bits of
+            // message, 848 read
+            Check(stream.BitsProcessed == 848, $"expected 848 bits consumed, got {stream.BitsProcessed}");
+        }
+
+        // the end makes the bytes the only bytes: one more byte, or a set padding bit,
+        // and the same message is refused (STANDARD.md, "end")
+        {
+            byte[] longer = new byte[GoldenWireBytes.Length + 1];
+            GoldenWireBytes.CopyTo(longer, 0);
+            ReadStream stream = new ReadStream(longer);
+            Check(!GoldenWireData.Serialize(stream, new GoldenWireData()), "a trailing byte must be refused");
+            Check(stream.Error == SerializeError.TrailingData, $"expected TrailingData, got {stream.Error}");
+
+            byte[] doctored = (byte[])GoldenWireBytes.Clone();
+            doctored[doctored.Length - 1] |= 0x80;      // the highest of the five padding bits
+            stream = new ReadStream(doctored);
+            Check(!GoldenWireData.Serialize(stream, new GoldenWireData()), "a set padding bit must be refused");
+            Check(stream.Error == SerializeError.NonzeroPadding, $"expected NonzeroPadding, got {stream.Error}");
         }
     }
 
@@ -1831,7 +1857,7 @@ internal static partial class Program
         // the two compressed float rulings (non-finite value, non-finite declaration).
 
         // a fully conforming write sequence must not assert — surrogate PAIRS
-        // included: a well-formed astral wstring is valid UTF-16, not a violation
+        // included: a well-formed astral string is valid UTF-16, not a violation
         Check(!AssertFires(() =>
         {
             WriteStream stream = new WriteStream(new byte[64]);
@@ -1840,7 +1866,12 @@ internal static partial class Program
             string s = "ok";
             stream.SerializeString(ref s, 16);
             string astral = "a\U0001F600";
-            stream.SerializeWideString(ref astral, 8);
+            stream.SerializeString(ref astral, 8);
+            float finite = -0.0f;
+            stream.SerializeFloat(ref finite);
+            double subnormal = double.Epsilon;
+            stream.SerializeDouble(ref subnormal);
+            stream.SerializeEnd();
             float f = 2.5f;
             stream.SerializeCompressedFloat(ref f, 0, 10, 0.01f);
             stream.Flush();
@@ -1892,24 +1923,144 @@ internal static partial class Program
             stream.SerializeString(ref tooLong, 256);
         }), "an oversized string write must assert in debug");
 
-        // wide string that does not fit its buffer size
-        Check(AssertFires(() =>
+        // a string that is not well-formed UTF-16: Encoding.UTF8 would write an
+        // unpaired surrogate as U+FFFD, which is not the caller's text, so it is a
+        // writer contract violation, asserted in debug — on the write stream, the
+        // batch (which delegates) and the measure, high and low halves alike
+        foreach (string unpaired in new[] { "a\uD83Db", "a\uDE00b", "\uD83D" })
         {
-            WriteStream stream = new WriteStream(new byte[512]);
-            string tooLong = new string('a', 8);
-            stream.SerializeWideString(ref tooLong, 8);
-        }), "an oversized wide string write must assert in debug");
+            Check(AssertFires(() =>
+            {
+                WriteStream stream = new WriteStream(new byte[512]);
+                string value = unpaired;
+                stream.SerializeString(ref value, 16);
+            }), "an ill-formed UTF-16 string write must assert in debug");
+            Check(AssertFires(() =>
+            {
+                string value = unpaired;
+                new MeasureStream().SerializeString(ref value, 16);
+            }), "an ill-formed UTF-16 string measure must assert in debug");
+        }
 
-        // wide string payload that is not well-formed UTF-16: an unpaired surrogate
-        // is a writer contract violation (STANDARD.md, adopted 2026-08-15), asserted
-        // in debug; conforming READERS refuse it in every build mode
-        // (test_wstring_validation pins the refusal)
+        // a string holding U+0000: every conforming reader refuses it as embedded_nul
         Check(AssertFires(() =>
         {
             WriteStream stream = new WriteStream(new byte[512]);
-            string unpaired = "a\uD83Db"; // high surrogate with no low half
-            stream.SerializeWideString(ref unpaired, 8);
-        }), "an ill-formed UTF-16 wide string write must assert in debug");
+            string nul = "a\0b";
+            stream.SerializeString(ref nul, 16);
+        }), "a string write holding U+0000 must assert in debug");
+
+        // float and double carry finite values only (STANDARD.md, format 2.0): NaN,
+        // any payload, and both infinities assert on write, measure and batch write
+        foreach (uint pattern in new[] { 0x7F800000u, 0xFF800000u, 0x7FC00000u, 0x7F800001u, 0xFFFFFFFFu })
+        {
+            float bad = BitConverter.UInt32BitsToSingle(pattern);
+            Check(AssertFires(() =>
+            {
+                WriteStream stream = new WriteStream(new byte[16]);
+                float v = bad;
+                stream.SerializeFloat(ref v);
+            }), $"a non-finite float write 0x{pattern:X8} must assert in debug");
+            Check(AssertFires(() =>
+            {
+                float v = bad;
+                new MeasureStream().SerializeFloat(ref v);
+            }), $"a non-finite float measure 0x{pattern:X8} must assert in debug");
+            Check(AssertFires(() =>
+            {
+                WriteStream stream = new WriteStream(new byte[16]);
+                WriteBatch batch = stream.BeginBatch();
+                float v = bad;
+                batch.SerializeFloat(ref v);
+                batch.End();
+            }), $"a non-finite float batch write 0x{pattern:X8} must assert in debug");
+        }
+        foreach (ulong pattern in new[] { 0x7FF0000000000000UL, 0xFFF0000000000000UL, 0x7FF8000000000000UL, 0x7FF0000000000001UL })
+        {
+            double bad = BitConverter.UInt64BitsToDouble(pattern);
+            Check(AssertFires(() =>
+            {
+                WriteStream stream = new WriteStream(new byte[16]);
+                double v = bad;
+                stream.SerializeDouble(ref v);
+            }), $"a non-finite double write 0x{pattern:X16} must assert in debug");
+            Check(AssertFires(() =>
+            {
+                double v = bad;
+                new MeasureStream().SerializeDouble(ref v);
+            }), $"a non-finite double measure 0x{pattern:X16} must assert in debug");
+            Check(AssertFires(() =>
+            {
+                WriteStream stream = new WriteStream(new byte[16]);
+                WriteBatch batch = stream.BeginBatch();
+                double v = bad;
+                batch.SerializeDouble(ref v);
+                batch.End();
+            }), $"a non-finite double batch write 0x{pattern:X16} must assert in debug");
+        }
+
+        // the largest finite float, double and the subnormals do NOT assert: the
+        // reversed witness of the finite check, which must test the exponent field
+        // and nothing wider
+        Check(!AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[64]);
+            float f = float.MaxValue;
+            stream.SerializeFloat(ref f);
+            f = -float.MaxValue;
+            stream.SerializeFloat(ref f);
+            f = BitConverter.UInt32BitsToSingle(0x807FFFFFu); // largest negative subnormal
+            stream.SerializeFloat(ref f);
+            double d = double.MaxValue;
+            stream.SerializeDouble(ref d);
+            d = BitConverter.UInt64BitsToDouble(0x800FFFFFFFFFFFFFUL);
+            stream.SerializeDouble(ref d);
+        }), "finite extremes must not assert");
+
+        // a compressed float declaration whose top integer decodes to +inf: STANDARD.md
+        // makes it non-conforming as a whole, so the writer and the measure assert
+        // even for a value that decodes finite. [3 * 2^103, FLT_MAX] at resolution
+        // 2^104, the corpus's own declaration
+        {
+            float min = BitConverter.UInt32BitsToSingle(0x73C00000u);  // 3 * 2^103
+            float max = float.MaxValue;
+            float res = BitConverter.UInt32BitsToSingle(0x73800000u);  // 2^104
+            Check(AssertFires(() =>
+            {
+                WriteStream stream = new WriteStream(new byte[16]);
+                float v = min;
+                stream.SerializeCompressedFloat(ref v, min, max, res);
+            }), "a declaration whose top decodes to +inf must assert on write in debug");
+            Check(AssertFires(() =>
+            {
+                float v = min;
+                new MeasureStream().SerializeCompressedFloat(ref v, min, max, res);
+            }), "a declaration whose top decodes to +inf must assert on measure in debug");
+            Check(AssertFires(() =>
+            {
+                WriteStream stream = new WriteStream(new byte[16]);
+                WriteBatch batch = stream.BeginBatch();
+                float v = min;
+                batch.SerializeCompressedFloat(ref v, min, max, res);
+                batch.End();
+            }), "a declaration whose top decodes to +inf must assert on batch write in debug");
+            // and the READ of the same declaration never asserts: a reader refuses the
+            // non-finite decode at runtime instead, in every build
+            Check(!AssertFires(() =>
+            {
+                ReadStream stream = new ReadStream(new byte[] { 0xFE, 0xFF, 0xFF });
+                float v = 1.0f;
+                stream.SerializeCompressedFloat(ref v, min, max, res);
+            }), "reading a non-conforming declaration must not assert");
+            // the reversed witness: one ulp lower at the top, [3 * 2^103, FLT_MAX - ulp],
+            // is the same shape and decodes finite, and does not assert
+            Check(!AssertFires(() =>
+            {
+                WriteStream stream = new WriteStream(new byte[16]);
+                float v = min;
+                stream.SerializeCompressedFloat(ref v, min, BitConverter.UInt32BitsToSingle(0x7F7FFFFEu), res);
+            }), "a declaration whose top decodes finite must not assert");
+        }
 
         // int relative with previous >= current
         Check(AssertFires(() =>
@@ -2135,7 +2286,7 @@ internal static partial class Program
         uint v = 0;
         Check(stream.SerializeBits(ref v, 3), "read failed");
         Check(!stream.SerializeAlign(), "expected the align to fail");
-        Check(stream.Error == SerializeError.Align, $"expected Align, got {stream.Error}");
+        Check(stream.Error == SerializeError.NonzeroPadding, $"expected NonzeroPadding, got {stream.Error}");
     }
 
     private static void TestMeasureStream()
@@ -2302,7 +2453,7 @@ internal static partial class Program
                 stream.SerializeBits(ref item, 8);
                 iterations++;
             }
-            Check(stream.Error == SerializeError.Overflow, $"expected Overflow, got {stream.Error}");
+            Check(stream.Error == SerializeError.PastEnd, $"expected PastEnd, got {stream.Error}");
             Check(iterations <= malicious.Length * 8,
                 $"loop ran {iterations} iterations, more than the bit count of the packet");
         }
@@ -2329,7 +2480,7 @@ internal static partial class Program
                 uint item = 0;
                 stream.SerializeBits(ref item, 32);
             }
-            Check(stream.Error == SerializeError.Overflow, $"expected Overflow, got {stream.Error}");
+            Check(stream.Error == SerializeError.PastEnd, $"expected PastEnd, got {stream.Error}");
         }
 
         // a malicious packet of zero bytes claims "not done" forever. an Until loop is
@@ -2346,7 +2497,7 @@ internal static partial class Program
                 stream.SerializeBits(ref item, 8);
                 iterations++;
             }
-            Check(stream.Error == SerializeError.Overflow, $"expected Overflow, got {stream.Error}");
+            Check(stream.Error == SerializeError.PastEnd, $"expected PastEnd, got {stream.Error}");
             Check(iterations <= malicious.Length * 8,
                 $"loop ran {iterations} iterations, more than the bit count of the packet");
         }
@@ -2424,7 +2575,7 @@ internal static partial class Program
                     iterations++;
                 }
             }
-            Check(stream.Error == SerializeError.Overflow, $"expected Overflow, got {stream.Error}");
+            Check(stream.Error == SerializeError.PastEnd, $"expected PastEnd, got {stream.Error}");
             Check(iterations == 0, $"the checked pattern must not loop on a failed count, ran {iterations}");
             Check(count == 5, "the failed read leaves the stale count in place — which is exactly why the unchecked pattern is wrong");
         }
@@ -2569,7 +2720,7 @@ internal static partial class Program
         ReadStream stream = new ReadStream(buffer, 2);
         uint tooWide = 0;
         Check(!stream.SerializeUInt32(ref tooWide), "expected the read past the end to fail");
-        Check(stream.Error == SerializeError.Overflow, $"expected Overflow, got {stream.Error}");
+        Check(stream.Error == SerializeError.PastEnd, $"expected PastEnd, got {stream.Error}");
         Check(stream.BitsProcessed == 0, "a refused read must consume nothing before the end check");
         return stream;
     }
@@ -2593,7 +2744,7 @@ internal static partial class Program
         string value = "unchanged";
         // the length field and the alignment are consumed, then the payload overflows
         Check(!stream.SerializeString(ref value, 256), "expected the oversized string to fail");
-        Check(stream.Error == SerializeError.Overflow, $"expected Overflow, got {stream.Error}");
+        Check(stream.Error == SerializeError.PastEnd, $"expected PastEnd, got {stream.Error}");
         Check(value == "unchanged", "a failed string read must leave the value unmodified");
         return stream;
     }
@@ -2630,7 +2781,7 @@ internal static partial class Program
         uint nibble = 0;
         Check(stream.SerializeBits(ref nibble, 4), "the first field must read");
         Check(!stream.SerializeAlign(), "expected the nonzero padding to fail the align");
-        Check(stream.Error == SerializeError.Align, $"expected Align, got {stream.Error}");
+        Check(stream.Error == SerializeError.NonzeroPadding, $"expected NonzeroPadding, got {stream.Error}");
         return stream;
     }
 
@@ -2648,7 +2799,7 @@ internal static partial class Program
         ReadStream stream = new ReadStream(buffer, 4);
         string value = "unchanged";
         Check(!stream.SerializeString(ref value, 256), "expected the malformed string to fail");
-        Check(stream.Error == SerializeError.InvalidString, $"expected InvalidString, got {stream.Error}");
+        Check(stream.Error == SerializeError.InvalidUtf8, $"expected InvalidUtf8, got {stream.Error}");
         Check(value == "unchanged", "a failed read must leave the value unmodified");
         return stream;
     }
@@ -2735,8 +2886,8 @@ internal static partial class Program
 
         // reset clears a latched error
         readStream.Reset(buffer, 0);
-        Check(!readStream.SerializeBits(ref value, 1), "expected Overflow on empty buffer");
-        Check(readStream.Error == SerializeError.Overflow, "expected Overflow to latch");
+        Check(!readStream.SerializeBits(ref value, 1), "expected PastEnd on empty buffer");
+        Check(readStream.Error == SerializeError.PastEnd, "expected PastEnd to latch");
         readStream.Reset(buffer, (int)writeStream.BytesProcessed);
         Check(readStream.Error == SerializeError.None, "expected Reset to clear the error");
         Check(readStream.SerializeBits(ref value, 16) && value == 0x1234,
