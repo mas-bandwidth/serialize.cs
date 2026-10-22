@@ -30,10 +30,11 @@
     `measure_at_least` runs the same steps through the measure stream, and the check is
     an inequality because STANDARD.md makes a measure a bound and not the packet size.
 
-    Refused vectors must be refused, must leave the caller's SCALAR destination exactly
-    as the caller left it, and must leave the stream TERMINAL. STANDARD.md leaves a
-    caller owned BUFFER unspecified after a refusal — bytes, string and wstring — so
-    those destinations are not checked. Terminality is checked by BEHAVIOR rather than by
+    Refused vectors must be refused FOR THE REASON THE VECTOR STATES (the stream's first
+    latched error, spelled by SerializeUtil.RefusalName), must leave the caller's SCALAR
+    destination exactly as the caller left it, and must leave the stream TERMINAL.
+    STANDARD.md leaves a caller owned BUFFER unspecified after a refusal — bytes and
+    string — so those destinations are not checked. Terminality is checked by BEHAVIOR rather than by
     an accessor, so the same check ports to every implementation in the family: every
     later step of a sequence must also refuse however many readable bits remain, and a
     further read the vector does not name must fail, consume no bits and write nothing.
@@ -42,14 +43,29 @@
     loads take a different path depending on whether slack is present, so every stream is
     presented twice: once with slack bytes set to a non-zero pattern, so a decode that
     depends on memory past the end cannot pass by reading zeros, and once with the buffer
-    sized exactly to the vector.
+    sized exactly to the vector. An end refuses on the stream's stated length, never on
+    the slack.
+
+    THE SECOND READ PATH. ReadBatch is a reader of its own: it carries inline copies of
+    the hot reads (bits, the ranged ints, the floats, align) against register-resident
+    state. So every vector is presented a third time, through one ReadBatch opened over
+    the whole stream, and must reach the same verdict, the same reason, the same values
+    and the same bit count. A rule missing from the batch is red here.
+
+    A vector carrying `writer_input` hands the writer that float32, refused vectors
+    included, and requires the record's bytes exactly.
+
+    The negative controls run the same machinery with one rule deleted at a time (a
+    build with SerializeConformanceControls=true) and require the failing vectors to be
+    exactly conformance-controls/<rule>.expected, once through the streams and once
+    through the batch; and the unknown-operation control, run in every build, requires a
+    corpus file whose operation has no runner to go red.
 */
 
 using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
-using System.Reflection;
 using System.Text;
 
 namespace Serialize.Tests;
@@ -75,6 +91,20 @@ internal static partial class Program
     private static int s_conformanceChecked;
     private static int s_conformanceWriterChecks;
     private static int s_conformanceMeasureChecks;
+    private static int s_conformanceBatchChecks;
+
+    // the controls run the corpus quietly and read back which vectors failed
+    private static bool s_conformanceQuiet;
+    private static readonly HashSet<string> s_conformanceFailedNames = new HashSet<string>();
+
+    // which readers the corpus is presented to: the stream (twice, with and without
+    // slack), the batch, or both
+    private static bool s_conformanceStreams = true;
+    private static bool s_conformanceBatch = true;
+
+    // the bool destination's sentinel, true in one presentation and false in the
+    // other, so a refused bool read that wrote either value is seen
+    private static bool s_conformanceBoolSentinel = true;
 
     private enum ConformanceExpect
     {
@@ -98,8 +128,8 @@ internal static partial class Program
         CompressedFloat,
         Bytes,
         String,
-        WString,
         Fixed,
+        End,
         Object,     // opens a nested object over the steps that follow
     }
 
@@ -134,6 +164,10 @@ internal static partial class Program
         public byte[] Bytes = Array.Empty<byte>();
         public ConformanceExpect Expect = ConformanceExpect.Value;
         public string ExpectedValue = "";
+        public string ExpectedReason = "";
+        public string Malformed = "";   // why the record cannot be run as written
+        public bool HasWriterInput;
+        public uint WriterInput;
         public long Consumed;
         public bool HasConsumed;
         public long MeasureAtLeast;
@@ -143,34 +177,189 @@ internal static partial class Program
 
     private static void TestConformanceVectors()
     {
-        s_conformanceFailures = 0;
-        s_conformanceChecked = 0;
-        s_conformanceWriterChecks = 0;
-        s_conformanceMeasureChecks = 0;
-
         List<ConformanceVector> vectors = LoadConformanceVectors();
         Check(vectors.Count > 0,
             "no conformance vectors were embedded: the corpus is the conformance instrument, and an empty run is a failure");
 
-        foreach (ConformanceVector vector in vectors)
-        {
-            RunConformanceVector(vector);
-        }
+        RunConformanceCorpus(vectors);
 
         Check(s_conformanceFailures == 0,
             $"{s_conformanceFailures} of {s_conformanceChecked} conformance vectors failed: this implementation and the shared corpus disagree, and the implementation is the bug");
 
         if (Verbose.Enabled)
         {
-            Console.WriteLine($"    {s_conformanceChecked} conformance vectors passed: {s_conformanceWriterChecks} writer checks, {s_conformanceMeasureChecks} measure checks");
+            Console.WriteLine($"    {s_conformanceChecked} conformance vectors passed: {s_conformanceBatchChecks} batch reads, {s_conformanceWriterChecks} writer checks, {s_conformanceMeasureChecks} measure checks");
         }
     }
 
+    // Runs every vector through the presentations selected, counting failures and
+    // recording which vectors failed, which is what the negative controls read back.
+    private static void RunConformanceCorpus(List<ConformanceVector> vectors)
+    {
+        s_conformanceFailures = 0;
+        s_conformanceChecked = 0;
+        s_conformanceWriterChecks = 0;
+        s_conformanceMeasureChecks = 0;
+        s_conformanceBatchChecks = 0;
+        s_conformanceFailedNames.Clear();
+
+        // STANDARD.md, "The vector format": a name is a stable identifier, unique
+        // across the corpus, which is what lets a control's .expected list name its
+        // vectors and nothing else
+        HashSet<string> names = new HashSet<string>();
+        foreach (ConformanceVector vector in vectors)
+        {
+            if (!names.Add(vector.Name))
+            {
+                ConformanceFail(vector, "the name is not unique across the corpus");
+            }
+        }
+
+        foreach (ConformanceVector vector in vectors)
+        {
+            RunConformanceVector(vector);
+        }
+    }
+
+    // which reader a failure came from, for the diagnosis
+    private static string s_conformancePresentation = "";
+
     private static void ConformanceFail(ConformanceVector vector, string detail)
     {
-        Console.Error.WriteLine($"    FAIL {vector.Name}: {detail} [{vector.Source}]");
+        if (!s_conformanceQuiet)
+        {
+            string where = s_conformancePresentation.Length > 0 ? $" ({s_conformancePresentation})" : "";
+            Console.Error.WriteLine($"    FAIL {vector.Name}{where}: {detail} [{vector.Source}]");
+        }
         s_conformanceFailures++;
+        s_conformanceFailedNames.Add(vector.Name);
     }
+
+    // ---------------------------------------------------------------------------------
+    // the negative controls
+
+    /*
+        THE UNKNOWN-OPERATION CONTROL (STANDARD.md, "A runner discovers the directory and
+        runs every vector in it"): a corpus file whose operation has no runner must fail
+        the run, never be skipped. It runs in every build against the vendored control
+        file, and against the records this port must also refuse to drive: wstring, the
+        operation format 2.0 removed, and refused records whose reason is missing or is
+        not on the standard's list.
+    */
+    private static void TestConformanceUnknownOperation()
+    {
+        string[] records =
+        {
+            ReadConformanceResource(ControlResourcePrefix + "unknown-operation.txt"),
+            "operation wstring\nname control-wstring-is-gone-in-2-0\nparam buffer_size = 8\nbytes 00\nexpect value = \nconsumed 3\n",
+            "operation bits\nname control-a-refusal-without-a-reason\nparam bits = 8\nbytes\nexpect refused\n",
+            "operation bits\nname control-a-refusal-with-an-unknown-reason\nparam bits = 8\nbytes\nexpect refused overflow\n",
+            "operation compressed_float\nname control-writer-input-is-not-a-float32\nparam min = 0\nparam max = 10\nparam res = 0.01\nwriter_input value = 1\nbytes 01 00\nexpect bits = 0x3C23D70B\nconsumed 10\n",
+        };
+        foreach (string record in records)
+        {
+            List<ConformanceVector> vectors = new List<ConformanceVector>();
+            ParseConformanceFile("control", record, vectors);
+            Check(vectors.Count == 1, "a control record did not parse as one vector");
+
+            s_conformanceQuiet = true;
+            RunConformanceCorpus(vectors);
+            s_conformanceQuiet = false;
+
+            Check(s_conformanceFailures == 1,
+                $"control {vectors[0].Name}: the runner went green on a record it cannot drive; a gate that skips is not a gate");
+        }
+
+        // the reversed witness of the reason check: the same refused vector, stated with
+        // the reason the reader gives and with another, goes green and red respectively
+        foreach ((string reason, int failures) in new[] { ("past_end", 0), ("value_out_of_range", 1) })
+        {
+            List<ConformanceVector> vectors = new List<ConformanceVector>();
+            ParseConformanceFile("control",
+                $"operation bits\nname control-reason-{reason}\nparam bits = 8\nbytes\nexpect refused {reason}\n", vectors);
+            s_conformanceQuiet = true;
+            RunConformanceCorpus(vectors);
+            s_conformanceQuiet = false;
+            Check(s_conformanceFailures == failures,
+                $"a past-the-end read stated as {reason}: expected {failures} failures, got {s_conformanceFailures}");
+        }
+    }
+
+#if SERIALIZE_CONFORMANCE_CONTROLS
+    /*
+        THE RULE CONTROLS (STANDARD.md, "A gate nobody has seen go red is a claim, not a
+        measurement"). For each conformance-controls/<rule>.expected the reader runs with
+        that one rule deleted, against the real corpus, and must fail exactly the vectors
+        the file names: a sabotage that breaks more than its rule, or less, is a control
+        that has stopped measuring. Each runs twice, once through the stream and once
+        through the batch, so a rule the batch carries inline is proven load-bearing on
+        both read paths.
+    */
+    private static void TestConformanceControls()
+    {
+        List<ConformanceVector> vectors = LoadConformanceVectors();
+        int controls = 0;
+        foreach (string resource in typeof(Program).Assembly.GetManifestResourceNames())
+        {
+            if (!resource.StartsWith(ControlResourcePrefix, StringComparison.Ordinal)
+                || !resource.EndsWith(".expected", StringComparison.Ordinal))
+            {
+                continue;
+            }
+            string rule = resource.Substring(ControlResourcePrefix.Length,
+                resource.Length - ControlResourcePrefix.Length - ".expected".Length);
+            HashSet<string> expected = new HashSet<string>();
+            foreach (string rawLine in ReadConformanceResource(resource).Split('\n'))
+            {
+                string line = rawLine.Trim();
+                if (line.Length > 0 && line[0] != '#')
+                {
+                    expected.Add(line);
+                }
+            }
+            Check(expected.Count > 0, $"control {rule}: its .expected names no vectors");
+            controls++;
+
+            foreach (bool batch in new[] { false, true })
+            {
+                SerializeConformanceControls.Deleted = rule;
+                s_conformanceStreams = !batch;
+                s_conformanceBatch = batch;
+                s_conformanceQuiet = true;
+                RunConformanceCorpus(vectors);
+                s_conformanceQuiet = false;
+                s_conformanceStreams = true;
+                s_conformanceBatch = true;
+                SerializeConformanceControls.Deleted = "";
+
+                List<string> unexpected = new List<string>();
+                foreach (string name in s_conformanceFailedNames)
+                {
+                    if (!expected.Contains(name))
+                    {
+                        unexpected.Add(name);
+                    }
+                }
+                List<string> missed = new List<string>();
+                foreach (string name in expected)
+                {
+                    if (!s_conformanceFailedNames.Contains(name))
+                    {
+                        missed.Add(name);
+                    }
+                }
+                string reader = batch ? "batch" : "stream";
+                Check(unexpected.Count == 0 && missed.Count == 0,
+                    $"control {rule} ({reader}): failed [{string.Join(", ", unexpected)}] beyond its rule and missed [{string.Join(", ", missed)}]");
+                if (Verbose.Enabled)
+                {
+                    Console.WriteLine($"    control {rule} ({reader}): failed exactly its {expected.Count} vectors");
+                }
+            }
+        }
+        Check(controls > 0, "no conformance controls were embedded");
+    }
+#endif
 
     // ---------------------------------------------------------------------------------
     // running one vector
@@ -178,6 +367,16 @@ internal static partial class Program
     private static void RunConformanceVector(ConformanceVector vector)
     {
         s_conformanceChecked++;
+        s_conformancePresentation = "";
+
+        // a record the runner cannot run as written is a failure, never a skip: a
+        // refusal without its reason, or with a reason the standard does not list,
+        // states nothing a reader could be held to
+        if (vector.Malformed.Length > 0)
+        {
+            ConformanceFail(vector, vector.Malformed);
+            return;
+        }
 
         foreach (KeyValuePair<string, string> param in vector.Params)
         {
@@ -190,6 +389,11 @@ internal static partial class Program
         if (vector.StepText.Count > 0 && vector.Operation != "sequence")
         {
             ConformanceFail(vector, "steps are only meaningful on a sequence");
+            return;
+        }
+        if (vector.HasWriterInput && vector.Operation != "compressed_float")
+        {
+            ConformanceFail(vector, "writer_input is only meaningful on a compressed_float record");
             return;
         }
 
@@ -208,7 +412,16 @@ internal static partial class Program
         // the writer and the measure are handed the values the reader decoded, so running
         // them after a reader failure reports a second failure about a value that was
         // never decoded. One vector, one diagnosis.
-        if (vector.Expect != ConformanceExpect.Refused && s_conformanceFailures == failuresBefore)
+        if (s_conformanceFailures != failuresBefore)
+        {
+            return;
+        }
+        s_conformancePresentation = "writer";
+        if (vector.HasWriterInput)
+        {
+            RunConformanceWriterInput(vector, steps);
+        }
+        if (vector.Expect != ConformanceExpect.Refused)
         {
             if (vector.WriterCanonical)
             {
@@ -216,51 +429,174 @@ internal static partial class Program
             }
             if (vector.HasMeasure)
             {
+                s_conformancePresentation = "measure";
                 RunConformanceMeasure(vector, steps);
             }
         }
     }
 
+    private static byte[] ConformanceBuffer(ConformanceVector vector, int slack)
+    {
+        byte[] buffer = new byte[vector.Bytes.Length + slack];
+        for (int i = 0; i < buffer.Length; i++)
+        {
+            buffer[i] = ConformanceSlackFill;
+        }
+        Array.Copy(vector.Bytes, buffer, vector.Bytes.Length);
+        return buffer;
+    }
+
     // The reader leg. It runs once per buffer presentation: with non-zero slack past the
-    // data, and with a buffer sized exactly to the vector. The decoded values the writer
-    // and measure legs consume are the ones the last presentation left behind, and the
-    // two presentations must agree or one of them has already been reported.
+    // data, and with a buffer sized exactly to the vector, through the stream; then once
+    // more through a ReadBatch. The decoded values the writer and measure legs consume
+    // are the ones the last presentation left behind, and the presentations must agree
+    // or one of them has already been reported.
     private static void RunConformanceReader(ConformanceVector vector, List<Step> steps)
     {
-        int slack = ConformanceSlack;
-        while (true)
-        {
-            byte[] buffer = new byte[vector.Bytes.Length + slack];
-            for (int i = 0; i < buffer.Length; i++)
-            {
-                buffer[i] = ConformanceSlackFill;
-            }
-            Array.Copy(vector.Bytes, buffer, vector.Bytes.Length);
+        int failuresBefore = s_conformanceFailures;
 
-            int failuresBefore = s_conformanceFailures;
-            ReadStream stream = new ReadStream(buffer, vector.Bytes.Length);
-            ReadConformanceVector(vector, steps, stream);
+        if (s_conformanceStreams)
+        {
+            s_conformancePresentation = "stream, slack";
+            ReadConformanceVector(vector, steps, new ReadStream(ConformanceBuffer(vector, ConformanceSlack), vector.Bytes.Length));
 
             // one vector, one diagnosis: a presentation that already reported does not
             // report the same defect again from the other side of the buffer contract
-            if (slack == 0 || s_conformanceFailures != failuresBefore)
+            if (s_conformanceFailures != failuresBefore)
             {
                 return;
             }
-            slack = 0;
+            s_conformancePresentation = "stream, exact buffer";
+            s_conformanceBoolSentinel = false;
+            ReadConformanceVector(vector, steps, new ReadStream(ConformanceBuffer(vector, 0), vector.Bytes.Length));
+            s_conformanceBoolSentinel = true;
+            if (s_conformanceFailures != failuresBefore)
+            {
+                return;
+            }
+        }
+
+        if (s_conformanceBatch)
+        {
+            // the batch carries its own copy of the window load, slack and slack free
+            // paths both, so it is presented both ways too
+            s_conformanceBatchChecks++;
+            s_conformancePresentation = "batch, slack";
+            ReadConformanceVectorBatch(vector, steps, new ReadStream(ConformanceBuffer(vector, ConformanceSlack), vector.Bytes.Length));
+            if (s_conformanceFailures != failuresBefore)
+            {
+                return;
+            }
+            s_conformancePresentation = "batch, exact buffer";
+            s_conformanceBoolSentinel = false;
+            ReadConformanceVectorBatch(vector, steps, new ReadStream(ConformanceBuffer(vector, 0), vector.Bytes.Length));
+            s_conformanceBoolSentinel = true;
         }
     }
 
-    private static void ReadConformanceVector(ConformanceVector vector, List<Step> steps, ReadStream stream)
+    private static void ResetStepDestinations(List<Step> steps)
     {
         foreach (Step step in steps)
         {
             step.Bits = ConformanceSentinelBits;
             step.Number = ConformanceSentinelNumber;
-            step.Boolean = true;        // a refused bool read must leave this alone
+            step.Boolean = s_conformanceBoolSentinel;   // a refused bool read must leave this alone
             step.Text = "";
             step.Buffer = new byte[Math.Max(step.Width, 0)];
         }
+    }
+
+    // The checks every refused vector carries at the point of refusal: the stream latched
+    // an error, the error is the reason the vector states, and the refused scalar read
+    // left its destination alone.
+    private static bool CheckConformanceRefusal(ConformanceVector vector, SerializeError error, StepRun run)
+    {
+        if (error == SerializeError.None)
+        {
+            ConformanceFail(vector, "the read was refused without latching an error");
+            return false;
+        }
+
+        // STANDARD.md, "Refusal reasons": a reader must refuse for the reason the vector
+        // states, and a refusal for any other reason is a disagreement about the format
+        // however red the stream ends up. The latched error is the FIRST refusal's.
+        string reason = SerializeUtil.RefusalName(error);
+        if (reason != vector.ExpectedReason)
+        {
+            ConformanceFail(vector, $"refused as {reason}, the corpus states {vector.ExpectedReason}");
+            return false;
+        }
+
+        // STANDARD.md, "A refused read must leave its destination unwritten". The rule
+        // reaches the scalars only: a read into a caller owned buffer — bytes and
+        // string — leaves that buffer's contents unspecified after a refusal, and the
+        // document says so in as many words.
+        Step? failed = run.FailedStep;
+        if (failed != null)
+        {
+            Int128Value sentinel = failed.Kind == StepKind.Fixed ? FixedSentinel(failed) : ConformanceSentinelNumber;
+            if ((StepValueIsABitPattern(failed.Kind) && failed.Bits != ConformanceSentinelBits) ||
+                (StepValueIsANumber(failed.Kind) && failed.Number != sentinel) ||
+                (failed.Kind == StepKind.Bool && failed.Boolean != s_conformanceBoolSentinel))
+            {
+                ConformanceFail(vector, "the refused read wrote to the destination");
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // The scalar sentinel as a fixed point step's storage width carries it: the runner
+    // narrows on the way in, so an untouched destination reads back narrowed.
+    private static Int128Value FixedSentinel(Step step)
+    {
+        switch (step.IntegerBits + step.FractionBits)
+        {
+            case 16: return (short)(long)ConformanceSentinelNumber;
+            case 32: return (int)(long)ConformanceSentinelNumber;
+            default: return ConformanceSentinelNumber;
+        }
+    }
+
+    // The checks every accepted vector carries: the stated values, then the bits consumed.
+    private static void CheckConformanceAccepted(ConformanceVector vector, List<Step> steps, long bitsProcessed)
+    {
+        string[] entries = SplitExpect(vector.ExpectedValue);
+
+        // one expect entry per step, objects, aligns and ends included, which state `-`.
+        // A leading preceding_bits step carries no expectation of its own: it exists to
+        // place the stream, and the record states only the operation under test.
+        int offset = steps.Count - entries.Length;
+        int leading = vector.Operation != "sequence" && steps.Count == 2 ? 1 : 0;
+        if (offset != leading)
+        {
+            ConformanceFail(vector, $"the expect list states {entries.Length} values for {steps.Count - leading} steps");
+            return;
+        }
+
+        for (int i = 0; i < entries.Length; i++)
+        {
+            if (entries[i] == "-")
+            {
+                continue;
+            }
+            if (!ExpectationMatches(steps[offset + i], entries[i]))
+            {
+                ConformanceFail(vector,
+                    $"step {offset + i + 1} decoded {RenderStepValue(steps[offset + i])}, the corpus states {entries[i]}");
+                return;
+            }
+        }
+
+        if (vector.HasConsumed && bitsProcessed != vector.Consumed)
+        {
+            ConformanceFail(vector, $"consumed {bitsProcessed} bits, the corpus states {vector.Consumed}");
+        }
+    }
+
+    private static void ReadConformanceVector(ConformanceVector vector, List<Step> steps, ReadStream stream)
+    {
+        ResetStepDestinations(steps);
 
         StepRun run = new StepRun();
         bool accepted = RunSteps(stream, steps, 0, steps.Count, run);
@@ -269,29 +605,12 @@ internal static partial class Program
         {
             if (accepted)
             {
-                ConformanceFail(vector, "the read succeeded, the corpus requires refusal");
+                ConformanceFail(vector, $"the read succeeded, the corpus requires refusal as {vector.ExpectedReason}");
                 return;
             }
-            if (stream.Error == SerializeError.None)
+            if (!CheckConformanceRefusal(vector, stream.Error, run))
             {
-                ConformanceFail(vector, "the read was refused without latching an error");
                 return;
-            }
-
-            // STANDARD.md, "A refused primitive read must leave its destination
-            // unwritten". The rule reaches the scalars only: a read into a caller owned
-            // buffer — bytes, string and wstring — leaves that buffer's contents
-            // unspecified after a refusal, and the document says so in as many words.
-            Step? failed = run.FailedStep;
-            if (failed != null)
-            {
-                if ((StepValueIsABitPattern(failed.Kind) && failed.Bits != ConformanceSentinelBits) ||
-                    (StepValueIsANumber(failed.Kind) && failed.Number != ConformanceSentinelNumber) ||
-                    (failed.Kind == StepKind.Bool && !failed.Boolean))
-                {
-                    ConformanceFail(vector, "the refused read wrote to the destination");
-                    return;
-                }
             }
 
             // Failure is terminal, and a sequence states its own successors: every step
@@ -314,46 +633,98 @@ internal static partial class Program
             // vector carries the terminality check and not only the sequences that spell a
             // successor
             FailUnlessStreamIsTerminal(vector, stream);
+
+            // the echoes keep the first reason
+            if (SerializeUtil.RefusalName(stream.Error) != vector.ExpectedReason)
+            {
+                ConformanceFail(vector, $"a later refusal replaced the first reason with {SerializeUtil.RefusalName(stream.Error)}");
+            }
             return;
         }
 
         if (!accepted)
         {
             ConformanceFail(vector,
-                $"the read was refused with {stream.Error}, the corpus requires it to be accepted");
+                $"the read was refused as {SerializeUtil.RefusalName(stream.Error)}, the corpus requires it to be accepted");
             return;
         }
 
-        string[] entries = SplitExpect(vector.ExpectedValue);
+        CheckConformanceAccepted(vector, steps, stream.BitsProcessed);
+    }
 
-        // one expect entry per step, objects and aligns included, which state `-`. A
-        // leading preceding_bits step carries no expectation of its own: it exists to
-        // place the stream, and the record states only the operation under test.
-        int offset = steps.Count - entries.Length;
-        if (offset < 0)
-        {
-            ConformanceFail(vector, "the expect list states more values than the vector has steps");
-            return;
-        }
+    // The same leg through the second read path: one ReadBatch over the whole stream,
+    // held open across every step, so the batch's register-resident cursor carries from
+    // one read to the next exactly as it does in a hot serialize function. Ending the
+    // batch stores its cursor and error back, and the stream must then agree with it.
+    private static void ReadConformanceVectorBatch(ConformanceVector vector, List<Step> steps, ReadStream stream)
+    {
+        ResetStepDestinations(steps);
 
-        for (int i = 0; i < entries.Length; i++)
+        StepRun run = new StepRun();
+        ReadBatch batch = stream.BeginBatch();
+        bool accepted = RunStepsBatch(ref batch, steps, 0, steps.Count, run);
+
+        if (vector.Expect == ConformanceExpect.Refused)
         {
-            if (entries[i] == "-")
+            if (accepted)
             {
-                continue;
-            }
-            if (!ExpectationMatches(steps[offset + i], entries[i]))
-            {
-                ConformanceFail(vector,
-                    $"step {offset + i + 1} decoded {RenderStepValue(steps[offset + i])}, the corpus states {entries[i]}");
+                batch.End();
+                ConformanceFail(vector, $"the read succeeded, the corpus requires refusal as {vector.ExpectedReason}");
                 return;
             }
+            if (!CheckConformanceRefusal(vector, batch.Error, run))
+            {
+                batch.End();
+                return;
+            }
+            for (int i = run.StoppedAt + StepSpan(steps, run.StoppedAt); i < steps.Count; i += StepSpan(steps, i))
+            {
+                if (RunStepsBatch(ref batch, steps, i, StepSpan(steps, i), new StepRun()))
+                {
+                    batch.End();
+                    ConformanceFail(vector,
+                        $"step {i + 1} succeeded after step {run.StoppedAt + 1} was refused; failure must be terminal");
+                    return;
+                }
+            }
+
+            uint after = 0xFFFFFFFF;
+            long bitsBefore = batch.BitsProcessed;
+            bool further = batch.SerializeBits(ref after, 8);
+            long bitsAfter = batch.BitsProcessed;
+            batch.End();
+            if (further || after != 0xFFFFFFFF || bitsAfter != bitsBefore)
+            {
+                ConformanceFail(vector, "a read after the refusal succeeded, wrote or consumed bits: failure is not terminal");
+                return;
+            }
+            if (stream.Error != batch.Error || stream.BitsProcessed != bitsAfter)
+            {
+                ConformanceFail(vector, "ending the batch did not store its error and cursor back to the stream");
+                return;
+            }
+            if (SerializeUtil.RefusalName(stream.Error) != vector.ExpectedReason)
+            {
+                ConformanceFail(vector, $"a later refusal replaced the first reason with {SerializeUtil.RefusalName(stream.Error)}");
+            }
+            return;
         }
 
-        if (vector.HasConsumed && stream.BitsProcessed != vector.Consumed)
+        long consumed = batch.BitsProcessed;
+        batch.End();
+        if (!accepted)
         {
-            ConformanceFail(vector, $"consumed {stream.BitsProcessed} bits, the corpus states {vector.Consumed}");
+            ConformanceFail(vector,
+                $"the read was refused as {SerializeUtil.RefusalName(stream.Error)}, the corpus requires it to be accepted");
+            return;
         }
+        if (stream.BitsProcessed != consumed || !stream.Ok)
+        {
+            ConformanceFail(vector, "ending the batch did not store its cursor back to the stream");
+            return;
+        }
+
+        CheckConformanceAccepted(vector, steps, stream.BitsProcessed);
     }
 
     // Failure is terminal (STANDARD.md, Reader Obligations), and a refused vector is
@@ -381,6 +752,49 @@ internal static partial class Program
     }
 
     /*
+        The writer input leg. A record carrying `writer_input bits = 0x...` pins the bytes
+        a writer emits when handed that float32, which is how the quantization arithmetic
+        is pinned for values that do not decode back to themselves. It runs on refused
+        records too.
+    */
+    private static void RunConformanceWriterInput(ConformanceVector vector, List<Step> steps)
+    {
+        s_conformanceWriterChecks++;
+
+        byte[] scratch = new byte[ConformanceScratchBytes];
+        WriteStream stream = new WriteStream(scratch);
+        Step step = steps[steps.Count - 1];
+        step.Bits = vector.WriterInput;
+        if (!RunSteps(stream, steps, 0, steps.Count, new StepRun()))
+        {
+            ConformanceFail(vector, "the writer refused its writer_input");
+            return;
+        }
+        stream.Flush();
+        CheckConformanceWriterBytes(vector, stream, "writer_input");
+    }
+
+    private static void CheckConformanceWriterBytes(ConformanceVector vector, WriteStream stream, string what)
+    {
+        long written = stream.BytesProcessed;
+        if (written != vector.Bytes.Length)
+        {
+            ConformanceFail(vector, $"the {what} writer emitted {written} bytes, the corpus states {vector.Bytes.Length}");
+            return;
+        }
+        ReadOnlySpan<byte> emitted = stream.Data;
+        for (int i = 0; i < written; i++)
+        {
+            if (emitted[i] != vector.Bytes[i])
+            {
+                ConformanceFail(vector,
+                    $"the {what} writer emitted {BytesToHex(emitted)}, the corpus states {BytesToHex(vector.Bytes)}");
+                return;
+            }
+        }
+    }
+
+    /*
         The writer leg. A vector marked `writer = canonical` states the bytes a conforming
         writer emits for its value, so the runner writes the decoded steps back and
         compares. The comparison covers the whole stream, which is what pins the trailing
@@ -404,23 +818,7 @@ internal static partial class Program
             return;
         }
         stream.Flush();
-
-        long written = stream.BytesProcessed;
-        if (written != vector.Bytes.Length)
-        {
-            ConformanceFail(vector, $"the writer emitted {written} bytes, the corpus states {vector.Bytes.Length}");
-            return;
-        }
-        ReadOnlySpan<byte> emitted = stream.Data;
-        for (int i = 0; i < written; i++)
-        {
-            if (emitted[i] != vector.Bytes[i])
-            {
-                ConformanceFail(vector,
-                    $"the writer emitted {BytesToHex(emitted)}, the corpus states {BytesToHex(vector.Bytes)}");
-                return;
-            }
-        }
+        CheckConformanceWriterBytes(vector, stream, "canonical");
     }
 
     /*
@@ -612,16 +1010,186 @@ internal static partial class Program
             case StepKind.String:
                 return stream.SerializeString(ref step.Text, step.Width);
 
-            case StepKind.WString:
-                return stream.SerializeWideString(ref step.Text, step.Width);
-
             case StepKind.Fixed:
                 return RunFixedStep(stream, step);
+
+            case StepKind.End:
+                return stream.SerializeEnd();
 
             default:
                 // nesting is driven by RunSteps, which owns the step range an object
                 // wraps; a bare object step reaching here is a runner bug
                 return false;
+        }
+    }
+
+    // The step machine again, over a ReadBatch: the batch is a ref struct, so it cannot
+    // stand behind IBitStream, and every operation is called on it directly. A nested
+    // object runs through the batch's SerializeObject, whose function is handed the
+    // underlying stream, exactly as a serialize function nested in a batch would be.
+    private static bool RunStepsBatch(ref ReadBatch batch, List<Step> steps, int start, int count, StepRun run)
+    {
+        for (int i = start; i < start + count; i += StepSpan(steps, i))
+        {
+            if (steps[i].Kind == StepKind.Object)
+            {
+                NestedObject nested = new NestedObject
+                {
+                    Steps = steps,
+                    Start = i + 1,
+                    Count = steps[i].Width,
+                    Run = run,
+                };
+                if (!batch.SerializeObject(nested))
+                {
+                    run.StoppedAt = i;
+                    return false;
+                }
+                continue;
+            }
+            if (!RunStepBatch(ref batch, steps[i]))
+            {
+                run.FailedStep = steps[i];
+                run.StoppedAt = i;
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static bool RunStepBatch(ref ReadBatch batch, Step step)
+    {
+        switch (step.Kind)
+        {
+            case StepKind.Bits:
+            {
+                ulong value = (ulong)step.Bits;
+                bool ok = batch.SerializeBits64(ref value, step.Width);
+                step.Bits = value;
+                return ok;
+            }
+
+            case StepKind.Bool:
+                return batch.SerializeBool(ref step.Boolean);
+
+            case StepKind.UInt128:
+            {
+                UInt128Value value = step.Bits;
+                bool ok = batch.SerializeUInt128(ref value);
+                step.Bits = value;
+                return ok;
+            }
+
+            case StepKind.Align:
+                return batch.SerializeAlign();
+
+            case StepKind.Int:
+            {
+                int value = (int)step.Number;
+                bool ok = batch.SerializeInt(ref value, (int)step.Min, (int)step.Max);
+                step.Number = value;
+                return ok;
+            }
+
+            case StepKind.Int64:
+            {
+                long value = (long)step.Number;
+                bool ok = batch.SerializeInt64(ref value, (long)step.Min, (long)step.Max);
+                step.Number = value;
+                return ok;
+            }
+
+            case StepKind.Int128:
+            {
+                Int128Value value = step.Number;
+                bool ok = batch.SerializeInt128(ref value, step.Min, step.Max);
+                step.Number = value;
+                return ok;
+            }
+
+            case StepKind.IntRelative:
+            {
+                int value = (int)step.Number;
+                bool ok = batch.SerializeIntRelative(step.Previous, ref value);
+                step.Number = value;
+                return ok;
+            }
+
+            case StepKind.Float:
+            {
+                float value = BitConverter.UInt32BitsToSingle((uint)step.Bits);
+                bool ok = batch.SerializeFloat(ref value);
+                step.Bits = BitConverter.SingleToUInt32Bits(value);
+                return ok;
+            }
+
+            case StepKind.Double:
+            {
+                double value = BitConverter.UInt64BitsToDouble((ulong)step.Bits);
+                bool ok = batch.SerializeDouble(ref value);
+                step.Bits = BitConverter.DoubleToUInt64Bits(value);
+                return ok;
+            }
+
+            case StepKind.CompressedFloat:
+            {
+                float value = BitConverter.UInt32BitsToSingle((uint)step.Bits);
+                bool ok = batch.SerializeCompressedFloat(ref value, step.FloatMin, step.FloatMax, step.FloatResolution);
+                step.Bits = BitConverter.SingleToUInt32Bits(value);
+                return ok;
+            }
+
+            case StepKind.Bytes:
+                return batch.SerializeBytes(step.Buffer);
+
+            case StepKind.String:
+                return batch.SerializeString(ref step.Text, step.Width);
+
+            case StepKind.Fixed:
+                return RunFixedStepBatch(ref batch, step);
+
+            case StepKind.End:
+                return batch.SerializeEnd();
+
+            default:
+                return false;
+        }
+    }
+
+    private static bool RunFixedStepBatch(ref ReadBatch batch, Step step)
+    {
+        long min = (long)step.Min;
+        long max = (long)step.Max;
+        switch (step.IntegerBits + step.FractionBits)
+        {
+            case 16:
+            {
+                short value = (short)step.Number;
+                bool ok = batch.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max);
+                step.Number = value;
+                return ok;
+            }
+            case 32:
+            {
+                int value = (int)step.Number;
+                bool ok = batch.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max);
+                step.Number = value;
+                return ok;
+            }
+            case 64:
+            {
+                long value = (long)step.Number;
+                bool ok = batch.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max);
+                step.Number = value;
+                return ok;
+            }
+            default:
+            {
+                Int128Value value = step.Number;
+                bool ok = batch.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max);
+                step.Number = value;
+                return ok;
+            }
         }
     }
 
@@ -632,9 +1200,9 @@ internal static partial class Program
         FAILS rather than passes, and so does a bound outside the long the API takes.
 
         The raw value travels through the runner as a 128 bit integer whatever the
-        declaration's storage width. The write back happens only on success, because a
-        16 or 32 bit storage width narrows the sentinel and a destination the library
-        correctly left alone would otherwise read as written.
+        declaration's storage width, and is written back whatever the verdict, so a
+        refused read that wrote its destination is seen: the refusal check compares it
+        against the sentinel narrowed to the storage width (FixedSentinel).
     */
     private static bool RunFixedStep(IBitStream stream, Step step)
     {
@@ -645,42 +1213,30 @@ internal static partial class Program
             case 16:
             {
                 short value = (short)step.Number;
-                if (!stream.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max))
-                {
-                    return false;
-                }
+                bool ok = stream.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max);
                 step.Number = value;
-                return true;
+                return ok;
             }
             case 32:
             {
                 int value = (int)step.Number;
-                if (!stream.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max))
-                {
-                    return false;
-                }
+                bool ok = stream.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max);
                 step.Number = value;
-                return true;
+                return ok;
             }
             case 64:
             {
                 long value = (long)step.Number;
-                if (!stream.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max))
-                {
-                    return false;
-                }
+                bool ok = stream.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max);
                 step.Number = value;
-                return true;
+                return ok;
             }
             default:
             {
                 Int128Value value = step.Number;
-                if (!stream.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max))
-                {
-                    return false;
-                }
+                bool ok = stream.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max);
                 step.Number = value;
-                return true;
+                return ok;
             }
         }
     }
@@ -761,9 +1317,9 @@ internal static partial class Program
                 if (words.Length != 2 || !TryParseStepInt(words[1], out step.Width)) return null;
                 step.Kind = StepKind.String;
                 return step;
-            case "wstring":
-                if (words.Length != 2 || !TryParseStepInt(words[1], out step.Width)) return null;
-                step.Kind = StepKind.WString;
+            case "end":
+                if (words.Length != 1) return null;
+                step.Kind = StepKind.End;
                 return step;
             case "int":
             case "int64":
@@ -890,9 +1446,8 @@ internal static partial class Program
                 if (!TryConformanceParamInt(vector, "buffer_size", out step.Width)) return null;
                 step.Kind = StepKind.String;
                 break;
-            case "wstring":
-                if (!TryConformanceParamInt(vector, "buffer_size", out step.Width)) return null;
-                step.Kind = StepKind.WString;
+            case "end":
+                step.Kind = StepKind.End;
                 break;
             case "fixed":
                 if (!TryConformanceParamInt(vector, "integer_bits", out step.IntegerBits) ||
@@ -924,7 +1479,7 @@ internal static partial class Program
             case "preceding_bits": return operation == "align" || operation == "bytes";
             case "bits": return operation == "bits";
             case "count": return operation == "bytes";
-            case "buffer_size": return operation == "string" || operation == "wstring";
+            case "buffer_size": return operation == "string";
             case "previous": return operation == "int_relative";
             case "res": return operation == "compressed_float";
             case "integer_bits":
@@ -955,8 +1510,7 @@ internal static partial class Program
         value-space comparison here proves nothing."
 
         The remaining kinds have textual spellings the corpus states directly: `true` or
-        `false`, hexadecimal byte pairs for bytes and string payloads, and four digit code
-        units for wstring.
+        `false`, and hexadecimal byte pairs for bytes and string payloads.
     */
     private static bool TryStepPattern(Step step, out UInt128Value pattern)
     {
@@ -998,8 +1552,9 @@ internal static partial class Program
         {
             case StepKind.Object:
             case StepKind.Align:
-                // neither has a value of its own; for align the corpus states the padding
-                // it consumed, which a conforming read always finds zero
+            case StepKind.End:
+                // none has a value of its own; for align and end the corpus states the
+                // padding consumed, which a conforming read always finds zero
                 return "0";
 
             case StepKind.Bool:
@@ -1010,23 +1565,6 @@ internal static partial class Program
 
             case StepKind.String:
                 return BytesToHex(Encoding.UTF8.GetBytes(step.Text));
-
-            case StepKind.WString:
-            {
-                // STANDARD.md, "wstring": each 32 bit group carries one UTF-16 CODE UNIT,
-                // and a C# string stores exactly those units, so the corpus's units are
-                // the string's chars one for one.
-                StringBuilder builder = new StringBuilder();
-                foreach (char unit in step.Text)
-                {
-                    if (builder.Length > 0)
-                    {
-                        builder.Append(' ');
-                    }
-                    builder.Append(((int)unit).ToString("X4", CultureInfo.InvariantCulture));
-                }
-                return builder.ToString();
-            }
 
             default:
                 return "?";
@@ -1091,6 +1629,11 @@ internal static partial class Program
         {
             return false;
         }
+        // a number that does not fit the int the API takes is not this parameter
+        if (wide < (Int128Value)int.MinValue || wide > (Int128Value)int.MaxValue)
+        {
+            return false;
+        }
         value = (int)wide;
         return true;
     }
@@ -1115,6 +1658,11 @@ internal static partial class Program
     {
         value = 0;
         if (!TryParseConformanceNumber(text, out Int128Value wide))
+        {
+            return false;
+        }
+        // a number that does not fit the int the API takes is not this parameter
+        if (wide < (Int128Value)int.MinValue || wide > (Int128Value)int.MaxValue)
         {
             return false;
         }
@@ -1205,6 +1753,9 @@ internal static partial class Program
     // ---------------------------------------------------------------------------------
     // the corpus files
 
+    private const string ConformanceResourcePrefix = "conformance/";
+    private const string ControlResourcePrefix = "conformance-controls/";
+
     // Every .txt resource embedded from conformance/ (see Tests.csproj and
     // TestsNs21.csproj), which is a glob MSBuild re-evaluates, so a vector added upstream
     // and copied across runs without a code change. A runner holding a list of file names
@@ -1212,23 +1763,41 @@ internal static partial class Program
     private static List<ConformanceVector> LoadConformanceVectors()
     {
         List<ConformanceVector> vectors = new List<ConformanceVector>();
-        Assembly assembly = typeof(Program).Assembly;
-        foreach (string resource in assembly.GetManifestResourceNames())
+        foreach (string resource in typeof(Program).Assembly.GetManifestResourceNames())
         {
-            if (!resource.EndsWith(".txt", StringComparison.Ordinal))
+            if (resource.StartsWith(ConformanceResourcePrefix, StringComparison.Ordinal)
+                && resource.EndsWith(".txt", StringComparison.Ordinal))
             {
-                continue;
-            }
-            using (Stream? stream = assembly.GetManifestResourceStream(resource))
-            {
-                Check(stream != null, $"conformance resource {resource} would not open");
-                using (StreamReader reader = new StreamReader(stream!))
-                {
-                    ParseConformanceFile(resource, reader.ReadToEnd(), vectors);
-                }
+                ParseConformanceFile(resource, ReadConformanceResource(resource), vectors);
             }
         }
         return vectors;
+    }
+
+    private static string ReadConformanceResource(string resource)
+    {
+        using (Stream? stream = typeof(Program).Assembly.GetManifestResourceStream(resource))
+        {
+            Check(stream != null, $"conformance resource {resource} would not open");
+            using (StreamReader reader = new StreamReader(stream!))
+            {
+                return reader.ReadToEnd();
+            }
+        }
+    }
+
+    // STANDARD.md, "Refusal reasons": the closed list, as SerializeUtil.RefusalName
+    // spells it. A refused record must name one of these.
+    private static bool IsRefusalName(string reason)
+    {
+        foreach (SerializeError error in Enum.GetValues(typeof(SerializeError)))
+        {
+            if (error != SerializeError.None && SerializeUtil.RefusalName(error) == reason)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     // STANDARD.md, "The vector format": `#` begins a comment at the START of a line and
@@ -1285,9 +1854,24 @@ internal static partial class Program
                     vector.Bytes = ParseConformanceBytes(source, value);
                     break;
                 case "expect":
-                    if (value == "refused")
+                    if (value == "refused" || value.StartsWith("refused ", StringComparison.Ordinal))
                     {
+                        // `expect refused <reason>`: a missing or unknown reason makes the
+                        // record malformed, which fails the vector rather than skipping it
                         vector.Expect = ConformanceExpect.Refused;
+                        string reason = value.Substring("refused".Length).Trim();
+                        if (reason.Length == 0)
+                        {
+                            vector.Malformed = "`expect refused` states no reason";
+                        }
+                        else if (!IsRefusalName(reason))
+                        {
+                            vector.Malformed = $"`expect refused` states \"{reason}\", which is not a refusal reason";
+                        }
+                        else
+                        {
+                            vector.ExpectedReason = reason;
+                        }
                     }
                     else
                     {
@@ -1310,6 +1894,23 @@ internal static partial class Program
                     Check(value == "canonical", $"{source}: unknown writer mode \"{value}\"");
                     vector.WriterCanonical = true;
                     break;
+                case "writer_input":
+                {
+                    // `writer_input bits = 0x...`, a float32 pattern handed to the writer
+                    KeyValuePair<string, string> input = ParseConformanceParam(source, value);
+                    if (input.Key != "bits"
+                        || !TryParseConformanceNumber(input.Value, out Int128Value pattern)
+                        || pattern < Int128Value.Zero || pattern > (Int128Value)uint.MaxValue)
+                    {
+                        vector.Malformed = $"writer_input \"{value}\" is not bits = a float32 pattern";
+                    }
+                    else
+                    {
+                        vector.HasWriterInput = true;
+                        vector.WriterInput = (uint)pattern;
+                    }
+                    break;
+                }
                 default:
                     Check(false, $"{source}: unknown vector key \"{key}\"");
                     break;

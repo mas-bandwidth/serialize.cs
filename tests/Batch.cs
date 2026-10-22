@@ -43,7 +43,10 @@ internal static partial class Program
         stream.SerializeAlign();
         stream.SerializeBytes(data.Bytes);
         stream.SerializeString(ref data.Str, 16);
-        stream.SerializeWideString(ref data.WStr, 8);
+        stream.SerializeString(ref data.Stones, 8);
+        stream.SerializeAlign();                                    // the fixed point section starts byte aligned
+        SerializeFixedWireBatch(ref stream, data.Fixed);
+        stream.SerializeEnd();
         return stream.Error == SerializeError.None;
     }
 
@@ -69,7 +72,10 @@ internal static partial class Program
         stream.SerializeAlign();
         stream.SerializeBytes(data.Bytes);
         stream.SerializeString(ref data.Str, 16);
-        stream.SerializeWideString(ref data.WStr, 8);
+        stream.SerializeString(ref data.Stones, 8);
+        stream.SerializeAlign();                                    // the fixed point section starts byte aligned
+        SerializeFixedWireBatch(ref stream, data.Fixed);
+        stream.SerializeEnd();
         return stream.Error == SerializeError.None;
     }
 
@@ -314,25 +320,8 @@ internal static partial class Program
             Check(SerializeGoldenBatch(ref batch, data), $"batch read failed: {batch.Error}");
             batch.End();
 
-            GoldenWireData expected = GoldenWireData.Init();
-            Check(Math.Abs(data.CompressedFloatValue - expected.CompressedFloatValue) <= 0.01,
-                $"compressed float mismatch: expected {expected.CompressedFloatValue}, got {data.CompressedFloatValue}");
-            Check(data.Bits4 == expected.Bits4 && data.Bits11 == expected.Bits11
-                && data.Bits24 == expected.Bits24 && data.Bits32 == expected.Bits32
-                && data.IntSmall == expected.IntSmall && data.IntFull == expected.IntFull
-                && data.Flag == expected.Flag
-                && data.FloatValue == expected.FloatValue
-                && data.DoubleValue == expected.DoubleValue
-                && data.UInt8Value == expected.UInt8Value
-                && data.UInt16Value == expected.UInt16Value
-                && data.UInt32Value == expected.UInt32Value
-                && data.UInt64Value == expected.UInt64Value
-                && data.RelativeNear == expected.RelativeNear
-                && data.RelativeFar == expected.RelativeFar
-                && data.Bytes.AsSpan().SequenceEqual(expected.Bytes)
-                && data.Str == expected.Str
-                && data.WStr == expected.WStr,
-                "batch read of the golden bytes decoded the wrong values");
+            Check(data.DataEquals(GoldenWireData.Init()), "batch read of the golden bytes decoded the wrong values");
+            Check(stream.BitsProcessed == GoldenWireBytes.Length * 8, "the batch end did not consume the final byte's padding");
         }
 
         // write side, fixed point section: the batch fixed point and wide integer
@@ -537,9 +526,9 @@ internal static partial class Program
             uint v = 0;
             Check(batch.SerializeBits(ref v, 3), "the 3 bit read must succeed");
             Check(!batch.SerializeAlign(), "nonzero padding must fail the align");
-            Check(batch.Error == SerializeError.Align, $"expected Align, got {batch.Error}");
+            Check(batch.Error == SerializeError.NonzeroPadding, $"expected NonzeroPadding, got {batch.Error}");
             batch.End();
-            Check(stream.Error == SerializeError.Align, $"expected Align on the stream, got {stream.Error}");
+            Check(stream.Error == SerializeError.NonzeroPadding, $"expected NonzeroPadding on the stream, got {stream.Error}");
         }
 
         // a read past the end fails with Overflow through the batch and leaves the
@@ -552,9 +541,9 @@ internal static partial class Program
             uint w = 777;
             Check(!batch.SerializeBits(ref w, 8), "expected the second byte to overflow");
             Check(w == 777, "a failed read must leave the value unmodified");
-            Check(batch.Error == SerializeError.Overflow, $"expected Overflow, got {batch.Error}");
+            Check(batch.Error == SerializeError.PastEnd, $"expected PastEnd, got {batch.Error}");
             batch.End();
-            Check(stream.Error == SerializeError.Overflow, $"expected Overflow on the stream, got {stream.Error}");
+            Check(stream.Error == SerializeError.PastEnd, $"expected PastEnd on the stream, got {stream.Error}");
         }
     }
 

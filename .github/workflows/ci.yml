@@ -140,6 +140,25 @@ jobs:
       - name: Red team harness against the checked-arithmetic library
         run: dotnet run -c Release --project redteam/RedTeam.csproj -p:SerializeCheckedArithmeticProbe=true
 
+  conformance-controls:
+    name: conformance controls (each rule deleted fails exactly its vectors)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      # STANDARD.md: "A gate nobody has seen go red is a claim, not a measurement."
+      # SerializeConformanceControls=true compiles the switch that deletes one
+      # refusal rule at a time into the library and the tests (it is never a
+      # shipping configuration); test_conformance_controls then runs the real
+      # corpus once per conformance-controls/<rule>.expected, through the stream
+      # and through the batch, and requires the failing vectors to be EXACTLY that
+      # list. The unknown-operation control runs in every build, in the test jobs.
+      - name: Every rule control fails exactly its .expected vectors
+        run: dotnet run -c Release --project tests/Tests.csproj -f net10.0 -p:SerializeConformanceControls=true -- conformance
+
   lint:
     name: analyzers and style
     runs-on: ubuntu-latest
@@ -192,9 +211,11 @@ jobs:
           # release carrying the normative integer clamp (STANDARD.md,
           # schema#109), which the compat sequence's two clamp witnesses make
           # load-bearing -- against an older header those rows go red, the
-          # cross-language proof serialize#94 found missing.
+          # cross-language proof serialize#94 found missing. v2.0.0 is format 2.0:
+          # the compat sequence carries no wstring and closes with serialize_end,
+          # so no older header compiles it.
           repository: mas-bandwidth/serialize
-          ref: v1.16.2
+          ref: v2.0.0
           path: cpp-serialize
       - uses: actions/setup-dotnet@v6
         with:
@@ -210,7 +231,7 @@ jobs:
         run: CXX=clang++ scripts/interop.sh cpp-serialize
 
   spec-sync:
-    name: STANDARD.md and conformance/ match upstream
+    name: STANDARD.md, conformance/ and conformance-controls/ match upstream
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -260,3 +281,11 @@ jobs:
             exit 1
           fi
           echo "conformance/ matches upstream"
+          # conformance-controls/ is vendored for the same reason: each .expected
+          # list is the oracle a negative control is held to, and a list that
+          # drifts from the reference holds this port's controls to the wrong rule
+          if ! diff -ru /tmp/upstream-serialize/conformance-controls conformance-controls; then
+            echo "::error::conformance-controls/ has diverged from mas-bandwidth/serialize"
+            exit 1
+          fi
+          echo "conformance-controls/ matches upstream"

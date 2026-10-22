@@ -27,9 +27,21 @@
        runs the corpus against the netstandard2.1 build of the library. -->
   <ItemGroup>
     <EmbeddedResource Include="../conformance/*.txt">
-      <LogicalName>%(Filename)%(Extension)</LogicalName>
+      <LogicalName>conformance/%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+    <!-- the negative controls, vendored beside the corpus: each .expected names the
+         vectors a reader with that rule deleted must fail, and unknown-operation.txt
+         is a corpus file no runner can drive. Their own prefix keeps them out of the
+         corpus run. -->
+    <EmbeddedResource Include="../conformance-controls/*.expected;../conformance-controls/*.txt">
+      <LogicalName>conformance-controls/%(Filename)%(Extension)</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
+
+  <!-- see SerializeConformanceControls in src/Serialize.csproj -->
+  <PropertyGroup Condition="'$(SerializeConformanceControls)' == 'true'">
+    <DefineConstants>$(DefineConstants);SERIALIZE_CONFORMANCE_CONTROLS</DefineConstants>
+  </PropertyGroup>
 
   <!-- family value: zero third-party dependencies, including test frameworks. -->
 

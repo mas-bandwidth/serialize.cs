@@ -23,7 +23,9 @@
     range below must pass with them enabled rather than around them. That
     is also why the interop gate needs a serialize.h of v1.6.2 or newer: up to and
     including v1.4.3 the library asserted min < max, so an assert-enabled build aborts
-    on the degenerate field. See ../../scripts/interop.sh.
+    on the degenerate field. Format 2.0 raised the floor to v2.0.0: wstring is gone,
+    and serialize_end, which closes the sequence, is new there. See
+    ../../scripts/interop.sh.
 
     This file is adapted from the Go port's compat/cpp/compat.cpp (the extended golden
     sequence: golden wire values plus the 64 bit paths), and extends it with the fixed
@@ -39,7 +41,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <wchar.h>
 
 struct CompatData
 {
@@ -62,7 +63,7 @@ struct CompatData
     int32_t relativeFar;
     uint8_t bytes[7];
     char str[16];
-    wchar_t wstr[8];
+    char stones[8];
     uint64_t bits33;
     int64_t int64Full;
     int64_t int64Range;
@@ -99,10 +100,7 @@ struct CompatData
         const uint8_t bytesInit[7] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01 };
         memcpy( bytes, bytesInit, sizeof( bytes ) );
         strcpy( str, "golden" );
-        wstr[0] = (wchar_t) 0x043C;             // "мир": cyrillic, BMP only, explicit code points
-        wstr[1] = (wchar_t) 0x0438;
-        wstr[2] = (wchar_t) 0x0440;
-        wstr[3] = 0;
+        strcpy( stones, "\xE7\xA2\x81\xE7\x9F\xB3" );    // 碁石, go stones: U+7881 U+77F3 as UTF-8, explicit bytes
         bits33 = 0x1DEADBEEFULL;
         int64Full = -123456789012345LL;
         int64Range = 4123456789LL;
@@ -142,7 +140,7 @@ struct CompatData
         serialize_align( stream );
         serialize_bytes( stream, bytes, sizeof( bytes ) );
         serialize_string( stream, str, sizeof( str ) );
-        serialize_wstring( stream, wstr, sizeof( wstr ) / sizeof( wstr[0] ) );
+        serialize_string( stream, stones, sizeof( stones ) );
         serialize_bits( stream, bits33, 33 );
         serialize_int64( stream, int64Full, INT64_MIN, INT64_MAX );
         serialize_int64( stream, int64Range, -5000000000LL, +5000000000LL );
@@ -170,6 +168,9 @@ struct CompatData
         // Requires the C++ library at v1.12.0 or later (the first release carrying the clamp).
         serialize_compressed_float( stream, clampRejectWitness, 0.0f, 8388609.0f, 1.0f );
         serialize_compressed_float( stream, clampWideWitness, 0.0f, 16777215.0f, 1.0f );
+        // the end of the object: a reader of a file one byte longer, or with a set
+        // padding bit, refuses here (STANDARD.md, "end")
+        serialize_end( stream );
         return true;
     }
 
@@ -194,7 +195,7 @@ struct CompatData
             && relativeFar == other.relativeFar
             && memcmp( bytes, other.bytes, sizeof( bytes ) ) == 0
             && strcmp( str, other.str ) == 0
-            && wcscmp( wstr, other.wstr ) == 0
+            && strcmp( stones, other.stones ) == 0
             && bits33 == other.bits33
             && int64Full == other.int64Full
             && int64Range == other.int64Range

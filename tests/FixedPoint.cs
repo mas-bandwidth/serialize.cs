@@ -28,13 +28,10 @@ using System;
 namespace Serialize.Tests;
 
 
-// The fixed point section of the C++ fixed-point golden message. In the C++ golden
-// message this section begins byte aligned ("the fixed point section starts byte
-// aligned, so every byte pinned above it stays put"), so serializing it from a fresh
-// stream produces exactly the tail bytes of the C++ 112 byte golden vector. The
-// pre-existing 72 byte GoldenWireData message is untouched: it still matches the
-// C++ release the interop gate pins (v1.7.0, whose 112 byte golden vector opens
-// with those same 72 bytes) and the Go and Rust ports.
+// The fixed point section of the golden message (STANDARD.md, "The whole message",
+// operations 22 to 28). In the golden message this section begins byte aligned, so
+// serializing it from a fresh stream produces exactly the tail of the 106 byte
+// message, bytes 66 to 105, which GoldenWireData pins whole.
 internal sealed class FixedWireData
 {
     public short FixedQ8_8;
@@ -68,6 +65,16 @@ internal sealed class FixedWireData
         stream.SerializeFixed(ref data.FixedQ112_16Wide, 112, 16, -144115188075855872, +144115188075855872); // ±2^57 units: 75 bits, the three group structure
         stream.SerializeFixed(ref data.FixedQ64_64Wide, 64, 64, long.MinValue, long.MaxValue);               // full unit range: 128 bits, the four group structure
         return stream.Ok;
+    }
+
+    public bool DataEquals(FixedWireData other)
+    {
+        return FixedQ8_8 == other.FixedQ8_8
+            && FixedQ16_16 == other.FixedQ16_16
+            && FixedQ48_16 == other.FixedQ48_16
+            && FixedQ16_16Unsigned == other.FixedQ16_16Unsigned
+            && FixedQ112_16Wide == other.FixedQ112_16Wide
+            && FixedQ64_64Wide == other.FixedQ64_64Wide;
     }
 }
 
@@ -544,7 +551,7 @@ internal static partial class Program
             long value = 424242; // sentinel
             Check(!readStream.SerializeFixed(ref value, 48, 16, -100000000000, +100000000000),
                 "expected the truncated read to fail");
-            Check(readStream.Error == SerializeError.Overflow, $"expected Overflow, got {readStream.Error}");
+            Check(readStream.Error == SerializeError.PastEnd, $"expected PastEnd, got {readStream.Error}");
             Check(value == 424242, "a failed read must leave the value unmodified");
         }
     }
@@ -758,7 +765,7 @@ internal static partial class Program
             Int128Value value = 424242; // sentinel
             Check(!readStream.SerializeFixed(ref value, 112, 16, -1152921504606846976, +1152921504606846976),
                 "expected the truncated read to fail");
-            Check(readStream.Error == SerializeError.Overflow, $"expected Overflow, got {readStream.Error}");
+            Check(readStream.Error == SerializeError.PastEnd, $"expected PastEnd, got {readStream.Error}");
             Check(value == 424242, "a failed read must leave the value unmodified");
         }
     }
@@ -991,7 +998,7 @@ internal static partial class Program
             Int128Value readBack = 424242; // sentinel
             Check(!readStream.SerializeInt128(ref readBack, Int128Value.MinValue, Int128Value.MaxValue),
                 "expected the truncated read to fail");
-            Check(readStream.Error == SerializeError.Overflow, $"expected Overflow, got {readStream.Error}");
+            Check(readStream.Error == SerializeError.PastEnd, $"expected PastEnd, got {readStream.Error}");
             Check(readBack == 424242, "a failed read must leave the value unmodified");
         }
 

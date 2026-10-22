@@ -171,9 +171,9 @@ internal static partial class Program
             case 4:
                 return new Value { Kind = ValueKind.Bool, Flag = rng.Range(2) == 1 };
             case 5:
-                return new Value { Kind = ValueKind.Float, F32 = BitConverter.UInt32BitsToSingle((uint)rng.Next()) };
+                return new Value { Kind = ValueKind.Float, F32 = BitConverter.UInt32BitsToSingle(FiniteFloatBits((uint)rng.Next())) };
             case 6:
-                return new Value { Kind = ValueKind.Double, F64 = BitConverter.UInt64BitsToDouble(rng.Next()) };
+                return new Value { Kind = ValueKind.Double, F64 = BitConverter.UInt64BitsToDouble(FiniteDoubleBits(rng.Next())) };
             case 7:
             {
                 byte[] data = new byte[rng.Range(32)];
@@ -409,6 +409,21 @@ internal static partial class Program
         };
     }
 
+    // Every random pattern made finite (STANDARD.md, format 2.0: float and double carry
+    // finite values only, and a writer is never handed anything else). A pattern whose
+    // exponent field is all ones loses the exponent's top bit, which lands it on a
+    // finite value with the same sign and mantissa; every other pattern, negative zero
+    // and the subnormals included, is kept bit for bit.
+    private static uint FiniteFloatBits(uint bits)
+    {
+        return SerializeUtil.FloatBitsAreFinite(bits) ? bits : bits & ~0x40000000u;
+    }
+
+    private static ulong FiniteDoubleBits(ulong bits)
+    {
+        return SerializeUtil.DoubleBitsAreFinite(bits) ? bits : bits & ~0x4000000000000000UL;
+    }
+
     private static void TestHostileRead()
     {
         // arbitrary bytes driven through every ReadStream primitive must fail cleanly
@@ -454,16 +469,19 @@ internal static partial class Program
                             $"seed {seed}: failed read did not latch an error");
                     }
                 }
+            }
 
-                // wide strings are not in RandomValue (the write side would need valid
-                // code points), so drive them here against the hostile bytes too
-                string wide = "unchanged";
-                if (!stream.SerializeWideString(ref wide, 64))
-                {
-                    Check(wide == "unchanged", $"seed {seed}: failed wide string read modified the value");
-                    Check(stream.Error != SerializeError.None,
-                        $"seed {seed}: failed read did not latch an error");
-                }
+            // the end is a read like any other: on hostile bytes it either accepts,
+            // having consumed the whole stream, or latches an error
+            if (stream.SerializeEnd())
+            {
+                Check(stream.BitsProcessed == (long)len * 8,
+                    $"seed {seed}: an accepted end left {(long)len * 8 - stream.BitsProcessed} bits unread");
+            }
+            else
+            {
+                Check(stream.Error != SerializeError.None,
+                    $"seed {seed}: failed end did not latch an error");
             }
 
             // the reader never consumes past the declared packet length

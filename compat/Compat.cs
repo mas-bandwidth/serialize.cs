@@ -51,7 +51,7 @@ internal sealed class CompatData
     public int RelativeFar;
     public byte[] Bytes = new byte[7];
     public string Str = "";
-    public string WStr = "";
+    public string Stones = "";
     public ulong Bits33;
     public long Int64Full;
     public long Int64Range;
@@ -88,7 +88,7 @@ internal sealed class CompatData
             RelativeFar = 2100, // difference of 2000 from the base: exercises the twelve bit bucket
             Bytes = new byte[] { 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01 },
             Str = "golden",
-            WStr = "мир", // "мир": cyrillic, BMP only, explicit code points so source encoding can never change the bytes
+            Stones = "\u7881\u77F3", // 碁石, go stones, the golden message's CJK string: explicit code points so source encoding can never change the bytes
             Bits33 = 0x1DEADBEEF,
             Int64Full = -123456789012345,
             Int64Range = 4123456789,
@@ -142,7 +142,7 @@ internal sealed class CompatData
         stream.SerializeAlign();
         stream.SerializeBytes(Bytes);
         stream.SerializeString(ref Str, 16);
-        stream.SerializeWideString(ref WStr, 8);
+        stream.SerializeString(ref Stones, 8);
         stream.SerializeBits64(ref Bits33, 33);
         stream.SerializeInt64(ref Int64Full, long.MinValue, long.MaxValue);
         stream.SerializeInt64(ref Int64Range, -5000000000, +5000000000);
@@ -177,6 +177,9 @@ internal sealed class CompatData
         // it load-bearing -- an unclamped writer on either side changes these bytes
         stream.SerializeCompressedFloat(ref ClampRejectWitness, 0.0f, 8388609.0f, 1.0f);
         stream.SerializeCompressedFloat(ref ClampWideWitness, 0.0f, 16777215.0f, 1.0f);
+        // the end of the object: the reader of each side's file reads it, so a stream
+        // carrying one byte more, or a set padding bit, fails the gate (STANDARD.md, "end")
+        stream.SerializeEnd();
         return stream.Error == SerializeError.None;
     }
 
@@ -201,7 +204,7 @@ internal sealed class CompatData
             && RelativeFar == other.RelativeFar
             && Bytes.AsSpan().SequenceEqual(other.Bytes)
             && Str == other.Str
-            && WStr == other.WStr
+            && Stones == other.Stones
             && Bits33 == other.Bits33
             && Int64Full == other.Int64Full
             && Int64Range == other.Int64Range

@@ -32,12 +32,21 @@
     builds, compiled out in release (the 2026-08-16 six-language check-model audit;
     the standard verbatim: "We want MINIMAL runtime checking in release"). The
     checks readers keep in every build mode validate PACKET DATA, never arguments:
-    buffer-end, range, align and string-content refusals all latch errors, and the
-    runtime's own array bounds checks remain the memory-safety floor.
+    every refusal STANDARD.md states latches an error, and the runtime's own array
+    bounds checks remain the memory-safety floor.
+
+    Format version 2.0 (STANDARD.md): the wire carries only integers and bytes, and
+    every value has exactly one encoding. A reader refuses anything a conforming
+    writer cannot produce — set padding, an out of range value, a non-canonical
+    int_relative tier, a NaN or infinite float, a string that is not UTF-8 or holds a
+    NUL, and anything after the end of the object, which SerializeEnd reads — and
+    every refusal names its reason from the standard's closed list (SerializeError,
+    spelled by SerializeUtil.RefusalName).
 
     Error model (Go style, sticky): the first failure latches on the stream, every later
     serialize call returns false without touching the stream or the value, and the
-    latched error is available from the Error property. You can check every call or
+    latched error is available from the Error property. The latched error is the FIRST
+    refusal's reason; the later refusals of a failed stream are its echoes. You can check every call or
     serialize a whole object and check Error once at the end — with one rule: a value
     that controls a loop must have its result checked before the loop uses it, because
     after an error values are never updated again and a loop waiting for one spins
@@ -67,38 +76,59 @@ namespace Serialize
 // to hold the diff to the wrap itself.
 
 /// <summary>
-/// The first failure latched on a stream. None until a serialize call fails.
+/// The first failure latched on a stream, None until a serialize call fails. On a
+/// read stream every member past None is a refusal reason from the closed list
+/// STANDARD.md defines under "Refusal reasons", and SerializeUtil.RefusalName
+/// spells it exactly as the standard and the conformance corpus do. A read stream
+/// keeps the FIRST reason: the later reads a failed stream refuses are echoes of
+/// it and report nothing new.
 /// </summary>
 public enum SerializeError
 {
-    /// <summary>No error: the stream is healthy.</summary>
+    /// <summary>No error: the stream is healthy. Spelled "none".</summary>
     None = 0,
 
-    /// <summary>A read would go past the end of the buffer. Only reads latch this:
-    /// on write, exceeding the buffer is a writer contract violation, caught by
-    /// Debug.Assert in debug builds and unchecked in release (writes are
+    /// <summary>past_end: a read needs more bits than the stream holds. Only reads
+    /// latch this: on write, exceeding the buffer is a writer contract violation,
+    /// caught by Debug.Assert in debug builds and unchecked in release (writes are
     /// trusted).</summary>
-    Overflow,
+    PastEnd,
 
-    /// <summary>A value is outside the range it is serialized with. On read this
-    /// typically means the packet is corrupt or maliciously crafted; reads latch it
-    /// in every build mode. It also latches when a user's Serialize function aborts
-    /// through SerializeObject. On write, an out of range value is a writer contract
+    /// <summary>value_out_of_range: a decoded value outside its declared range or
+    /// domain — a ranged offset past its span, a string length past its buffer, a
+    /// compressed integer past its maximum integer value, an int_relative outside
+    /// its domain or not increasing. Reads latch it in every build mode. It also
+    /// latches, on any stream, when a user's Serialize function aborts through
+    /// SerializeObject. On write, an out of range value is a writer contract
     /// violation, caught by Debug.Assert in debug builds and unchecked in release
     /// (writes are trusted).</summary>
     ValueOutOfRange,
 
-    /// <summary>The zero pad bits read by an align are not zero. This typically means
-    /// the read and write serialize functions don't match.</summary>
-    Align,
+    /// <summary>nonzero_padding: a set bit in an align's padding, or in the unused
+    /// bits of the final byte at the end.</summary>
+    NonzeroPadding,
 
-    /// <summary>A string payload read from the stream is malformed: bytes that are
-    /// not valid UTF-8, an interior NUL (either width — the wire length and the
-    /// C-string length a consumer perceives would disagree), or, for wide strings,
-    /// ill-formed UTF-16 (an unpaired surrogate). Readers refuse malformed string
-    /// content in every build mode (serialize#8 ruling; the write side is the
-    /// writer's contract, debug-asserted).</summary>
-    InvalidString,
+    /// <summary>trailing_data: a whole byte or more after the end of the
+    /// object.</summary>
+    TrailingData,
+
+    /// <summary>non_finite_float: a float or double that is NaN or an infinity, or
+    /// a compressed float decode that is not finite.</summary>
+    NonFiniteFloat,
+
+    /// <summary>invalid_utf8: a string payload that is not well-formed
+    /// UTF-8.</summary>
+    InvalidUtf8,
+
+    /// <summary>embedded_nul: a zero byte among a string's transmitted bytes. It is
+    /// checked before the encoding, so a payload that breaks both rules is refused
+    /// for this one.</summary>
+    EmbeddedNul,
+
+    /// <summary>non_canonical: an encoding a conforming writer never produces for
+    /// the value it carries — the int_relative absolute tier carrying a difference
+    /// a bounded tier would have taken.</summary>
+    NonCanonical,
 }
 
 /// <summary>
@@ -207,23 +237,31 @@ public interface IBitStream
     /// <summary>Serializes a boolean value with one bit.</summary>
     bool SerializeBool(ref bool value);
 
-    /// <summary>Serializes an uncompressed 32 bit floating point value.</summary>
+    /// <summary>Serializes an uncompressed 32 bit floating point value: its 32 bits,
+    /// exactly. The format carries finite values only (STANDARD.md, "Finite values
+    /// only, every one bit exact"): writing NaN or an infinity is a writer contract
+    /// violation, debug-asserted; a read refuses a NaN or infinity pattern with
+    /// SerializeError.NonFiniteFloat and leaves the value unwritten. Negative zero and
+    /// the subnormals are finite and travel bit exact.</summary>
     bool SerializeFloat(ref float value);
 
-    /// <summary>Serializes an uncompressed 64 bit floating point value.</summary>
+    /// <summary>Serializes an uncompressed 64 bit floating point value: its 64 bits,
+    /// low dword first. Finite values only, exactly as SerializeFloat.</summary>
     bool SerializeDouble(ref double value);
 
     /// <summary>Serializes a floating point value in [min,max] with the given
     /// resolution, using only the bits required for the quantized range. On write the
     /// value is clamped into [min,max]; on read it is guaranteed to be in [min,max] if
-    /// the call succeeds and max - min is finite. min, max and resolution are trusted
-    /// parameters, and a declaration whose max - min overflows to infinity (for
-    /// example min = -3.4e38f, max = +3.4e38f) is NON-CONFORMING (ruled 2026-08-15):
-    /// it asserts in debug builds, and in a release build the quantization is
-    /// meaningless — decoded values can be infinite or NaN even though the call
-    /// succeeds. Sending a non-finite value (NaN, ±infinity) is likewise
-    /// non-conforming and asserts on write in debug builds; in release it is
-    /// silently clamped into range (NaN to the low end).</summary>
+    /// the call succeeds. min, max and resolution are trusted parameters, and a
+    /// declaration whose max - min or (max - min) / resolution overflows to infinity
+    /// (for example min = -3.4e38f, max = +3.4e38f), or whose top integer decodes to
+    /// an infinity, is NON-CONFORMING: it asserts in debug builds where it is derived
+    /// or written. A read never hands back a non-finite value whatever the
+    /// declaration: a decode that is not finite is refused with
+    /// SerializeError.NonFiniteFloat (STANDARD.md, "The decode must be finite").
+    /// Sending a non-finite value (NaN, ±infinity) is likewise non-conforming and
+    /// asserts on write in debug builds; in release it is silently clamped into
+    /// range (NaN to the low end).</summary>
     bool SerializeCompressedFloat(ref float value, float min, float max, float resolution);
 
     /// <summary>Serializes a compressed float from precomputed wire constants — the
@@ -239,7 +277,8 @@ public interface IBitStream
     /// On write the value is clamped into the declared range and quantized; sending
     /// a non-finite value is non-conforming and asserts in debug builds. On read, an
     /// integer above maxIntegerValue smuggled into the bit headroom fails with
-    /// SerializeError.ValueOutOfRange.</summary>
+    /// SerializeError.ValueOutOfRange, and a decode that is not finite fails with
+    /// SerializeError.NonFiniteFloat.</summary>
     /// <param name="value">The float value to serialize. Written on write/measure,
     /// filled in on read.</param>
     /// <param name="maxIntegerValue">The quantization step count, in
@@ -312,24 +351,30 @@ public interface IBitStream
     /// serialized in [0,bufferSize-1], the stream aligns to a byte boundary, then the
     /// UTF-8 bytes are block copied. bufferSize mirrors the C++ API, where a string with
     /// its terminating null character must fit into the buffer, keeping streams
-    /// compatible between the two languages. On read, bytes that are not valid UTF-8
-    /// or that contain an interior NUL fail with SerializeError.InvalidString.</summary>
+    /// compatible between the two languages. On write the string must be well-formed
+    /// UTF-16 (no unpaired surrogate, which an encoder would silently replace with
+    /// U+FFFD) and must hold no U+0000: both are the writer's contract,
+    /// debug-asserted. On read, a payload holding a zero byte fails with
+    /// SerializeError.EmbeddedNul, checked first, and one that is not well-formed
+    /// UTF-8 fails with SerializeError.InvalidUtf8. An accepted payload decodes to
+    /// exactly its characters: no normalization, no replacement, no stripped byte
+    /// order mark.</summary>
     bool SerializeString(ref string value, int bufferSize);
-
-    /// <summary>Serializes a string as 32 bits per UTF-16 code unit, wire compatible
-    /// with serialize_wstring in the C++ library (STANDARD.md, adopted 2026-08-15:
-    /// one code unit per group, not one code point). The length is serialized in
-    /// [0,bufferSize-1] code units. Surrogate pairs are valid — an astral character
-    /// is two groups; the payload being well-formed UTF-16 is the writer's contract,
-    /// debug-asserted. On read, a group above 0xFFFF fails with
-    /// SerializeError.ValueOutOfRange (not a code unit — and char could not hold it:
-    /// fail rather than truncate); an unpaired surrogate or an interior NUL fails
-    /// with SerializeError.InvalidString.</summary>
-    bool SerializeWideString(ref string value, int bufferSize);
 
     /// <summary>Pads the stream with zero bits to the next byte boundary. On read the
     /// padding is verified to be zero.</summary>
     bool SerializeAlign();
+
+    /// <summary>The end of the object (STANDARD.md, "end"). Writing and measuring an
+    /// end costs nothing. Reading one requires the stream to end here: a whole byte
+    /// or more left over fails with SerializeError.TrailingData, checked first, and a
+    /// set bit among the final byte's unused bits fails with
+    /// SerializeError.NonzeroPadding; an accepted end consumes that padding. A reader
+    /// of a packet reads the end after the last field of the packet's top-level
+    /// object, over a stream holding exactly the bytes the writer reported, and that
+    /// is what makes one value one byte sequence. Like every read, it fails on a
+    /// stream that has already failed, keeping the first error.</summary>
+    bool SerializeEnd();
 
     /// <summary>Serializes an object that implements ISerializer. For struct
     /// implementers use the generic SerializeObject&lt;T&gt;(ref T) overload instead:
@@ -414,6 +459,49 @@ public static class SerializeUtil
         UInt128Value diff = max - min;
         ulong high = (ulong)(diff >> 64);
         return high != 0 ? 64 + BitsRequired64(0, high) : BitsRequired64(0, (ulong)diff);
+    }
+
+    /// <summary>
+    /// The family wide name of a refusal reason, exactly as STANDARD.md ("Refusal
+    /// reasons") and the conformance corpus spell it: "past_end",
+    /// "value_out_of_range", "nonzero_padding", "trailing_data", "non_finite_float",
+    /// "invalid_utf8", "embedded_nul" or "non_canonical", and "none" for
+    /// SerializeError.None. The C# member names are the same words in PascalCase.
+    /// </summary>
+    public static string RefusalName(SerializeError error)
+    {
+        switch (error)
+        {
+            case SerializeError.None: return "none";
+            case SerializeError.PastEnd: return "past_end";
+            case SerializeError.ValueOutOfRange: return "value_out_of_range";
+            case SerializeError.NonzeroPadding: return "nonzero_padding";
+            case SerializeError.TrailingData: return "trailing_data";
+            case SerializeError.NonFiniteFloat: return "non_finite_float";
+            case SerializeError.InvalidUtf8: return "invalid_utf8";
+            case SerializeError.EmbeddedNul: return "embedded_nul";
+            case SerializeError.NonCanonical: return "non_canonical";
+            default: return "unknown";
+        }
+    }
+
+    /// <summary>Is this float32 bit pattern finite? The exponent field is all ones
+    /// for NaN (any payload, either sign) and for both infinities, and for nothing
+    /// else, so every other pattern — negative zero and the subnormals included — is
+    /// finite. Tested on the bits rather than on a converted value, so no conversion
+    /// can quiet a signaling NaN on the way to the answer.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool FloatBitsAreFinite(uint bits)
+    {
+        return (bits & 0x7F800000u) != 0x7F800000u;
+    }
+
+    /// <summary>Is this float64 bit pattern finite? The double twin of
+    /// FloatBitsAreFinite.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool DoubleBitsAreFinite(ulong bits)
+    {
+        return (bits & 0x7FF0000000000000UL) != 0x7FF0000000000000UL;
     }
 
     /// <summary>Converts a signed integer to an unsigned integer with zig-zag encoding.
@@ -535,6 +623,44 @@ public static class SerializeUtil
 }
 
 /// <summary>
+/// The negative controls' switch (STANDARD.md, "A gate nobody has seen go red is a
+/// claim, not a measurement"): for each refusal rule, a reader with that one rule
+/// deleted, run against the real corpus, must fail exactly the vectors its
+/// conformance-controls/&lt;rule&gt;.expected file names. A build with the
+/// SERIALIZE_CONFORMANCE_CONTROLS constant (-p:SerializeConformanceControls=true,
+/// a gate and never a shipping configuration) makes Deleted settable, and each rule
+/// site asks Keeps with its control's name. In every other build Keeps is the
+/// constant true, inlined away, and it is consulted only on a refusal path, after
+/// the rule has already decided to refuse; the few rules that live on a value path
+/// rather than a refusal path are sabotaged inside #if blocks that the shipping
+/// build does not compile.
+/// </summary>
+#if SERIALIZE_CONFORMANCE_CONTROLS
+public
+#else
+internal
+#endif
+static class SerializeConformanceControls
+{
+#if SERIALIZE_CONFORMANCE_CONTROLS
+    /// <summary>The control whose rule is deleted, by its conformance-controls/
+    /// name, or the empty string for the real reader.</summary>
+    public static string Deleted { get; set; } = "";
+
+    /// <summary>False only for the rule the running control deletes.</summary>
+    internal static bool Keeps(string rule) => Deleted != rule;
+#else
+    /// <summary>Always true: no rule is ever deleted in this build.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool Keeps(string rule)
+    {
+        _ = rule;
+        return true;
+    }
+#endif
+}
+
+/// <summary>
 /// Shared internals: API-misuse Debug.Assert messages, the int-relative difference
 /// buckets and the compressed float quantization arithmetic (the derivation itself
 /// is public API: SerializeUtil.CompressedFloatParams).
@@ -563,11 +689,14 @@ internal static class SerializeInternal
     // per serialize#52): Debug.Assert messages, never seen in release builds.
     internal const string WriteRangeAssertMessage = "write value out of range: writes are trusted, the range is the writer's contract";
     internal const string WriteStringAssertMessage = "string does not fit in the buffer size: the writer's contract";
-    internal const string WriteWideStringAssertMessage = "wstring payload is not well-formed UTF-16 (unpaired surrogate): the writer's contract";
+    internal const string WriteStringUtf16AssertMessage = "string is not well-formed UTF-16 (an unpaired surrogate would be encoded as U+FFFD): the writer's contract";
+    internal const string WriteStringNulAssertMessage = "string holds U+0000, which every conforming reader refuses as embedded_nul: the writer's contract";
+    internal const string WriteFloatFiniteAssertMessage = "float and double carry finite values only: NaN and the infinities must not be sent (STANDARD.md), the writer's contract";
     internal const string WriteIntRelativeAssertMessage = "int relative requires 0 <= previous < current, both inside the non-negative int32 domain: the writer's contract";
     internal const string FloatDeltaAssertMessage = "compressed float declaration is non-conforming: max - min must be finite";
     internal const string FloatValuesAssertMessage = "compressed float declaration is non-conforming: (max - min) / resolution must be finite";
     internal const string FloatValueAssertMessage = "compressed float write value is non-conforming: NaN and infinities must not be sent";
+    internal const string FloatTopDecodeAssertMessage = "compressed float declaration is non-conforming: its top integer decodes to min + delta, which must be finite";
     internal const string FloatPrecomputedMaxIntegerValueMessage = "precomputed compressed float constants are the caller's contract: maxIntegerValue must be at least 1";
     internal const string FloatPrecomputedBitsMessage = "precomputed compressed float constants are the caller's contract: bits must equal BitsRequired(0, maxIntegerValue)";
     internal const string FloatPrecomputedDeltaMessage = "precomputed compressed float constants are the caller's contract: delta must be positive";
@@ -585,6 +714,42 @@ internal static class SerializeInternal
         (281, 4377),
         (4378, 69914),
     };
+
+    /// <summary>The largest difference a bounded int_relative tier carries. The
+    /// absolute tier carrying a difference at or below it is a second encoding of a
+    /// value that has a bounded one, refused as non_canonical.</summary>
+    internal const long IntRelativeLastBoundedDifference = 69914;
+
+    /// <summary>
+    /// Debug-asserts that a compressed float declaration's top integer decodes
+    /// finite: the decode of maxIntegerValue is min + delta, rounded once, and a
+    /// declaration such as [3 * 2^103, FLT_MAX] at resolution 2^104 passes every
+    /// check on delta and still rounds its top to +inf, so a writer handed max would
+    /// emit a code every reader refuses (STANDARD.md, "The decode must be finite").
+    /// Write and measure paths only: a reader with such a declaration refuses the
+    /// non-finite decode at runtime instead, in every build. Conditional("DEBUG"):
+    /// the whole call compiles out of release builds.
+    /// </summary>
+    [Conditional("DEBUG")]
+    internal static void ValidateCompressedFloatTop(float min, float delta)
+    {
+        float top = (float)(min + delta);
+        Debug.Assert(float.IsFinite(top), FloatTopDecodeAssertMessage);
+    }
+
+    /// <summary>
+    /// Debug-asserts the string writer's contract beyond its length: well-formed
+    /// UTF-16, because Encoding.UTF8 silently replaces an unpaired surrogate with
+    /// U+FFFD, so the bytes would not be the caller's text; and no U+0000, which
+    /// every conforming reader refuses as embedded_nul. Conditional("DEBUG"): the
+    /// whole call compiles out of release builds.
+    /// </summary>
+    [Conditional("DEBUG")]
+    internal static void ValidateStringValue(string value)
+    {
+        Debug.Assert(SerializeCompat.Utf16IsValid(value), WriteStringUtf16AssertMessage);
+        Debug.Assert(value.IndexOf('\0') < 0, WriteStringNulAssertMessage);
+    }
 
     /// <summary>
     /// Debug-asserts that precomputed compressed float constants are what
@@ -621,6 +786,7 @@ internal static class SerializeInternal
         // non-finite values into range (NaN to the low end), which is the old
         // silent behavior the assert replaces in debug builds.
         Debug.Assert(float.IsFinite(value), FloatValueAssertMessage);
+        ValidateCompressedFloatTop(min, delta);
 
         float normalizedValue = (value - min) / delta;
         if (!(normalizedValue >= 0.0f))
@@ -1408,7 +1574,9 @@ public sealed class WriteStream : IBitStream
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeFloat(ref float value)
     {
-        return WriteBits(SerializeCompat.SingleToUInt32Bits(value), 32);
+        uint bits = SerializeCompat.SingleToUInt32Bits(value);
+        Debug.Assert(SerializeUtil.FloatBitsAreFinite(bits), SerializeInternal.WriteFloatFiniteAssertMessage);
+        return WriteBits(bits, 32);
     }
 
     /// <inheritdoc/>
@@ -1416,6 +1584,7 @@ public sealed class WriteStream : IBitStream
     public bool SerializeDouble(ref double value)
     {
         ulong bits = SerializeCompat.DoubleToUInt64Bits(value);
+        Debug.Assert(SerializeUtil.DoubleBitsAreFinite(bits), SerializeInternal.WriteFloatFiniteAssertMessage);
         return SerializeUInt64(ref bits);
     }
 
@@ -1553,6 +1722,7 @@ public sealed class WriteStream : IBitStream
     public bool SerializeString(ref string value, int bufferSize)
     {
         SerializeInternal.ValidateBufferSize(bufferSize);
+        SerializeInternal.ValidateStringValue(value);
         int byteCount = Encoding.UTF8.GetByteCount(value);
         Debug.Assert(byteCount < bufferSize, SerializeInternal.WriteStringAssertMessage);
         int length = byteCount;
@@ -1586,36 +1756,6 @@ public sealed class WriteStream : IBitStream
     }
 
     /// <inheritdoc/>
-    public bool SerializeWideString(ref string value, int bufferSize)
-    {
-        SerializeInternal.ValidateBufferSize(bufferSize);
-        // each 32-bit group carries one UTF-16 CODE UNIT, not one code point
-        // (STANDARD.md, adopted 2026-08-15), and the length field counts units. A C#
-        // string IS a sequence of UTF-16 code units, so the split a 4-byte wchar_t
-        // port performs at this boundary (astral code point -> surrogate pair) has
-        // already happened in the string itself: transmit chars as they are. The
-        // payload being well-formed UTF-16 (no unpaired surrogate) is the writer's
-        // contract, debug-asserted per serialize#52; conforming readers refuse an
-        // unpaired surrogate.
-        Debug.Assert(SerializeCompat.Utf16IsValid(value), SerializeInternal.WriteWideStringAssertMessage);
-        int length = value.Length;
-        Debug.Assert(length < bufferSize, SerializeInternal.WriteStringAssertMessage);
-        if (!SerializeInt(ref length, 0, bufferSize - 1))
-        {
-            return false;
-        }
-        // NO align here -- deliberately unlike the narrow path (STANDARD.md)
-        for (int i = 0; i < value.Length; i++)
-        {
-            if (!WriteBits(value[i], 32))
-            {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    /// <inheritdoc/>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeAlign()
     {
@@ -1625,6 +1765,15 @@ public sealed class WriteStream : IBitStream
             return true;
         }
         return WriteBits(0, alignBits);
+    }
+
+    /// <inheritdoc/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeEnd()
+    {
+        // a writer's end emits nothing: the object ends at the bit index after its
+        // last field, and Flush leaves the final byte's unused bits zero
+        return true;
     }
 
     /// <inheritdoc/>
@@ -1823,7 +1972,7 @@ public sealed class ReadStream : IBitStream
         }
         if (_reader.BitsRead + bits > _reader.NumBits)
         {
-            return Fail(SerializeError.Overflow);
+            return Fail(SerializeError.PastEnd);
         }
         value = _reader.ReadBitsUnchecked(bits);
         return true;
@@ -1848,7 +1997,7 @@ public sealed class ReadStream : IBitStream
         }
         if (_reader.BitsRead + bits > _reader.NumBits)
         {
-            return Fail(SerializeError.Overflow);
+            return Fail(SerializeError.PastEnd);
         }
         if (bits <= 32)
         {
@@ -1874,14 +2023,23 @@ public sealed class ReadStream : IBitStream
         int bits = SerializeUtil.BitsRequired(unchecked((uint)min), unchecked((uint)max));
         if (_reader.BitsRead + bits > _reader.NumBits)
         {
-            return Fail(SerializeError.Overflow);
+            return Fail(SerializeError.PastEnd);
         }
         uint unsigned = _reader.ReadBitsUnchecked(bits);
         // compare and add in the unsigned domain: the range may be wider than 2^31
-        if (unsigned > unchecked((uint)max - (uint)min))
+        if (unsigned > unchecked((uint)max - (uint)min) && SerializeConformanceControls.Keeps("ranged-range"))
         {
             return Fail(SerializeError.ValueOutOfRange);
         }
+#if SERIALIZE_CONFORMANCE_CONTROLS
+        if (bits > 0 && !SerializeConformanceControls.Keeps("ranged-reconstruction"))
+        {
+            // NEGATIVE CONTROL: min is dropped on purpose from a decoded offset (a
+            // degenerate range takes its value from min and decodes nothing)
+            value = unchecked((int)unsigned);
+            return true;
+        }
+#endif
         value = unchecked((int)(unsigned + (uint)min));
         return true;
     }
@@ -1898,7 +2056,7 @@ public sealed class ReadStream : IBitStream
         int bits = SerializeUtil.BitsRequired64(unchecked((ulong)min), unchecked((ulong)max));
         if (_reader.BitsRead + bits > _reader.NumBits)
         {
-            return Fail(SerializeError.Overflow);
+            return Fail(SerializeError.PastEnd);
         }
         ulong unsigned;
         if (bits <= 32)
@@ -1917,6 +2075,16 @@ public sealed class ReadStream : IBitStream
         {
             return Fail(SerializeError.ValueOutOfRange);
         }
+#if SERIALIZE_CONFORMANCE_CONTROLS
+        if (bits > 0 && !SerializeConformanceControls.Keeps("int64-through-double"))
+        {
+            // NEGATIVE CONTROL: the decoded value goes through a double on purpose (a
+            // degenerate range takes its value from min and decodes nothing)
+            double throughDouble = unchecked((long)(unsigned + (ulong)min));
+            value = throughDouble >= 9223372036854775807.0 ? long.MaxValue : (long)throughDouble;
+            return true;
+        }
+#endif
         value = unchecked((long)(unsigned + (ulong)min));
         return true;
     }
@@ -1964,7 +2132,7 @@ public sealed class ReadStream : IBitStream
         int bits = SerializeUtil.BitsRequired128((UInt128Value)min, (UInt128Value)max);
         if (_reader.BitsRead + bits > _reader.NumBits)
         {
-            return Fail(SerializeError.Overflow);
+            return Fail(SerializeError.PastEnd);
         }
         UInt128Value unsigned = ReadGroups128(bits);
         // compare and add in the unsigned domain: the range may be wider than 2^127
@@ -2016,7 +2184,7 @@ public sealed class ReadStream : IBitStream
         }
         if (_reader.BitsRead + 64 > _reader.NumBits)
         {
-            return Fail(SerializeError.Overflow);
+            return Fail(SerializeError.PastEnd);
         }
         uint lo = _reader.ReadBitsUnchecked(32);
         uint hi = _reader.ReadBitsUnchecked(32);
@@ -2033,7 +2201,7 @@ public sealed class ReadStream : IBitStream
         }
         if (_reader.BitsRead + 128 > _reader.NumBits)
         {
-            return Fail(SerializeError.Overflow);
+            return Fail(SerializeError.PastEnd);
         }
         // the low 64 bit half first, then the high half, each half low dword first
         value = ReadGroups128(128);
@@ -2062,6 +2230,13 @@ public sealed class ReadStream : IBitStream
         {
             return false;
         }
+        // the raw bits are tested, before any conversion could quiet a signaling NaN,
+        // and the destination is written only once they pass (STANDARD.md, "Finite
+        // values only, every one bit exact")
+        if (!SerializeUtil.FloatBitsAreFinite(v) && SerializeConformanceControls.Keeps("float-finite"))
+        {
+            return Fail(SerializeError.NonFiniteFloat);
+        }
         value = SerializeCompat.UInt32BitsToSingle(v);
         return true;
     }
@@ -2074,6 +2249,10 @@ public sealed class ReadStream : IBitStream
         if (!SerializeUInt64(ref v))
         {
             return false;
+        }
+        if (!SerializeUtil.DoubleBitsAreFinite(v) && SerializeConformanceControls.Keeps("double-finite"))
+        {
+            return Fail(SerializeError.NonFiniteFloat);
         }
         value = SerializeCompat.UInt64BitsToDouble(v);
         return true;
@@ -2094,7 +2273,16 @@ public sealed class ReadStream : IBitStream
         {
             return Fail(SerializeError.ValueOutOfRange);
         }
-        value = SerializeInternal.DecodeCompressedFloat(integerValue, maxIntegerValue, delta, min);
+        // STANDARD.md, "The decode must be finite": every operand finite and the
+        // integer in range, the final add can still round past FLT_MAX at the top of
+        // a declaration that reaches it. That decode is refused, never handed back
+        float decoded = SerializeInternal.DecodeCompressedFloat(integerValue, maxIntegerValue, delta, min);
+        if (!SerializeUtil.FloatBitsAreFinite(SerializeCompat.SingleToUInt32Bits(decoded))
+            && SerializeConformanceControls.Keeps("compressed-float-finite"))
+        {
+            return Fail(SerializeError.NonFiniteFloat);
+        }
+        value = decoded;
         return true;
     }
 
@@ -2112,7 +2300,16 @@ public sealed class ReadStream : IBitStream
         {
             return Fail(SerializeError.ValueOutOfRange);
         }
-        value = SerializeInternal.DecodeCompressedFloat(integerValue, maxIntegerValue, delta, min);
+        // STANDARD.md, "The decode must be finite": every operand finite and the
+        // integer in range, the final add can still round past FLT_MAX at the top of
+        // a declaration that reaches it. That decode is refused, never handed back
+        float decoded = SerializeInternal.DecodeCompressedFloat(integerValue, maxIntegerValue, delta, min);
+        if (!SerializeUtil.FloatBitsAreFinite(SerializeCompat.SingleToUInt32Bits(decoded))
+            && SerializeConformanceControls.Keeps("compressed-float-finite"))
+        {
+            return Fail(SerializeError.NonFiniteFloat);
+        }
+        value = decoded;
         return true;
     }
 
@@ -2122,13 +2319,15 @@ public sealed class ReadStream : IBitStream
     /// rejected, never clamped.</summary>
     private bool ReadFixed(ref ulong raw, ulong rawMin, ulong rawMax, int bits)
     {
-        if (_error != SerializeError.None)
+        // a failed stream refuses this read too, zero bit reads included: a
+        // degenerate range consumes nothing and would otherwise always succeed
+        if (_error != SerializeError.None && (bits != 0 || SerializeConformanceControls.Keeps("fixed-degenerate-terminal")))
         {
             return false;
         }
         if (_reader.BitsRead + bits > _reader.NumBits)
         {
-            return Fail(SerializeError.Overflow);
+            return Fail(SerializeError.PastEnd);
         }
         ulong offset;
         if (bits <= 32)
@@ -2154,13 +2353,15 @@ public sealed class ReadStream : IBitStream
     /// <summary>The 128 bit storage counterpart of ReadFixed.</summary>
     private bool ReadFixed128(ref UInt128Value raw, UInt128Value rawMin, UInt128Value rawMax, int bits)
     {
-        if (_error != SerializeError.None)
+        // a failed stream refuses this read too, zero bit reads included: a
+        // degenerate range consumes nothing and would otherwise always succeed
+        if (_error != SerializeError.None && (bits != 0 || SerializeConformanceControls.Keeps("fixed-degenerate-terminal")))
         {
             return false;
         }
         if (_reader.BitsRead + bits > _reader.NumBits)
         {
-            return Fail(SerializeError.Overflow);
+            return Fail(SerializeError.PastEnd);
         }
         UInt128Value offset = ReadGroups128(bits);
         // compare and add in the unsigned domain: the raw range may be wider than 2^127
@@ -2294,7 +2495,7 @@ public sealed class ReadStream : IBitStream
         // compare in bytes rather than bits, consistent with the 64 bit bookkeeping
         if (data.Length > _reader.BitsRemaining / 8)
         {
-            return Fail(SerializeError.Overflow);
+            return Fail(SerializeError.PastEnd);
         }
         _reader.ReadSliceUnchecked(data.Length).CopyTo(data);
         return true;
@@ -2305,7 +2506,7 @@ public sealed class ReadStream : IBitStream
     {
         if (bufferSize < 1)
         {
-            return Fail(SerializeError.Overflow);
+            return Fail(SerializeError.ValueOutOfRange);
         }
         SerializeInternal.ValidateBufferSize(bufferSize);
         if (_error != SerializeError.None)
@@ -2323,95 +2524,28 @@ public sealed class ReadStream : IBitStream
         }
         if (length > _reader.BitsRemaining / 8)
         {
-            return Fail(SerializeError.Overflow);
+            return Fail(SerializeError.PastEnd);
         }
         ReadOnlySpan<byte> utf8 = _reader.ReadSliceUnchecked(length);
-        if (!SerializeCompat.Utf8IsValid(utf8))
+        // a NUL is well-formed UTF-8 but is refused as embedded_nul (STANDARD.md,
+        // "string"): the wire length field and the C-string length a downstream
+        // consumer perceives would disagree -- the classic two-lengths smuggling
+        // primitive. The terminator is never transmitted, so ANY NUL in the payload
+        // is refused. The scan runs over the whole payload BEFORE the encoding is
+        // checked, so a payload that breaks both rules (02 FF 00) is embedded_nul.
+        if (utf8.IndexOf((byte)0) >= 0 && SerializeConformanceControls.Keeps("string-embedded-nul"))
         {
-            return Fail(SerializeError.InvalidString);
+            return Fail(SerializeConformanceControls.Keeps("wrong-reason")
+                ? SerializeError.EmbeddedNul
+                : SerializeError.InvalidUtf8); // NEGATIVE CONTROL only: the wrong reason on purpose
         }
-        // an interior NUL is valid UTF-8 but is refused (serialize#8 ruling): the
-        // wire length field and the C-string length a downstream consumer perceives
-        // would disagree -- the classic two-lengths smuggling primitive. The
-        // terminator is never transmitted, so ANY NUL in the payload is interior.
-        if (utf8.IndexOf((byte)0) >= 0)
+        if (!SerializeCompat.Utf8IsValid(utf8) && SerializeConformanceControls.Keeps("string-utf8"))
         {
-            return Fail(SerializeError.InvalidString);
+            return Fail(SerializeError.InvalidUtf8);
         }
+        // the payload is well-formed UTF-8 with no NUL, so this decode is exact: no
+        // replacement character can appear, and a byte order mark is kept as U+FEFF
         value = Encoding.UTF8.GetString(utf8);
-        return true;
-    }
-
-    /// <inheritdoc/>
-    public bool SerializeWideString(ref string value, int bufferSize)
-    {
-        if (bufferSize < 1)
-        {
-            return Fail(SerializeError.Overflow);
-        }
-        SerializeInternal.ValidateBufferSize(bufferSize);
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
-        int length = 0;
-        if (!SerializeInt(ref length, 0, bufferSize - 1))
-        {
-            return false;
-        }
-        // bounds check the whole string before allocating
-        if ((long)length * 32 > _reader.BitsRemaining)
-        {
-            return Fail(SerializeError.Overflow);
-        }
-        // each 32-bit group carries one UTF-16 CODE UNIT, not one code point
-        // (STANDARD.md, adopted 2026-08-15). A C# string stores exactly these
-        // units, so a valid surrogate pair "recombines" by adjacency: storing the
-        // two units next to each other IS the astral character. What this reader
-        // adds on top of the wire format is content validation (serialize#8
-        // ruling: readers refuse): an unpaired surrogate is a refusal, not a
-        // pass-through, and an interior NUL is refused as the two-lengths
-        // smuggling primitive it is (wire length vs the shorter length a wcslen
-        // consumer perceives; the terminator is never transmitted, so ANY NUL in
-        // the payload is interior).
-        char[] chars = new char[length];
-        bool pendingHigh = false; // a high surrogate awaiting its low half
-        for (int i = 0; i < length; i++)
-        {
-            uint unit = _reader.ReadBitsUnchecked(32);
-            if (unit > 0xFFFF)
-            {
-                // not a UTF-16 code unit, and char could not hold it: fail
-                // rather than truncate (the C 2-byte wchar_t path exactly)
-                return Fail(SerializeError.ValueOutOfRange);
-            }
-            if (unit == 0)
-            {
-                return Fail(SerializeError.InvalidString); // interior NUL
-            }
-            if (pendingHigh)
-            {
-                if (unit < 0xDC00 || unit > 0xDFFF)
-                {
-                    return Fail(SerializeError.InvalidString); // high surrogate without its low half
-                }
-                pendingHigh = false;
-            }
-            else if (unit >= 0xD800 && unit <= 0xDBFF)
-            {
-                pendingHigh = true;
-            }
-            else if (unit >= 0xDC00 && unit <= 0xDFFF)
-            {
-                return Fail(SerializeError.InvalidString); // low surrogate with no high before it
-            }
-            chars[i] = (char)unit;
-        }
-        if (pendingHigh)
-        {
-            return Fail(SerializeError.InvalidString); // the payload ends inside a surrogate pair
-        }
-        value = new string(chars);
         return true;
     }
 
@@ -2430,11 +2564,40 @@ public sealed class ReadStream : IBitStream
         }
         if (_reader.BitsRead + alignBits > _reader.NumBits)
         {
-            return Fail(SerializeError.Overflow);
+            return Fail(SerializeError.PastEnd);
         }
-        if (_reader.ReadBitsUnchecked(alignBits) != 0)
+        if (_reader.ReadBitsUnchecked(alignBits) != 0 && SerializeConformanceControls.Keeps("align-padding"))
         {
-            return Fail(SerializeError.Align);
+            return Fail(SerializeError.NonzeroPadding);
+        }
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeEnd()
+    {
+        // like every read, consult the failure state first: a failed stream refuses
+        // its end with the first refusal's reason
+        if (_error != SerializeError.None)
+        {
+            return false;
+        }
+        // trailing data is checked before padding: a whole byte left over is
+        // trailing_data whatever the final byte's padding holds. The stream's length
+        // is the byte count it was handed, never the slack past it
+        long remaining = _reader.BitsRemaining;
+        if (remaining >= 8 && SerializeConformanceControls.Keeps("end-trailing-data"))
+        {
+            return Fail(SerializeError.TrailingData);
+        }
+        // fewer than 8 bits remain, so this is all of them: the final byte's padding
+        int paddingBits = (int)(remaining % 8);
+        if (paddingBits > 0)
+        {
+            if (_reader.ReadBitsUnchecked(paddingBits) != 0 && SerializeConformanceControls.Keeps("end-padding"))
+            {
+                return Fail(SerializeError.NonzeroPadding);
+            }
         }
         return true;
     }
@@ -2484,7 +2647,7 @@ public sealed class ReadStream : IBitStream
         }
         if (flag)
         {
-            return AcceptRelative(previous, (long)previous + 1, ref current);
+            return AcceptRelative(previous, (long)previous + 1, ref current, false);
         }
         foreach ((uint bucketMin, uint bucketMax) in SerializeInternal.IntRelativeBuckets)
         {
@@ -2499,7 +2662,7 @@ public sealed class ReadStream : IBitStream
                 {
                     return false;
                 }
-                return AcceptRelative(previous, (long)previous + difference, ref current);
+                return AcceptRelative(previous, (long)previous + difference, ref current, false);
             }
         }
         // the absolute tier's 32 raw bits are UNSIGNED: read into a signed sequence
@@ -2511,7 +2674,7 @@ public sealed class ReadStream : IBitStream
         {
             return false;
         }
-        return AcceptRelative(previous, v, ref current);
+        return AcceptRelative(previous, v, ref current, true);
     }
 
     /// <summary>
@@ -2521,16 +2684,30 @@ public sealed class ReadStream : IBitStream
     /// both exact — and this refuses the read unless the result lies in the domain,
     /// 0 to 2^31 - 1, and is strictly greater than previous. The domain's lower bound
     /// needs no comparison of its own: current greater than previous, with previous in
-    /// the domain by the contract asserted above, puts current at 1 or above. The
-    /// destination is written only once the check passes: a refused read leaves it
-    /// exactly as the caller left it.
+    /// the domain by the contract asserted above, puts current at 1 or above.
+    ///
+    /// The absolute tier is canonical too: a current in the domain, above previous,
+    /// and no more than 69914 above it has a bounded encoding, so the absolute one is
+    /// a second encoding of it and is refused as non_canonical. The domain and
+    /// ordering rule comes first, so a current outside the domain is
+    /// value_out_of_range whatever its difference, and the difference is taken in the
+    /// same long, where it cannot wrap. The bounded tiers need no such rule: each
+    /// one's payload range starts one past the tier before it.
+    ///
+    /// The destination is written only once every check passes: a refused read
+    /// leaves it exactly as the caller left it.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool AcceptRelative(int previous, long reconstructed, ref int current)
+    private bool AcceptRelative(int previous, long reconstructed, ref int current, bool absolute)
     {
         if (reconstructed > int.MaxValue || reconstructed <= previous)
         {
             return Fail(SerializeError.ValueOutOfRange);
+        }
+        if (absolute && reconstructed - previous <= SerializeInternal.IntRelativeLastBoundedDifference
+            && SerializeConformanceControls.Keeps("int-relative-canonical"))
+        {
+            return Fail(SerializeError.NonCanonical);
         }
         current = (int)reconstructed;
         return true;
@@ -2701,16 +2878,25 @@ public sealed class MeasureStream : IBitStream
     public bool SerializeBool(ref bool value) => Measure(1);
 
     /// <inheritdoc/>
-    public bool SerializeFloat(ref float value) => Measure(32);
+    public bool SerializeFloat(ref float value)
+    {
+        Debug.Assert(SerializeUtil.FloatBitsAreFinite(SerializeCompat.SingleToUInt32Bits(value)), SerializeInternal.WriteFloatFiniteAssertMessage);
+        return Measure(32);
+    }
 
     /// <inheritdoc/>
-    public bool SerializeDouble(ref double value) => Measure(64);
+    public bool SerializeDouble(ref double value)
+    {
+        Debug.Assert(SerializeUtil.DoubleBitsAreFinite(SerializeCompat.DoubleToUInt64Bits(value)), SerializeInternal.WriteFloatFiniteAssertMessage);
+        return Measure(64);
+    }
 
     /// <inheritdoc/>
     public bool SerializeCompressedFloat(ref float value, float min, float max, float resolution)
     {
         SerializeUtil.CompressedFloatParams(min, max, resolution,
-            out _, out int bits, out _);
+            out _, out int bits, out float delta);
+        SerializeInternal.ValidateCompressedFloatTop(min, delta);
         return Measure(bits);
     }
 
@@ -2718,6 +2904,7 @@ public sealed class MeasureStream : IBitStream
     public bool SerializeCompressedFloatPrecomputed(ref float value, uint maxIntegerValue, int bits, float delta, float min)
     {
         SerializeInternal.ValidatePrecomputedFloatParams(maxIntegerValue, bits, delta);
+        SerializeInternal.ValidateCompressedFloatTop(min, delta);
         return Measure(bits);
     }
 
@@ -2818,6 +3005,7 @@ public sealed class MeasureStream : IBitStream
     public bool SerializeString(ref string value, int bufferSize)
     {
         SerializeInternal.ValidateBufferSize(bufferSize);
+        SerializeInternal.ValidateStringValue(value);
         int byteCount = Encoding.UTF8.GetByteCount(value);
         Debug.Assert(byteCount < bufferSize, SerializeInternal.WriteStringAssertMessage);
         int length = byteCount;
@@ -2833,25 +3021,16 @@ public sealed class MeasureStream : IBitStream
     }
 
     /// <inheritdoc/>
-    public bool SerializeWideString(ref string value, int bufferSize)
-    {
-        SerializeInternal.ValidateBufferSize(bufferSize);
-        // counts UTF-16 code units -- value.Length is exactly the group count the
-        // write transmits (STANDARD.md, adopted 2026-08-15), so measure and write
-        // agree bit for bit
-        int length = value.Length;
-        Debug.Assert(length < bufferSize, SerializeInternal.WriteStringAssertMessage);
-        if (!SerializeInt(ref length, 0, bufferSize - 1))
-        {
-            return false;
-        }
-        return Measure((long)length * 32);
-    }
-
-    /// <inheritdoc/>
     public bool SerializeAlign()
     {
         return Measure(AlignBits);
+    }
+
+    /// <inheritdoc/>
+    public bool SerializeEnd()
+    {
+        // a measure's end costs nothing
+        return true;
     }
 
     /// <inheritdoc/>
@@ -3189,7 +3368,9 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeFloat(ref float value)
     {
-        return WriteBits(SerializeCompat.SingleToUInt32Bits(value), 32);
+        uint bits = SerializeCompat.SingleToUInt32Bits(value);
+        Debug.Assert(SerializeUtil.FloatBitsAreFinite(bits), SerializeInternal.WriteFloatFiniteAssertMessage);
+        return WriteBits(bits, 32);
     }
 
     /// <summary>Serializes an uncompressed 64 bit floating point value. Identical
@@ -3198,6 +3379,7 @@ public ref struct WriteBatch
     public bool SerializeDouble(ref double value)
     {
         ulong bits = SerializeCompat.DoubleToUInt64Bits(value);
+        Debug.Assert(SerializeUtil.DoubleBitsAreFinite(bits), SerializeInternal.WriteFloatFiniteAssertMessage);
         return SerializeUInt64(ref bits);
     }
 
@@ -3235,6 +3417,15 @@ public ref struct WriteBatch
         return WriteBits(0, alignBits);
     }
 
+    /// <summary>The end of the object: a writer's end emits nothing. Identical
+    /// semantics to WriteStream.SerializeEnd. Not to be confused with End, which ends
+    /// the batch.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeEnd()
+    {
+        return true;
+    }
+
     /// <summary>Serializes an array of bytes, aligning first. Delegated: syncs state
     /// down, runs WriteStream.SerializeBytes, recaptures — byte identical to the
     /// stream call.</summary>
@@ -3254,17 +3445,6 @@ public ref struct WriteBatch
     {
         Sync();
         bool ok = _stream.SerializeString(ref value, bufferSize);
-        Recapture();
-        return ok;
-    }
-
-    /// <summary>Serializes a string as 32 bits per UTF-16 code unit. Delegated: syncs state
-    /// down, runs WriteStream.SerializeWideString, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool SerializeWideString(ref string value, int bufferSize)
-    {
-        Sync();
-        bool ok = _stream.SerializeWideString(ref value, bufferSize);
         Recapture();
         return ok;
     }
@@ -3560,7 +3740,7 @@ public ref struct ReadBatch
         }
         if (_bitsRead + bits > _numBits)
         {
-            return Fail(SerializeError.Overflow);
+            return Fail(SerializeError.PastEnd);
         }
         value = ReadBitsUnchecked(bits);
         return true;
@@ -3587,7 +3767,7 @@ public ref struct ReadBatch
         }
         if (_bitsRead + bits > _numBits)
         {
-            return Fail(SerializeError.Overflow);
+            return Fail(SerializeError.PastEnd);
         }
         if (bits <= 32)
         {
@@ -3614,14 +3794,23 @@ public ref struct ReadBatch
         int bits = SerializeUtil.BitsRequired(unchecked((uint)min), unchecked((uint)max));
         if (_bitsRead + bits > _numBits)
         {
-            return Fail(SerializeError.Overflow);
+            return Fail(SerializeError.PastEnd);
         }
         uint unsigned = ReadBitsUnchecked(bits);
         // compare and add in the unsigned domain: the range may be wider than 2^31
-        if (unsigned > unchecked((uint)max - (uint)min))
+        if (unsigned > unchecked((uint)max - (uint)min) && SerializeConformanceControls.Keeps("ranged-range"))
         {
             return Fail(SerializeError.ValueOutOfRange);
         }
+#if SERIALIZE_CONFORMANCE_CONTROLS
+        if (bits > 0 && !SerializeConformanceControls.Keeps("ranged-reconstruction"))
+        {
+            // NEGATIVE CONTROL: min is dropped on purpose from a decoded offset (a
+            // degenerate range takes its value from min and decodes nothing)
+            value = unchecked((int)unsigned);
+            return true;
+        }
+#endif
         value = unchecked((int)(unsigned + (uint)min));
         return true;
     }
@@ -3639,7 +3828,7 @@ public ref struct ReadBatch
         int bits = SerializeUtil.BitsRequired64(unchecked((ulong)min), unchecked((ulong)max));
         if (_bitsRead + bits > _numBits)
         {
-            return Fail(SerializeError.Overflow);
+            return Fail(SerializeError.PastEnd);
         }
         ulong unsigned;
         if (bits <= 32)
@@ -3658,6 +3847,16 @@ public ref struct ReadBatch
         {
             return Fail(SerializeError.ValueOutOfRange);
         }
+#if SERIALIZE_CONFORMANCE_CONTROLS
+        if (bits > 0 && !SerializeConformanceControls.Keeps("int64-through-double"))
+        {
+            // NEGATIVE CONTROL: the decoded value goes through a double on purpose (a
+            // degenerate range takes its value from min and decodes nothing)
+            double throughDouble = unchecked((long)(unsigned + (ulong)min));
+            value = throughDouble >= 9223372036854775807.0 ? long.MaxValue : (long)throughDouble;
+            return true;
+        }
+#endif
         value = unchecked((long)(unsigned + (ulong)min));
         return true;
     }
@@ -3705,7 +3904,7 @@ public ref struct ReadBatch
         }
         if (_bitsRead + 64 > _numBits)
         {
-            return Fail(SerializeError.Overflow);
+            return Fail(SerializeError.PastEnd);
         }
         uint lo = ReadBitsUnchecked(32);
         uint hi = ReadBitsUnchecked(32);
@@ -3737,6 +3936,13 @@ public ref struct ReadBatch
         {
             return false;
         }
+        // the raw bits are tested, before any conversion could quiet a signaling NaN,
+        // and the destination is written only once they pass (STANDARD.md, "Finite
+        // values only, every one bit exact")
+        if (!SerializeUtil.FloatBitsAreFinite(v) && SerializeConformanceControls.Keeps("float-finite"))
+        {
+            return Fail(SerializeError.NonFiniteFloat);
+        }
         value = SerializeCompat.UInt32BitsToSingle(v);
         return true;
     }
@@ -3750,6 +3956,10 @@ public ref struct ReadBatch
         if (!SerializeUInt64(ref v))
         {
             return false;
+        }
+        if (!SerializeUtil.DoubleBitsAreFinite(v) && SerializeConformanceControls.Keeps("double-finite"))
+        {
+            return Fail(SerializeError.NonFiniteFloat);
         }
         value = SerializeCompat.UInt64BitsToDouble(v);
         return true;
@@ -3771,7 +3981,16 @@ public ref struct ReadBatch
         {
             return Fail(SerializeError.ValueOutOfRange);
         }
-        value = SerializeInternal.DecodeCompressedFloat(integerValue, maxIntegerValue, delta, min);
+        // STANDARD.md, "The decode must be finite": every operand finite and the
+        // integer in range, the final add can still round past FLT_MAX at the top of
+        // a declaration that reaches it. That decode is refused, never handed back
+        float decoded = SerializeInternal.DecodeCompressedFloat(integerValue, maxIntegerValue, delta, min);
+        if (!SerializeUtil.FloatBitsAreFinite(SerializeCompat.SingleToUInt32Bits(decoded))
+            && SerializeConformanceControls.Keeps("compressed-float-finite"))
+        {
+            return Fail(SerializeError.NonFiniteFloat);
+        }
+        value = decoded;
         return true;
     }
 
@@ -3790,7 +4009,16 @@ public ref struct ReadBatch
         {
             return Fail(SerializeError.ValueOutOfRange);
         }
-        value = SerializeInternal.DecodeCompressedFloat(integerValue, maxIntegerValue, delta, min);
+        // STANDARD.md, "The decode must be finite": every operand finite and the
+        // integer in range, the final add can still round past FLT_MAX at the top of
+        // a declaration that reaches it. That decode is refused, never handed back
+        float decoded = SerializeInternal.DecodeCompressedFloat(integerValue, maxIntegerValue, delta, min);
+        if (!SerializeUtil.FloatBitsAreFinite(SerializeCompat.SingleToUInt32Bits(decoded))
+            && SerializeConformanceControls.Keeps("compressed-float-finite"))
+        {
+            return Fail(SerializeError.NonFiniteFloat);
+        }
+        value = decoded;
         return true;
     }
 
@@ -3810,13 +4038,26 @@ public ref struct ReadBatch
         }
         if (_bitsRead + alignBits > _numBits)
         {
-            return Fail(SerializeError.Overflow);
+            return Fail(SerializeError.PastEnd);
         }
-        if (ReadBitsUnchecked(alignBits) != 0)
+        if (ReadBitsUnchecked(alignBits) != 0 && SerializeConformanceControls.Keeps("align-padding"))
         {
-            return Fail(SerializeError.Align);
+            return Fail(SerializeError.NonzeroPadding);
         }
         return true;
+    }
+
+    /// <summary>Reads the end of the object. Delegated: syncs state down, runs
+    /// ReadStream.SerializeEnd, recaptures — the same trailing data and padding
+    /// rules, in the same order. Not to be confused with End, which ends the
+    /// batch.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool SerializeEnd()
+    {
+        Sync();
+        bool ok = _stream.SerializeEnd();
+        Recapture();
+        return ok;
     }
 
     /// <summary>Serializes an array of bytes, aligning first. Delegated: syncs state
@@ -3837,17 +4078,6 @@ public ref struct ReadBatch
     {
         Sync();
         bool ok = _stream.SerializeString(ref value, bufferSize);
-        Recapture();
-        return ok;
-    }
-
-    /// <summary>Serializes a string as 32 bits per UTF-16 code unit. Delegated: syncs state
-    /// down, runs ReadStream.SerializeWideString, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool SerializeWideString(ref string value, int bufferSize)
-    {
-        Sync();
-        bool ok = _stream.SerializeWideString(ref value, bufferSize);
         Recapture();
         return ok;
     }
@@ -4090,10 +4320,10 @@ internal static class SerializeCompat
     public static double UInt64BitsToDouble(ulong value) => BitConverter.Int64BitsToDouble(unchecked((long)value));
 
     /// <summary>Well-formed UTF-16: every high surrogate is immediately followed
-    /// by a low surrogate, and no low surrogate stands alone. The wstring writer's
-    /// contract (STANDARD.md, adopted 2026-08-15), referenced only from
-    /// Debug.Assert — the C# analog of serialize_wstring_is_valid_utf16 in the C
-    /// port, taking its 2-byte wchar_t shape, which is what a C# string is.</summary>
+    /// by a low surrogate, and no low surrogate stands alone. The string writer's
+    /// contract, referenced only from Debug.Assert: Encoding.UTF8 replaces an
+    /// unpaired surrogate with U+FFFD rather than failing, so a string that is not
+    /// well-formed would be written as different text than the caller's.</summary>
     public static bool Utf16IsValid(string value)
     {
         for (int i = 0; i < value.Length; i++)
@@ -4176,7 +4406,7 @@ internal static class SerializeCompat
             {
                 return false;
             }
-            if (codePoint >= 0xD800 && codePoint <= 0xDFFF)
+            if (codePoint >= 0xD800 && codePoint <= 0xDFFF && SerializeConformanceControls.Keeps("string-utf8-surrogate"))
             {
                 return false; // surrogate code points are not scalar values
             }

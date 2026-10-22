@@ -41,12 +41,23 @@
     <CheckForOverflowUnderflow Condition="'$(SerializeCheckedArithmeticProbe)' == 'true'">true</CheckForOverflowUnderflow>
   </PropertyGroup>
 
+  <!-- NEGATIVE CONTROLS. STANDARD.md: for each refusal rule, a reader with that one
+       rule deleted, run against the real corpus, must fail exactly the vectors its
+       conformance-controls/<rule>.expected names. SerializeConformanceControls=true
+       compiles the switch that deletes one rule at a time (SerializeConformanceControls
+       in Serialize.cs) into this library and the test projects, which then run every
+       control. The ci workflow runs it. It is a gate, never a shipping configuration:
+       without it the switch is a constant the JIT folds away. -->
+  <PropertyGroup Condition="'$(SerializeConformanceControls)' == 'true'">
+    <DefineConstants>$(DefineConstants);SERIALIZE_CONFORMANCE_CONTROLS</DefineConstants>
+  </PropertyGroup>
+
   <!-- Version and package identity. Version travels with the tag: a release is
        tagged vX.Y.Z and this property carries the same X.Y.Z, so the assembly a
        user has in hand can be traced back to a commit. The package metadata is
        here ahead of any NuGet push so the two cannot drift apart later. -->
   <PropertyGroup>
-    <Version>1.9.2</Version>
+    <Version>2.0.0</Version>
     <PackageId>MasBandwidth.Serialize</PackageId>
     <Authors>Mas Bandwidth LLC</Authors>
     <Description>C# bitpacking serialization library, wire compatible with the C, C++, Go and Rust serialize libraries. Zero dependencies, zero allocation on the serialization path, and reads that fail cleanly on hostile input.</Description>
