@@ -102,6 +102,10 @@ internal static partial class Program
     private static bool s_conformanceStreams = true;
     private static bool s_conformanceBatch = true;
 
+    // the bool destination's sentinel, true in one presentation and false in the
+    // other, so a refused bool read that wrote either value is seen
+    private static bool s_conformanceBoolSentinel = true;
+
     private enum ConformanceExpect
     {
         Refused,
@@ -463,7 +467,9 @@ internal static partial class Program
                 return;
             }
             s_conformancePresentation = "stream, exact buffer";
+            s_conformanceBoolSentinel = false;
             ReadConformanceVector(vector, steps, new ReadStream(ConformanceBuffer(vector, 0), vector.Bytes.Length));
+            s_conformanceBoolSentinel = true;
             if (s_conformanceFailures != failuresBefore)
             {
                 return;
@@ -472,9 +478,19 @@ internal static partial class Program
 
         if (s_conformanceBatch)
         {
+            // the batch carries its own copy of the window load, slack and slack free
+            // paths both, so it is presented both ways too
             s_conformanceBatchChecks++;
-            s_conformancePresentation = "batch";
+            s_conformancePresentation = "batch, slack";
             ReadConformanceVectorBatch(vector, steps, new ReadStream(ConformanceBuffer(vector, ConformanceSlack), vector.Bytes.Length));
+            if (s_conformanceFailures != failuresBefore)
+            {
+                return;
+            }
+            s_conformancePresentation = "batch, exact buffer";
+            s_conformanceBoolSentinel = false;
+            ReadConformanceVectorBatch(vector, steps, new ReadStream(ConformanceBuffer(vector, 0), vector.Bytes.Length));
+            s_conformanceBoolSentinel = true;
         }
     }
 
@@ -484,7 +500,7 @@ internal static partial class Program
         {
             step.Bits = ConformanceSentinelBits;
             step.Number = ConformanceSentinelNumber;
-            step.Boolean = true;        // a refused bool read must leave this alone
+            step.Boolean = s_conformanceBoolSentinel;   // a refused bool read must leave this alone
             step.Text = "";
             step.Buffer = new byte[Math.Max(step.Width, 0)];
         }
@@ -518,15 +534,28 @@ internal static partial class Program
         Step? failed = run.FailedStep;
         if (failed != null)
         {
+            Int128Value sentinel = failed.Kind == StepKind.Fixed ? FixedSentinel(failed) : ConformanceSentinelNumber;
             if ((StepValueIsABitPattern(failed.Kind) && failed.Bits != ConformanceSentinelBits) ||
-                (StepValueIsANumber(failed.Kind) && failed.Number != ConformanceSentinelNumber) ||
-                (failed.Kind == StepKind.Bool && !failed.Boolean))
+                (StepValueIsANumber(failed.Kind) && failed.Number != sentinel) ||
+                (failed.Kind == StepKind.Bool && failed.Boolean != s_conformanceBoolSentinel))
             {
                 ConformanceFail(vector, "the refused read wrote to the destination");
                 return false;
             }
         }
         return true;
+    }
+
+    // The scalar sentinel as a fixed point step's storage width carries it: the runner
+    // narrows on the way in, so an untouched destination reads back narrowed.
+    private static Int128Value FixedSentinel(Step step)
+    {
+        switch (step.IntegerBits + step.FractionBits)
+        {
+            case 16: return (short)(long)ConformanceSentinelNumber;
+            case 32: return (int)(long)ConformanceSentinelNumber;
+            default: return ConformanceSentinelNumber;
+        }
     }
 
     // The checks every accepted vector carries: the stated values, then the bits consumed.
@@ -538,9 +567,10 @@ internal static partial class Program
         // A leading preceding_bits step carries no expectation of its own: it exists to
         // place the stream, and the record states only the operation under test.
         int offset = steps.Count - entries.Length;
-        if (offset < 0)
+        int leading = vector.Operation != "sequence" && steps.Count == 2 ? 1 : 0;
+        if (offset != leading)
         {
-            ConformanceFail(vector, "the expect list states more values than the vector has steps");
+            ConformanceFail(vector, $"the expect list states {entries.Length} values for {steps.Count - leading} steps");
             return;
         }
 
@@ -1135,42 +1165,30 @@ internal static partial class Program
             case 16:
             {
                 short value = (short)step.Number;
-                if (!batch.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max))
-                {
-                    return false;
-                }
+                bool ok = batch.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max);
                 step.Number = value;
-                return true;
+                return ok;
             }
             case 32:
             {
                 int value = (int)step.Number;
-                if (!batch.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max))
-                {
-                    return false;
-                }
+                bool ok = batch.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max);
                 step.Number = value;
-                return true;
+                return ok;
             }
             case 64:
             {
                 long value = (long)step.Number;
-                if (!batch.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max))
-                {
-                    return false;
-                }
+                bool ok = batch.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max);
                 step.Number = value;
-                return true;
+                return ok;
             }
             default:
             {
                 Int128Value value = step.Number;
-                if (!batch.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max))
-                {
-                    return false;
-                }
+                bool ok = batch.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max);
                 step.Number = value;
-                return true;
+                return ok;
             }
         }
     }
@@ -1182,9 +1200,9 @@ internal static partial class Program
         FAILS rather than passes, and so does a bound outside the long the API takes.
 
         The raw value travels through the runner as a 128 bit integer whatever the
-        declaration's storage width. The write back happens only on success, because a
-        16 or 32 bit storage width narrows the sentinel and a destination the library
-        correctly left alone would otherwise read as written.
+        declaration's storage width, and is written back whatever the verdict, so a
+        refused read that wrote its destination is seen: the refusal check compares it
+        against the sentinel narrowed to the storage width (FixedSentinel).
     */
     private static bool RunFixedStep(IBitStream stream, Step step)
     {
@@ -1195,42 +1213,30 @@ internal static partial class Program
             case 16:
             {
                 short value = (short)step.Number;
-                if (!stream.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max))
-                {
-                    return false;
-                }
+                bool ok = stream.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max);
                 step.Number = value;
-                return true;
+                return ok;
             }
             case 32:
             {
                 int value = (int)step.Number;
-                if (!stream.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max))
-                {
-                    return false;
-                }
+                bool ok = stream.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max);
                 step.Number = value;
-                return true;
+                return ok;
             }
             case 64:
             {
                 long value = (long)step.Number;
-                if (!stream.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max))
-                {
-                    return false;
-                }
+                bool ok = stream.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max);
                 step.Number = value;
-                return true;
+                return ok;
             }
             default:
             {
                 Int128Value value = step.Number;
-                if (!stream.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max))
-                {
-                    return false;
-                }
+                bool ok = stream.SerializeFixed(ref value, step.IntegerBits, step.FractionBits, min, max);
                 step.Number = value;
-                return true;
+                return ok;
             }
         }
     }
@@ -1623,6 +1629,11 @@ internal static partial class Program
         {
             return false;
         }
+        // a number that does not fit the int the API takes is not this parameter
+        if (wide < (Int128Value)int.MinValue || wide > (Int128Value)int.MaxValue)
+        {
+            return false;
+        }
         value = (int)wide;
         return true;
     }
@@ -1647,6 +1658,11 @@ internal static partial class Program
     {
         value = 0;
         if (!TryParseConformanceNumber(text, out Int128Value wide))
+        {
+            return false;
+        }
+        // a number that does not fit the int the API takes is not this parameter
+        if (wide < (Int128Value)int.MinValue || wide > (Int128Value)int.MaxValue)
         {
             return false;
         }
