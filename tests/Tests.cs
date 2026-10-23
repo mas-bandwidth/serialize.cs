@@ -434,6 +434,8 @@ internal static partial class Program
         RunTest("test_conformance_vectors", TestConformanceVectors);
         // the controls: a gate nobody has seen go red is a claim, not a measurement
         RunTest("test_conformance_unknown_operation", TestConformanceUnknownOperation);
+        // the corpus directory override the nightly functional test points at upstream
+        RunTest("test_conformance_dir_override", TestConformanceDirOverride);
 #if SERIALIZE_CONFORMANCE_CONTROLS
         RunTest("test_conformance_controls", TestConformanceControls);
 #endif

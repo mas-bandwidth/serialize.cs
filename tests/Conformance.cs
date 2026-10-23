@@ -299,17 +299,17 @@ internal static partial class Program
     {
         List<ConformanceVector> vectors = LoadConformanceVectors();
         int controls = 0;
-        foreach (string resource in typeof(Program).Assembly.GetManifestResourceNames())
+        foreach (KeyValuePair<string, string> file in ConformanceFiles(ControlResourcePrefix))
         {
-            if (!resource.StartsWith(ControlResourcePrefix, StringComparison.Ordinal)
-                || !resource.EndsWith(".expected", StringComparison.Ordinal))
+            string resource = file.Key;
+            if (!resource.EndsWith(".expected", StringComparison.Ordinal))
             {
                 continue;
             }
             string rule = resource.Substring(ControlResourcePrefix.Length,
                 resource.Length - ControlResourcePrefix.Length - ".expected".Length);
             HashSet<string> expected = new HashSet<string>();
-            foreach (string rawLine in ReadConformanceResource(resource).Split('\n'))
+            foreach (string rawLine in file.Value.Split('\n'))
             {
                 string line = rawLine.Trim();
                 if (line.Length > 0 && line[0] != '#')
@@ -1763,18 +1763,77 @@ internal static partial class Program
     private static List<ConformanceVector> LoadConformanceVectors()
     {
         List<ConformanceVector> vectors = new List<ConformanceVector>();
-        foreach (string resource in typeof(Program).Assembly.GetManifestResourceNames())
+        foreach (KeyValuePair<string, string> file in ConformanceFiles(ConformanceResourcePrefix))
         {
-            if (resource.StartsWith(ConformanceResourcePrefix, StringComparison.Ordinal)
-                && resource.EndsWith(".txt", StringComparison.Ordinal))
+            if (file.Key.EndsWith(".txt", StringComparison.Ordinal))
             {
-                ParseConformanceFile(resource, ReadConformanceResource(resource), vectors);
+                ParseConformanceFile(file.Key, file.Value, vectors);
             }
         }
         return vectors;
     }
 
+    /*
+        THE DIRECTORY OVERRIDE. By default the corpus and the controls are the copies
+        embedded from the vendored conformance/ and conformance-controls/. The nightly
+        functional test (.github/workflows/nightly-conformance.yml) holds this port to
+        the CURRENT corpus in mas-bandwidth/serialize instead, so it points the runner at
+        another directory: SERIALIZE_CONFORMANCE_DIR for the corpus and
+        SERIALIZE_CONFORMANCE_CONTROLS_DIR for the controls. Unset or empty means the
+        embedded copy. A directory that is set must exist: a typo silently falling back
+        to the vendored copy would be the job proving nothing while going green.
+    */
+    private const string ConformanceDirVariable = "SERIALIZE_CONFORMANCE_DIR";
+    private const string ControlsDirVariable = "SERIALIZE_CONFORMANCE_CONTROLS_DIR";
+
+    private static string? ConformanceOverrideDir(string resourcePrefix)
+    {
+        return Environment.GetEnvironmentVariable(
+            resourcePrefix == ControlResourcePrefix ? ControlsDirVariable : ConformanceDirVariable);
+    }
+
+    // the files under one prefix, keyed by resource name ("conformance/bits.txt"), in
+    // ordinal order: from the directory when one is given, else the embedded resources
+    private static SortedDictionary<string, string> ConformanceFiles(string resourcePrefix)
+    {
+        return ConformanceFiles(resourcePrefix, ConformanceOverrideDir(resourcePrefix));
+    }
+
+    private static SortedDictionary<string, string> ConformanceFiles(string resourcePrefix, string? directory)
+    {
+        SortedDictionary<string, string> files = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        if (string.IsNullOrEmpty(directory))
+        {
+            foreach (string resource in typeof(Program).Assembly.GetManifestResourceNames())
+            {
+                if (resource.StartsWith(resourcePrefix, StringComparison.Ordinal))
+                {
+                    files.Add(resource, ReadEmbeddedConformanceResource(resource));
+                }
+            }
+            return files;
+        }
+        Check(Directory.Exists(directory), $"{resourcePrefix} override directory {directory} does not exist");
+        foreach (string path in Directory.GetFiles(directory))
+        {
+            string name = Path.GetFileName(path);
+            if (name.EndsWith(".txt", StringComparison.Ordinal) || name.EndsWith(".expected", StringComparison.Ordinal))
+            {
+                files.Add(resourcePrefix + name, File.ReadAllText(path));
+            }
+        }
+        return files;
+    }
+
     private static string ReadConformanceResource(string resource)
+    {
+        string prefix = resource.StartsWith(ControlResourcePrefix, StringComparison.Ordinal)
+            ? ControlResourcePrefix : ConformanceResourcePrefix;
+        Check(ConformanceFiles(prefix).TryGetValue(resource, out string? text), $"conformance resource {resource} would not open");
+        return text!;
+    }
+
+    private static string ReadEmbeddedConformanceResource(string resource)
     {
         using (Stream? stream = typeof(Program).Assembly.GetManifestResourceStream(resource))
         {
@@ -1783,6 +1842,41 @@ internal static partial class Program
             {
                 return reader.ReadToEnd();
             }
+        }
+    }
+
+    /*
+        test_conformance_dir_override: the resolution logic of the override above, on a
+        directory this unit test builds itself beside the test assembly, inside the build
+        output (no environment variable is read or written). Unset and empty both mean
+        the embedded copy; a directory yields its .txt and .expected files under the
+        resource prefix, in ordinal order, verbatim, and nothing else.
+    */
+    private static void TestConformanceDirOverride()
+    {
+        SortedDictionary<string, string> embedded = ConformanceFiles(ConformanceResourcePrefix, null);
+        Check(embedded.Count > 0, "no embedded conformance files");
+        Check(ConformanceFiles(ConformanceResourcePrefix, "").Count == embedded.Count,
+            "an empty override directory did not mean the embedded copy");
+
+        string directory = Path.Combine(AppContext.BaseDirectory, "conformance-dir-override");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            File.WriteAllText(Path.Combine(directory, "b.txt"), "operation bits\n");
+            File.WriteAllText(Path.Combine(directory, "a.expected"), "a-vector\n");
+            File.WriteAllText(Path.Combine(directory, "README.md"), "not a corpus file\n");
+            SortedDictionary<string, string> files = ConformanceFiles(ControlResourcePrefix, directory);
+            Check(string.Join(",", files.Keys) == "conformance-controls/a.expected,conformance-controls/b.txt",
+                $"the override directory resolved to [{string.Join(",", files.Keys)}]");
+            Check(files["conformance-controls/b.txt"] == "operation bits\n", "the override file's text was not read verbatim");
+        }
+        finally
+        {
+            File.Delete(Path.Combine(directory, "b.txt"));
+            File.Delete(Path.Combine(directory, "a.expected"));
+            File.Delete(Path.Combine(directory, "README.md"));
+            Directory.Delete(directory);
         }
     }
 
