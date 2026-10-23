@@ -42,7 +42,7 @@ concurrency:
 jobs:
   conformance:
     name: port vs mas-bandwidth/serialize main, on the fleet
-    runs-on: [self-hosted, Linux, X64, fleet]
+    runs-on: [self-hosted, Linux, X64, nightly]
     timeout-minutes: 30
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: 1
