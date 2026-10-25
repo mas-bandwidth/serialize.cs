@@ -5,3 +5,11 @@ compat-cpp
 
 # local tooling logs, never library content
 tending/
+
+# the fuzzer's downloaded tools, instrumented build, corpus and reproducers (scripts/fuzz.sh)
+fuzz/.tools/
+fuzz/out/
+corpus/
+crash-*
+oom-*
+timeout-*

@@ -52,6 +52,16 @@
     <DefineConstants>$(DefineConstants);SERIALIZE_CONFORMANCE_CONTROLS</DefineConstants>
   </PropertyGroup>
 
+  <!-- THE FUZZER'S NEGATIVE CONTROL. SerializeFuzzSabotage=true plants a write/read
+       asymmetry in WriteStream.SerializeUInt16 (SERIALIZE_FUZZ_SABOTAGE in
+       Serialize.cs), so the coverage-guided fuzzer (fuzz/, scripts/fuzz.sh) is seen to
+       go red on a real asymmetry: the ci workflow's fuzz job requires the sabotaged
+       build to be caught inside the 60 s smoke budget, for that reason. It is a gate,
+       never a shipping configuration: without it the branch does not exist. -->
+  <PropertyGroup Condition="'$(SerializeFuzzSabotage)' == 'true'">
+    <DefineConstants>$(DefineConstants);SERIALIZE_FUZZ_SABOTAGE</DefineConstants>
+  </PropertyGroup>
+
   <!-- Version and package identity. Version travels with the tag: a release is
        tagged vX.Y.Z and this property carries the same X.Y.Z, so the assembly a
        user has in hand can be traced back to a commit. The package metadata is

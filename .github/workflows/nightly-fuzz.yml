@@ -1,0 +1,64 @@
+name: Nightly Fuzz
+
+# The extended run of the coverage-guided fuzzer (fuzz/Fuzz.cs, SharpFuzz +
+# libFuzzer, scripts/fuzz.sh), shaped like the C++ reference's nightly-fuzz.yml:
+# an hour a night, the corpus cached across runs so fuzzing is cumulative, and
+# crash reproducers uploaded on failure. The 60 s smoke and its negative control
+# run on every push in ci.yml. Replay a downloaded reproducer with:
+#   dotnet run -c Debug --project fuzz/Fuzz.csproj -- --replay crash-<sha1>
+
+on:
+  schedule:
+    - cron: '0 8 * * *'   # every day at 08:00 UTC
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Fuzz duration in seconds'
+        default: '3600'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: fuzz (SharpFuzz + libFuzzer, extended)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      # the corpus is cached across runs so fuzzing is cumulative: each night
+      # starts from the most recent corpus and saves the evolved one
+      - name: Restore corpus
+        uses: actions/cache/restore@v6
+        with:
+          path: corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-
+
+      - name: Fuzz
+        run: scripts/fuzz.sh "${{ github.event.inputs.duration || '3600' }}" corpus
+
+      - name: Save corpus
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: corpus
+          key: fuzz-corpus-${{ github.run_id }}
+
+      - name: Upload crash reproducers
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-crashes
+          path: |
+            crash-*
+            oom-*
+            timeout-*
+          if-no-files-found: ignore

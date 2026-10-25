@@ -112,6 +112,75 @@ jobs:
       - name: Run the red team harness (exit code is the verdict)
         run: dotnet run -c Release --project redteam/RedTeam.csproj
 
+  # THE COVERAGE-GUIDED FUZZER, the counterpart of the C++ reference's 60 s
+  # libFuzzer smoke: SharpFuzz instruments the library, libFuzzer drives
+  # fuzz/Fuzz.cs (hostile read of arbitrary bytes through every ReadStream
+  # primitive, with and without slack, plus a differential write -> measure ->
+  # read round trip). scripts/fuzz.sh pins libfuzzer-dotnet by release and sha256
+  # and SharpFuzz by version; nightly-fuzz.yml runs the same thing for an hour
+  # with a cumulative corpus.
+  fuzz:
+    name: fuzz (SharpFuzz + libFuzzer, 60 s)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - name: Fuzz for 60 s (libFuzzer's exit code is the verdict)
+        run: scripts/fuzz.sh 60
+      - name: Upload crash reproducers
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-crashes
+          path: |
+            crash-*
+            oom-*
+            timeout-*
+          if-no-files-found: ignore
+
+  # THE FUZZER'S NEGATIVE CONTROL, inverted: "a gate nobody has seen go red is a
+  # claim, not a measurement". SerializeFuzzSabotage=true plants a write/read
+  # asymmetry in the library (WriteStream.SerializeUInt16 drops the top bit of
+  # 0xFFFF), and the same 60 s run must FAIL on it -- on exactly that check, with
+  # a reproducer that replays to the same failure outside libFuzzer.
+  fuzz-control:
+    name: fuzz negative control (a planted asymmetry is caught inside 60 s)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - name: The sabotaged library must be caught within the smoke budget
+        run: |
+          start=$(date +%s)
+          if SERIALIZE_FUZZ_SABOTAGE=1 scripts/fuzz.sh 60 > fuzz-control.log 2>&1; then
+            cat fuzz-control.log
+            echo "::error::60 s of fuzzing against a planted write/read asymmetry found nothing"
+            exit 1
+          fi
+          end=$(date +%s)
+          cat fuzz-control.log
+          grep -q "FUZZ CHECK FAILED: roundtrip uint16: wrote 65535, read 32767" fuzz-control.log || {
+            echo "::error::the sabotaged run failed, but not on the planted asymmetry"
+            exit 1
+          }
+          ls crash-*
+          echo "caught the planted asymmetry in $((end - start)) s wall, build and instrumentation included"
+      - name: The reproducer replays to the same failure without libFuzzer
+        run: |
+          if dotnet run -c Debug --project fuzz/Fuzz.csproj -p:SerializeFuzzSabotage=true -- --replay crash-* > replay.log 2>&1; then
+            cat replay.log
+            echo "::error::the crash reproducer does not reproduce"
+            exit 1
+          fi
+          cat replay.log
+          grep -q "FUZZ CHECK FAILED: roundtrip uint16" replay.log
+
   checked-arithmetic:
     name: checked arithmetic (a reader must not trap)
     runs-on: ubuntu-latest
@@ -178,7 +247,7 @@ jobs:
       # 128 bit pair's fields — the API surface the family shares by design.
       - name: dotnet format style + analyzers (verify, all projects)
         run: |
-          for p in src/Serialize.csproj tests/Tests.csproj tests-ns21/TestsNs21.csproj compat/Compat.csproj redteam/RedTeam.csproj; do
+          for p in src/Serialize.csproj tests/Tests.csproj tests-ns21/TestsNs21.csproj compat/Compat.csproj redteam/RedTeam.csproj fuzz/Fuzz.csproj; do
             echo "== $p"
             dotnet format style "$p" --verify-no-changes --severity warn
             dotnet format analyzers "$p" --verify-no-changes --severity warn
