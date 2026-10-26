@@ -70,6 +70,19 @@ internal static class RedTeam
         public byte[] Bytes = new byte[7];
         public string Str = "";
         public string Stones = "";
+        // the wide surface: 128 bit integers and fixed point in every storage
+        public UInt128Value U128;
+        public Int128Value I128Full, I128Group96, I128Group64, I128Group32, I128Degenerate;
+        public long FixedS64;
+        public ulong FixedU64;
+        public int FixedS32;
+        public uint FixedU32;
+        public short FixedS16;
+        public ushort FixedU16;
+        public Int128Value FixedI128;
+        public UInt128Value FixedU128;
+        public long FixedFrac0;
+        public Int128Value FixedI128Frac0;
     }
 
     // exactly the golden sequence: what a real server's read path looks like
@@ -121,6 +134,62 @@ internal static class RedTeam
         s.SerializeBytes(p.Bytes);
         s.SerializeEnd();
         return s.Error == SerializeError.None;
+    }
+
+    // the wide surface: UInt128, signed Int128 across the 32/64/96/128 group
+    // boundaries (plus a degenerate zero-bit range), and fixed point in every
+    // storage width, with zero and nonzero fraction configurations. The same
+    // sequence runs on the write side to build canonical witnesses, so the
+    // reader under attack is held to bytes this function itself produced.
+    private static bool ReadWide128(IBitStream s, Packet p)
+    {
+        s.SerializeUInt128(ref p.U128);
+        s.SerializeInt128(ref p.I128Full, Int128Value.MinValue, Int128Value.MaxValue);
+        s.SerializeInt128(ref p.I128Group96, Int128Value.Zero, new Int128Value(0xFFFFFFFFUL, ulong.MaxValue));
+        s.SerializeInt128(ref p.I128Group64, (Int128Value)long.MinValue, (Int128Value)long.MaxValue);
+        s.SerializeInt128(ref p.I128Group32, Int128Value.Zero, new Int128Value(0, 0xFFFFFFFFUL));
+        s.SerializeInt128(ref p.I128Degenerate, (Int128Value)42, (Int128Value)42);
+        s.SerializeFixed(ref p.FixedS64, 48, 16, -100000, +100000);
+        s.SerializeFixed(ref p.FixedU64, 32, 32, 0, 30000);
+        s.SerializeFixed(ref p.FixedS32, 16, 16, -2000, +2000);
+        s.SerializeFixed(ref p.FixedU32, 16, 16, 0, 30000);
+        s.SerializeFixed(ref p.FixedS16, 8, 8, -100, +100);
+        s.SerializeFixed(ref p.FixedU16, 8, 8, 0, 200);
+        s.SerializeAlign();
+        s.SerializeFixed(ref p.FixedI128, 112, 16, -144115188075855872, +144115188075855872);
+        s.SerializeFixed(ref p.FixedU128, 64, 64, 0, long.MaxValue);
+        s.SerializeFixed(ref p.FixedFrac0, 64, 0, -1000000, +1000000);
+        s.SerializeFixed(ref p.FixedI128Frac0, 128, 0, -1000, +1000);
+        s.SerializeEnd();
+        return s.Error == SerializeError.None;
+    }
+
+    // the batch twin of ReadWide128: identical calls through a ReadBatch, whose
+    // 128 bit and fixed point operations delegate to the stream. The batch is
+    // ended on every path, and the verdict is the stream's latched error.
+    private static bool ReadWide128Batch(ReadStream stream, Packet p)
+    {
+        ReadBatch b = stream.BeginBatch();
+        b.SerializeUInt128(ref p.U128);
+        b.SerializeInt128(ref p.I128Full, Int128Value.MinValue, Int128Value.MaxValue);
+        b.SerializeInt128(ref p.I128Group96, Int128Value.Zero, new Int128Value(0xFFFFFFFFUL, ulong.MaxValue));
+        b.SerializeInt128(ref p.I128Group64, (Int128Value)long.MinValue, (Int128Value)long.MaxValue);
+        b.SerializeInt128(ref p.I128Group32, Int128Value.Zero, new Int128Value(0, 0xFFFFFFFFUL));
+        b.SerializeInt128(ref p.I128Degenerate, (Int128Value)42, (Int128Value)42);
+        b.SerializeFixed(ref p.FixedS64, 48, 16, -100000, +100000);
+        b.SerializeFixed(ref p.FixedU64, 32, 32, 0, 30000);
+        b.SerializeFixed(ref p.FixedS32, 16, 16, -2000, +2000);
+        b.SerializeFixed(ref p.FixedU32, 16, 16, 0, 30000);
+        b.SerializeFixed(ref p.FixedS16, 8, 8, -100, +100);
+        b.SerializeFixed(ref p.FixedU16, 8, 8, 0, 200);
+        b.SerializeAlign();
+        b.SerializeFixed(ref p.FixedI128, 112, 16, -144115188075855872, +144115188075855872);
+        b.SerializeFixed(ref p.FixedU128, 64, 64, 0, long.MaxValue);
+        b.SerializeFixed(ref p.FixedFrac0, 64, 0, -1000000, +1000000);
+        b.SerializeFixed(ref p.FixedI128Frac0, 128, 0, -1000, +1000);
+        b.SerializeEnd();
+        b.End();
+        return stream.Error == SerializeError.None;
     }
 
     private delegate bool ReadFn(IBitStream s, Packet p);
@@ -677,6 +746,466 @@ internal static class RedTeam
         }
     }
 
+    // ---- attack 5b: the wide surface (128 bit + fixed point), stream and batch ----
+    //
+    // Bounded pairwise matrix, not a second Cartesian fuzz: each wide field is
+    // attacked on its own (so a refusal's destination and terminal latch are
+    // observable), the combined sequence is attacked whole (so stream and batch
+    // must agree bit for bit), and canonical witnesses pin the accepted side to
+    // values and bytes the unit suites already hold (tests/FixedPoint.cs).
+
+    private static int _wideCases;
+    private static int _wideStream;
+    private static int _wideBatch;
+
+    private static string WideDigest(Packet p)
+    {
+        return string.Join('|',
+            p.U128, p.I128Full, p.I128Group96, p.I128Group64, p.I128Group32, p.I128Degenerate,
+            p.FixedS64, p.FixedU64, p.FixedS32, p.FixedU32, p.FixedS16, p.FixedU16,
+            p.FixedI128, p.FixedU128, p.FixedFrac0, p.FixedI128Frac0);
+    }
+
+    private static void SetWideSentinels(Packet p)
+    {
+        p.U128 = new UInt128Value(0xA5A5A5A5A5A5A5A5UL, 0x5A5A5A5A5A5A5A5AUL);
+        p.I128Full = new Int128Value(0xA5A5A5A5A5A5A5A5UL, 0x5A5A5A5A5A5A5A5AUL);
+        p.I128Group96 = p.I128Full;
+        p.I128Group64 = p.I128Full;
+        p.I128Group32 = p.I128Full;
+        p.I128Degenerate = p.I128Full;
+        p.FixedS64 = -777777777L;
+        p.FixedU64 = 777777777UL;
+        p.FixedS32 = -777777;
+        p.FixedU32 = 777777U;
+        p.FixedS16 = -7777;
+        p.FixedU16 = 7777;
+        p.FixedI128 = p.I128Full;
+        p.FixedU128 = p.U128;
+        p.FixedFrac0 = -777777777L;
+        p.FixedI128Frac0 = p.I128Full;
+    }
+
+    private sealed class WideField
+    {
+        public string Name = "";
+        public Func<IBitStream, Packet, bool> Stream = null!;
+        public Func<ReadStream, Packet, bool> Batch = null!;
+        public Func<Packet, bool> InRange = null!;
+    }
+
+    private static WideField[] WideFields()
+    {
+        return new WideField[]
+        {
+            new WideField { Name = "u128", Stream = (s, p) => s.SerializeUInt128(ref p.U128),
+                Batch = (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeUInt128(ref p.U128); b.End(); return ok; },
+                InRange = p => true },
+            new WideField { Name = "i128-128", Stream = (s, p) => s.SerializeInt128(ref p.I128Full, Int128Value.MinValue, Int128Value.MaxValue),
+                Batch = (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeInt128(ref p.I128Full, Int128Value.MinValue, Int128Value.MaxValue); b.End(); return ok; },
+                InRange = p => true },
+            new WideField { Name = "i128-96", Stream = (s, p) => s.SerializeInt128(ref p.I128Group96, Int128Value.Zero, new Int128Value(0xFFFFFFFFUL, ulong.MaxValue)),
+                Batch = (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeInt128(ref p.I128Group96, Int128Value.Zero, new Int128Value(0xFFFFFFFFUL, ulong.MaxValue)); b.End(); return ok; },
+                InRange = p => p.I128Group96 >= Int128Value.Zero && p.I128Group96 <= new Int128Value(0xFFFFFFFFUL, ulong.MaxValue) },
+            new WideField { Name = "i128-64", Stream = (s, p) => s.SerializeInt128(ref p.I128Group64, (Int128Value)long.MinValue, (Int128Value)long.MaxValue),
+                Batch = (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeInt128(ref p.I128Group64, (Int128Value)long.MinValue, (Int128Value)long.MaxValue); b.End(); return ok; },
+                InRange = p => p.I128Group64 >= (Int128Value)long.MinValue && p.I128Group64 <= (Int128Value)long.MaxValue },
+            new WideField { Name = "i128-32", Stream = (s, p) => s.SerializeInt128(ref p.I128Group32, Int128Value.Zero, new Int128Value(0, 0xFFFFFFFFUL)),
+                Batch = (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeInt128(ref p.I128Group32, Int128Value.Zero, new Int128Value(0, 0xFFFFFFFFUL)); b.End(); return ok; },
+                InRange = p => p.I128Group32 >= Int128Value.Zero && p.I128Group32 <= new Int128Value(0, 0xFFFFFFFFUL) },
+            new WideField { Name = "i128-degenerate", Stream = (s, p) => s.SerializeInt128(ref p.I128Degenerate, (Int128Value)42, (Int128Value)42),
+                Batch = (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeInt128(ref p.I128Degenerate, (Int128Value)42, (Int128Value)42); b.End(); return ok; },
+                InRange = p => p.I128Degenerate == (Int128Value)42 },
+            new WideField { Name = "fixed-s64-q48.16", Stream = (s, p) => s.SerializeFixed(ref p.FixedS64, 48, 16, -100000, +100000),
+                Batch = (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedS64, 48, 16, -100000, +100000); b.End(); return ok; },
+                InRange = p => p.FixedS64 >= (-100000L << 16) && p.FixedS64 <= (100000L << 16) },
+            new WideField { Name = "fixed-u64-q32.32", Stream = (s, p) => s.SerializeFixed(ref p.FixedU64, 32, 32, 0, 30000),
+                Batch = (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedU64, 32, 32, 0, 30000); b.End(); return ok; },
+                InRange = p => p.FixedU64 <= (30000UL << 32) },
+            new WideField { Name = "fixed-s32-q16.16", Stream = (s, p) => s.SerializeFixed(ref p.FixedS32, 16, 16, -2000, +2000),
+                Batch = (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedS32, 16, 16, -2000, +2000); b.End(); return ok; },
+                InRange = p => p.FixedS32 >= (-2000 << 16) && p.FixedS32 <= (2000 << 16) },
+            new WideField { Name = "fixed-u32-q16.16", Stream = (s, p) => s.SerializeFixed(ref p.FixedU32, 16, 16, 0, 30000),
+                Batch = (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedU32, 16, 16, 0, 30000); b.End(); return ok; },
+                InRange = p => p.FixedU32 <= (30000U << 16) },
+            new WideField { Name = "fixed-s16-q8.8", Stream = (s, p) => s.SerializeFixed(ref p.FixedS16, 8, 8, -100, +100),
+                Batch = (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedS16, 8, 8, -100, +100); b.End(); return ok; },
+                InRange = p => p.FixedS16 >= (-100 << 8) && p.FixedS16 <= (100 << 8) },
+            new WideField { Name = "fixed-u16-q8.8", Stream = (s, p) => s.SerializeFixed(ref p.FixedU16, 8, 8, 0, 200),
+                Batch = (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedU16, 8, 8, 0, 200); b.End(); return ok; },
+                InRange = p => p.FixedU16 <= (200 << 8) },
+            new WideField { Name = "fixed-i128-q112.16", Stream = (s, p) => s.SerializeFixed(ref p.FixedI128, 112, 16, -144115188075855872, +144115188075855872),
+                Batch = (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedI128, 112, 16, -144115188075855872, +144115188075855872); b.End(); return ok; },
+                InRange = p => p.FixedI128 >= ((Int128Value)(-144115188075855872L) << 16) && p.FixedI128 <= ((Int128Value)144115188075855872L << 16) },
+            new WideField { Name = "fixed-u128-q64.64", Stream = (s, p) => s.SerializeFixed(ref p.FixedU128, 64, 64, 0, long.MaxValue),
+                Batch = (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedU128, 64, 64, 0, long.MaxValue); b.End(); return ok; },
+                InRange = p => p.FixedU128 <= ((UInt128Value)long.MaxValue << 64) },
+            new WideField { Name = "fixed-s64-q64.0", Stream = (s, p) => s.SerializeFixed(ref p.FixedFrac0, 64, 0, -1000000, +1000000),
+                Batch = (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedFrac0, 64, 0, -1000000, +1000000); b.End(); return ok; },
+                InRange = p => p.FixedFrac0 >= -1000000 && p.FixedFrac0 <= 1000000 },
+            new WideField { Name = "fixed-i128-q128.0", Stream = (s, p) => s.SerializeFixed(ref p.FixedI128Frac0, 128, 0, -1000, +1000),
+                Batch = (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedI128Frac0, 128, 0, -1000, +1000); b.End(); return ok; },
+                InRange = p => p.FixedI128Frac0 >= (Int128Value)(-1000) && p.FixedI128Frac0 <= (Int128Value)1000 },
+        };
+    }
+
+    private static void AttemptWideField(WideField field, byte[] data, int bytes, int slack, bool batch, string label)
+    {
+        _cases++;
+        _wideCases++;
+        if (batch) { _wideBatch++; } else { _wideStream++; }
+        byte[] buffer = new byte[bytes + slack];
+        Array.Copy(data, buffer, Math.Min(bytes, data.Length));
+        for (int i = bytes; i < buffer.Length; i++) buffer[i] = 0xFF;
+        Packet p = new Packet();
+        SetWideSentinels(p);
+        string before = WideDigest(p);
+        try
+        {
+            ReadStream rs = new ReadStream(buffer, bytes);
+            bool ok = batch ? field.Batch(rs, p) : field.Stream(rs, p);
+            if (rs.BitsProcessed > (long)bytes * 8)
+            {
+                Finding($"{label}: BitsProcessed {rs.BitsProcessed} exceeds packet {(long)bytes * 8} bits");
+            }
+            if (!ok)
+            {
+                if (rs.Error == SerializeError.None)
+                {
+                    Finding($"{label}: wide read reported failure with Error == None");
+                }
+                if (WideDigest(p) != before)
+                {
+                    Finding($"{label}: refused wide read wrote its destination ({WideDigest(p)})");
+                }
+                // terminal latch: a second read on the failed stream must also
+                // refuse, keep the first error, and still not write
+                SerializeError first = rs.Error;
+                bool again = batch ? field.Batch(rs, p) : field.Stream(rs, p);
+                if (again || rs.Error != first || WideDigest(p) != before)
+                {
+                    Finding($"{label}: wide read after failure not latched (again={again}, error {first} -> {rs.Error})");
+                }
+            }
+            else
+            {
+                if (rs.Error != SerializeError.None)
+                {
+                    Finding($"{label}: wide read reported success with Error == {rs.Error}");
+                }
+                if (!field.InRange(p))
+                {
+                    Finding($"{label}: wide read decoded out of range ({WideDigest(p)})");
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Finding($"{label}: THREW {e.GetType().Name}: {e.Message}");
+        }
+    }
+
+    private static string WideBatchDigest(byte[] data, int bytes, int slack, byte poison)
+    {
+        byte[] buffer = new byte[bytes + slack];
+        Array.Copy(data, buffer, Math.Min(bytes, data.Length));
+        for (int i = bytes; i < buffer.Length; i++) buffer[i] = poison;
+        ReadStream s = new ReadStream(buffer, bytes);
+        Packet p = new Packet();
+        bool ok;
+        try { ok = ReadWide128Batch(s, p); }
+        catch (Exception e) { return "THREW " + e.GetType().Name + ": " + e.Message; }
+        return Digest(p, ok, s.Error, s.BitsProcessed);
+    }
+
+    private static Packet WideCanonicalPacket()
+    {
+        Packet p = new Packet();
+        p.U128 = new UInt128Value(0x0123456789ABCDEFUL, 0xFEDCBA9876543210UL);
+        p.I128Full = new Int128Value(0x0123456789ABCDEFUL, 0x0FEDCBA987654321UL);
+        p.I128Group96 = new Int128Value(0x89ABCDEFUL, 0x0123456789ABCDEFUL);
+        p.I128Group64 = (Int128Value)(-5000000000L);
+        p.I128Group32 = new Int128Value(0, 0xDEADBEEFUL);
+        p.I128Degenerate = (Int128Value)42;
+        p.FixedS64 = -(54321L * 65536 + 12345);
+        p.FixedU64 = (29999UL << 32) + 12345UL;
+        p.FixedS32 = 1234 * 65536 + 32768;
+        p.FixedU32 = 29999U * 65536U + 65535U;
+        p.FixedS16 = -(3 * 256 + 64);
+        p.FixedU16 = 199 * 256 + 255;
+        p.FixedI128 = (Int128Value)(-(98765432109L * 65536 + 4321));
+        p.FixedU128 = new UInt128Value(0x0123456789ABCDEFUL, 0x0FEDCBA987654321UL);
+        p.FixedFrac0 = -999999;
+        p.FixedI128Frac0 = (Int128Value)(-1000);
+        return p;
+    }
+
+    private static bool WriteWide128Batch(ref WriteBatch b, Packet p)
+    {
+        b.SerializeUInt128(ref p.U128);
+        b.SerializeInt128(ref p.I128Full, Int128Value.MinValue, Int128Value.MaxValue);
+        b.SerializeInt128(ref p.I128Group96, Int128Value.Zero, new Int128Value(0xFFFFFFFFUL, ulong.MaxValue));
+        b.SerializeInt128(ref p.I128Group64, (Int128Value)long.MinValue, (Int128Value)long.MaxValue);
+        b.SerializeInt128(ref p.I128Group32, Int128Value.Zero, new Int128Value(0, 0xFFFFFFFFUL));
+        b.SerializeInt128(ref p.I128Degenerate, (Int128Value)42, (Int128Value)42);
+        b.SerializeFixed(ref p.FixedS64, 48, 16, -100000, +100000);
+        b.SerializeFixed(ref p.FixedU64, 32, 32, 0, 30000);
+        b.SerializeFixed(ref p.FixedS32, 16, 16, -2000, +2000);
+        b.SerializeFixed(ref p.FixedU32, 16, 16, 0, 30000);
+        b.SerializeFixed(ref p.FixedS16, 8, 8, -100, +100);
+        b.SerializeFixed(ref p.FixedU16, 8, 8, 0, 200);
+        b.SerializeAlign();
+        b.SerializeFixed(ref p.FixedI128, 112, 16, -144115188075855872, +144115188075855872);
+        b.SerializeFixed(ref p.FixedU128, 64, 64, 0, long.MaxValue);
+        b.SerializeFixed(ref p.FixedFrac0, 64, 0, -1000000, +1000000);
+        b.SerializeFixed(ref p.FixedI128Frac0, 128, 0, -1000, +1000);
+        b.SerializeEnd();
+        return b.Error == SerializeError.None;
+    }
+
+    // pinned bytes from tests/FixedPoint.cs (derived there from STANDARD.md by
+    // an independent oracle, cross-checked against the C++ suite; never
+    // regenerated from this implementation)
+    private static readonly byte[] WideUint128Golden =
+    {
+        0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE,
+        0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01,
+    };
+
+    private static readonly byte[] WideInt128Golden =
+    {
+        0x11, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE, 0x3F,
+    };
+
+    private static readonly byte[] WideFixedGolden =
+    {
+        0xC0, 0x60, 0x00, 0x80, 0xA2, 0x7C, 0xFC, 0xEC, 0x26, 0xCB, 0xFF, 0xFF,
+        0x4B, 0x1D, 0x1F, 0xEF, 0xD2, 0x1A, 0x1F, 0x01, 0xE9, 0xFF, 0xFF, 0x09,
+        0x19, 0x2A, 0x3B, 0x4C, 0x5D, 0x6E, 0x7F, 0x78, 0x6F, 0x5E, 0x4D, 0x3C,
+        0x2B, 0x1A, 0x09, 0x04,
+    };
+
+    private static void AttackWide128()
+    {
+        // canonical witness: stream write, batch write, stream read, batch read
+        // must all agree on the same bytes and the same values, at exact
+        // capacity and with poisoned slack
+        Packet canonical = WideCanonicalPacket();
+        byte[] streamBuf = new byte[512];
+        WriteStream ws = new WriteStream(streamBuf);
+        ReadWide128(ws, canonical);
+        ws.Flush();
+        int canonicalBytes = (int)ws.BytesProcessed;
+        byte[] batchBuf = new byte[512];
+        WriteStream wb = new WriteStream(batchBuf);
+        WriteBatch batch = wb.BeginBatch();
+        Packet batchPacket = WideCanonicalPacket();
+        WriteWide128Batch(ref batch, batchPacket);
+        batch.End();
+        wb.Flush();
+        _cases++;
+        if ((int)wb.BytesProcessed != canonicalBytes
+            || !streamBuf.AsSpan(0, canonicalBytes).SequenceEqual(batchBuf.AsSpan(0, canonicalBytes)))
+        {
+            Finding("wide canonical: stream and batch writes differ");
+        }
+        foreach (int slack in new[] { 0, 1, 8, 64 })
+        {
+            _cases++;
+            string viaStream = ReadDigest(ReadWide128, streamBuf, canonicalBytes, slack, 0xFF);
+            string viaBatch = WideBatchDigest(streamBuf, canonicalBytes, slack, 0xFF);
+            Packet back = new Packet();
+            ReadStream rs = new ReadStream(streamBuf, canonicalBytes);
+            bool ok = ReadWide128(rs, back);
+            if (!ok || WideDigest(back) != WideDigest(canonical))
+            {
+                Finding($"wide canonical slack={slack}: stream read back differs (ok={ok})");
+            }
+            if (viaStream != viaBatch)
+            {
+                Finding($"wide canonical slack={slack}: stream and batch digests differ\n      stream: {viaStream}\n      batch:  {viaBatch}");
+            }
+        }
+
+        // pinned witnesses: the exact bytes the unit suites already hold
+        {
+            _cases++;
+            UInt128Value expectU = new UInt128Value(0x0123456789ABCDEFUL, 0xFEDCBA9876543210UL);
+            Packet p = new Packet();
+            ReadStream rs = new ReadStream(WideUint128Golden, WideUint128Golden.Length);
+            if (!rs.SerializeUInt128(ref p.U128) || p.U128 != expectU)
+            {
+                Finding($"wide pinned uint128: stream decoded {p.U128}, expected {expectU}");
+            }
+            Packet pb = new Packet();
+            ReadStream rsb = new ReadStream(WideUint128Golden, WideUint128Golden.Length);
+            ReadBatch bb = rsb.BeginBatch();
+            bool okb = bb.SerializeUInt128(ref pb.U128);
+            bb.End();
+            if (!okb || pb.U128 != expectU)
+            {
+                Finding($"wide pinned uint128: batch decoded {pb.U128}, expected {expectU}");
+            }
+        }
+        {
+            _cases++;
+            UInt128Value mag = (UInt128Value)1 << 70;
+            Int128Value min = Int128Value.Zero - (Int128Value)mag;
+            Int128Value max = (Int128Value)mag;
+            Int128Value expect = Int128Value.Zero - (Int128Value)(UInt128Value)0x0123456789ABCDEFUL;
+            Packet p = new Packet();
+            ReadStream rs = new ReadStream(WideInt128Golden, WideInt128Golden.Length);
+            if (!rs.SerializeInt128(ref p.I128Full, min, max) || p.I128Full != expect)
+            {
+                Finding($"wide pinned int128: stream decoded {p.I128Full}, expected {expect}");
+            }
+            Packet pb = new Packet();
+            ReadStream rsb = new ReadStream(WideInt128Golden, WideInt128Golden.Length);
+            ReadBatch bb = rsb.BeginBatch();
+            bool okb = bb.SerializeInt128(ref pb.I128Full, min, max);
+            bb.End();
+            if (!okb || pb.I128Full != expect)
+            {
+                Finding($"wide pinned int128: batch decoded {pb.I128Full}, expected {expect}");
+            }
+        }
+        {
+            _cases++;
+            // the fixed point golden section, exactly as FixedWireData writes it
+            short q88 = 0;
+            int q1616 = 0;
+            long q4816 = 0;
+            uint q1616u = 0;
+            Int128Value q112 = Int128Value.Zero;
+            Int128Value q6464 = Int128Value.Zero;
+            ReadStream rs = new ReadStream(WideFixedGolden, WideFixedGolden.Length);
+            rs.SerializeFixed(ref q88, 8, 8, -100, +100);
+            rs.SerializeFixed(ref q1616, 16, 16, -2000, +2000);
+            rs.SerializeFixed(ref q4816, 48, 16, -100000, +100000);
+            rs.SerializeFixed(ref q1616u, 16, 16, 0, 30000);
+            rs.SerializeAlign();
+            rs.SerializeFixed(ref q112, 112, 16, -144115188075855872, +144115188075855872);
+            rs.SerializeFixed(ref q6464, 64, 64, long.MinValue, long.MaxValue);
+            bool ok = rs.Error == SerializeError.None
+                && q88 == -(3 * 256 + 64)
+                && q1616 == 1234 * 65536 + 32768
+                && q4816 == -(54321L * 65536 + 12345)
+                && q1616u == 29999U * 65536U + 65535U
+                && q112 == (Int128Value)(-(98765432109L * 65536 + 4321))
+                && q6464 == ((Int128Value)0x0123456789ABCDEF << 64) + 0x0FEDCBA987654321;
+            if (!ok)
+            {
+                Finding($"wide pinned fixed: stream decoded ({q88},{q1616},{q4816},{q1616u},{q112},{q6464}) error={rs.Error}");
+            }
+        }
+
+        // hostile single-field matrix: all-zero / all-one / truncated / random
+        // buffers, stream and batch, exact capacity and poisoned slack
+        WideField[] fields = WideFields();
+        Rng rng = new Rng(0x128128);
+        foreach (WideField field in fields)
+        {
+            foreach (int len in new[] { 0, 1, 2, 4, 8, 12, 16, 20, 24, 32 })
+            {
+                byte[] zeros = new byte[Math.Max(len, 1)];
+                byte[] ones = new byte[Math.Max(len, 1)];
+                for (int i = 0; i < ones.Length; i++) ones[i] = 0xFF;
+                AttemptWideField(field, zeros, len, 0, false, $"wide {field.Name} zeros len={len}");
+                AttemptWideField(field, zeros, len, 8, true, $"wide {field.Name} zeros len={len} batch");
+                AttemptWideField(field, ones, len, 0, true, $"wide {field.Name} ones len={len}");
+                AttemptWideField(field, ones, len, 8, false, $"wide {field.Name} ones len={len} slack");
+            }
+            for (int trial = 0; trial < 150; trial++)
+            {
+                int len = (int)rng.Range(33);
+                byte[] d = new byte[Math.Max(len, 1)];
+                for (int i = 0; i < d.Length; i++) d[i] = (byte)rng.Next();
+                AttemptWideField(field, d, len, (trial & 1) == 0 ? 0 : 8, (trial & 1) == 0, $"wide {field.Name} rand t={trial} len={len}");
+            }
+        }
+
+        // hostile combined sequence: canonical bytes truncated at every length,
+        // flipped at every 32 bit group boundary, and mutated in high groups;
+        // stream and batch must agree exactly, whatever either decides
+        for (int len = 0; len <= canonicalBytes; len++)
+        {
+            _cases++;
+            string viaStream = ReadDigest(ReadWide128, streamBuf, len, 0, 0x00);
+            string viaBatch = WideBatchDigest(streamBuf, len, 0, 0x00);
+            if (viaStream != viaBatch)
+            {
+                Finding($"wide combined truncate len={len}: stream and batch differ\n      stream: {viaStream}\n      batch:  {viaBatch}");
+            }
+        }
+        foreach (int bit in new[] { 0, 31, 32, 33, 63, 64, 65, 95, 96, 97, 127, 128, 255, 256 })
+        {
+            if (bit >= canonicalBytes * 8) continue;
+            byte[] d = new byte[canonicalBytes];
+            Array.Copy(streamBuf, d, canonicalBytes);
+            d[bit >> 3] ^= (byte)(1 << (bit & 7));
+            foreach (int slack in new[] { 0, 8 })
+            {
+                _cases++;
+                string viaStream = ReadDigest(ReadWide128, d, canonicalBytes, slack, 0xFF);
+                string viaBatch = WideBatchDigest(d, canonicalBytes, slack, 0xFF);
+                if (viaStream != viaBatch)
+                {
+                    Finding($"wide combined flip bit={bit} slack={slack}: stream and batch differ");
+                }
+                string? f = Attempt(ReadWide128, d, canonicalBytes, slack, $"wide combined flip bit={bit} slack={slack}");
+                if (f != null) Finding(f);
+            }
+        }
+        for (int trial = 0; trial < 500; trial++)
+        {
+            int len = (int)rng.Range((ulong)canonicalBytes + 1);
+            byte[] d = new byte[Math.Max(len, 1)];
+            for (int i = 0; i < d.Length; i++) d[i] = (byte)rng.Next();
+            _cases++;
+            string viaStream = ReadDigest(ReadWide128, d, len, trial % 3 == 0 ? 8 : 0, 0xFF);
+            string viaBatch = WideBatchDigest(d, len, trial % 3 == 0 ? 8 : 0, 0xFF);
+            if (viaStream != viaBatch)
+            {
+                Finding($"wide combined rand t={trial} len={len}: stream and batch differ");
+            }
+        }
+
+        // allocation: a refused wide read must not allocate, stream or batch
+        {
+            byte[] tiny = new byte[8];
+            Packet p = new Packet();
+            ReadStream rs = new ReadStream(tiny, 0);
+            for (int i = 0; i < 200; i++)
+            {
+                rs.Reset(tiny, 0);
+                SetWideSentinels(p);
+                ReadWide128(rs, p);
+                rs.Reset(tiny, 0);
+                SetWideSentinels(p);
+                ReadWide128Batch(rs, p);
+            }
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            for (int i = 0; i < 1000; i++)
+            {
+                rs.Reset(tiny, 0);
+                SetWideSentinels(p);
+                ReadWide128(rs, p);
+                rs.Reset(tiny, 8);
+                SetWideSentinels(p);
+                ReadWide128Batch(rs, p);
+            }
+            long alloc = GC.GetAllocatedBytesForCurrentThread() - before;
+            Console.WriteLine($"  wide128 refused reads:    {alloc} bytes over 1000 stream+batch pairs");
+            _cases++;
+            if (alloc > 0)
+            {
+                Finding($"refused wide128 reads allocate {alloc} bytes over 1000 stream+batch pairs");
+            }
+        }
+
+        Console.WriteLine($"  wide128 cases: {_wideCases} single-field (stream {_wideStream}, batch {_wideBatch}) plus combined/canonical, seed 0x128128, canonical {canonicalBytes} bytes");
+    }
+
     // ---- attack 6: loop termination guards ----
 
     private static void AttackLoopTermination()
@@ -1007,6 +1536,9 @@ internal static class RedTeam
             BitConverter.SingleToUInt32Bits(p.F), BitConverter.SingleToUInt32Bits(p.CF),
             BitConverter.DoubleToUInt64Bits(p.D), p.U8, p.U16, p.U32, p.U64,
             p.RelNear, p.RelFar, Convert.ToHexString(p.Bytes), p.Str, p.Stones,
+            p.U128, p.I128Full, p.I128Group96, p.I128Group64, p.I128Group32, p.I128Degenerate,
+            p.FixedS64, p.FixedU64, p.FixedS32, p.FixedU32, p.FixedS16, p.FixedU16,
+            p.FixedI128, p.FixedU128, p.FixedFrac0, p.FixedI128Frac0,
             ok, err, bits);
     }
 
@@ -1026,7 +1558,7 @@ internal static class RedTeam
     private static void AttackSlackIndependence()
     {
         Rng rng = new Rng(0xA5A5A5A5);
-        ReadFn[] fns = { ReadGolden, ReadWide };
+        ReadFn[] fns = { ReadGolden, ReadWide, ReadWide128 };
         foreach (ReadFn fn in fns)
         {
             for (int trial = 0; trial < 300000; trial++)
@@ -1105,6 +1637,7 @@ internal static class RedTeam
         Stage("bit flip / byte substitution sweep", AttackBitFlipSweep);
         Stage("truncation sweep", AttackTruncationSweep);
         Stage("wide surface (64 bit, big buffer sizes)", AttackWideSurface);
+        Stage("wide surface (128 bit + fixed, stream and batch)", AttackWide128);
         Stage("random packet fuzz", AttackRandomFuzz);
         Stage("targeted hostile fields", AttackTargeted);
         Stage("loop termination guards", AttackLoopTermination);
