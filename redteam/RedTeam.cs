@@ -1389,6 +1389,471 @@ internal static class RedTeam
         }
     }
 
+    // ---- attack 5d: wide headroom smuggling and unaligned wide reads ----
+    //
+    // The first wide passes attacked each 128 bit and fixed point field with
+    // zero/one/random bytes, so a raw value in the bit headroom above a range
+    // arrived only by chance -- for a 96 bit range, essentially never at the
+    // exact legal/illegal boundary. Here the boundary values are crafted:
+    // 0, span, span+1 and the top of the code space, at every group boundary
+    // shape, through stream and batch, asserting the exact refusal reason,
+    // destination preservation, the terminal latch, and the decoded value at
+    // the legal edge. The second half replays the combined wide sequence at
+    // every prefix alignment, where each field starts at a bit offset no
+    // earlier stage produced.
+
+    private static int _headroomCases;
+
+    private static void WriteRawGroups(WriteStream w, UInt128Value raw, int bits)
+    {
+        UInt128Value rest = raw;
+        int remaining = bits;
+        while (remaining > 0)
+        {
+            int chunk = Math.Min(32, remaining);
+            uint v = (uint)rest;
+            if (chunk < 32)
+            {
+                v &= (1u << chunk) - 1;
+            }
+            w.SerializeBits(ref v, chunk);
+            rest >>= 32;
+            remaining -= chunk;
+        }
+    }
+
+    private static List<UInt128Value> HeadroomProbes(UInt128Value span, int bits)
+    {
+        List<UInt128Value> probes = new List<UInt128Value>();
+        void Add(UInt128Value v)
+        {
+            if (bits < 128 && v >= (UInt128Value.One << bits))
+            {
+                return;
+            }
+            if (!probes.Contains(v))
+            {
+                probes.Add(v);
+            }
+        }
+        Add(UInt128Value.Zero);
+        Add(UInt128Value.One);
+        if (span > UInt128Value.Zero)
+        {
+            Add(span - UInt128Value.One);
+        }
+        Add(span);
+        if (span < UInt128Value.MaxValue)
+        {
+            Add(span + UInt128Value.One);
+        }
+        if (bits >= 1 && bits < 128)
+        {
+            Add((UInt128Value.One << bits) - UInt128Value.One);
+            Add(UInt128Value.One << (bits - 1));
+        }
+        if (span > UInt128Value.One)
+        {
+            Add(span / (UInt128Value)2);
+        }
+        return probes;
+    }
+
+    private static byte[] CraftRaw(UInt128Value raw, int bits, out int fullBytes)
+    {
+        byte[] buf = new byte[40];
+        WriteStream w = new WriteStream(buf);
+        WriteRawGroups(w, raw, bits);
+        w.Flush();
+        fullBytes = (bits + 7) / 8;
+        return buf;
+    }
+
+    private static void CheckHeadroom(string label, bool ok, SerializeError error, bool expectOk,
+        SerializeError expectError, bool preserved, bool latched)
+    {
+        if (ok != expectOk)
+        {
+            Finding($"{label}: returned {ok}, expected {expectOk} (error {error})");
+        }
+        if (!expectOk && error != expectError)
+        {
+            Finding($"{label}: error {error}, expected {expectError}");
+        }
+        if (!expectOk && !preserved)
+        {
+            Finding($"{label}: refused wide read wrote its destination");
+        }
+        if (!expectOk && !latched)
+        {
+            Finding($"{label}: wide read after failure not latched");
+        }
+    }
+
+    private static void AttackWideHeadroom()
+    {
+        (string Name, Int128Value Min, Int128Value Max)[] shapes =
+        {
+            ("full", Int128Value.MinValue, Int128Value.MaxValue),
+            ("96", Int128Value.Zero, new Int128Value(0xFFFFFFFFUL, ulong.MaxValue)),
+            ("64s", (Int128Value)long.MinValue, (Int128Value)long.MaxValue),
+            ("32", Int128Value.Zero, new Int128Value(0, 0xFFFFFFFFUL)),
+            ("degenerate", (Int128Value)42, (Int128Value)42),
+            ("degenerate-min", Int128Value.MinValue, Int128Value.MinValue),
+            ("degenerate-max", Int128Value.MaxValue, Int128Value.MaxValue),
+            ("min-edge", Int128Value.MinValue, Int128Value.MinValue + Int128Value.One),
+            ("max-edge", Int128Value.MaxValue - Int128Value.One, Int128Value.MaxValue),
+            ("neg-only", (Int128Value)(-1000000), (Int128Value)(-1)),
+            ("straddle96", (Int128Value)(-1) << 96, ((Int128Value)1 << 96) - Int128Value.One),
+            ("straddle64", (Int128Value)(-1) << 64, ((Int128Value)1 << 64) - Int128Value.One),
+            ("straddle32", (Int128Value)(-1) << 32, ((Int128Value)1 << 32) - Int128Value.One),
+            ("tiny-straddle", (Int128Value)(-2), (Int128Value)1),
+            ("neg-zero", (Int128Value)(-1), Int128Value.Zero),
+            ("mid-wide", (Int128Value)(-1000000), (Int128Value)1000000),
+            ("96-plus", Int128Value.Zero, ((Int128Value)1 << 96) + (Int128Value)12345),
+            ("min-plus", Int128Value.MinValue, Int128Value.MinValue + (Int128Value)1000000),
+            ("max-minus", Int128Value.MaxValue - (Int128Value)1000000, Int128Value.MaxValue),
+        };
+        Int128Value sentinel = new Int128Value(0xA5A5A5A5A5A5A5A5UL, 0x5A5A5A5A5A5A5A5AUL);
+        foreach ((string name, Int128Value min, Int128Value max) in shapes)
+        {
+            int bits = SerializeUtil.BitsRequired128((UInt128Value)min, (UInt128Value)max);
+            UInt128Value span = (UInt128Value)max - (UInt128Value)min;
+            foreach (UInt128Value raw in HeadroomProbes(span, bits))
+            {
+                byte[] buf = CraftRaw(raw, bits, out int fullBytes);
+                foreach (bool batch in new[] { false, true })
+                {
+                    foreach (int bytes in fullBytes == 0 ? new[] { 0 } : new[] { fullBytes, fullBytes - 1 })
+                    {
+                        _cases++;
+                        _headroomCases++;
+                        string label = $"headroom i128-{name} raw={raw} bits={bits} bytes={bytes} batch={batch}";
+                        try
+                        {
+                            ReadStream rs = new ReadStream(buf, bytes);
+                            Int128Value value = sentinel;
+                            bool ok;
+                            if (batch)
+                            {
+                                ReadBatch b = rs.BeginBatch();
+                                ok = b.SerializeInt128(ref value, min, max);
+                                b.End();
+                                ok = ok && rs.Error == SerializeError.None;
+                            }
+                            else
+                            {
+                                ok = rs.SerializeInt128(ref value, min, max);
+                            }
+                            bool enough = bytes * 8 >= bits;
+                            bool expectOk = enough && raw <= span;
+                            SerializeError expectError = !enough ? SerializeError.PastEnd : SerializeError.ValueOutOfRange;
+                            bool preserved = value == sentinel;
+                            bool latched = true;
+                            if (ok && value != (Int128Value)((UInt128Value)min + raw))
+                            {
+                                Finding($"{label}: decoded {value}, expected {(Int128Value)((UInt128Value)min + raw)}");
+                            }
+                            if (!ok)
+                            {
+                                Int128Value again = sentinel;
+                                bool okAgain;
+                                if (batch)
+                                {
+                                    ReadBatch b2 = rs.BeginBatch();
+                                    okAgain = b2.SerializeInt128(ref again, min, max);
+                                    b2.End();
+                                }
+                                else
+                                {
+                                    okAgain = rs.SerializeInt128(ref again, min, max);
+                                }
+                                latched = !okAgain && again == sentinel;
+                            }
+                            CheckHeadroom(label, ok, rs.Error, expectOk, expectError, preserved || ok, latched);
+                        }
+                        catch (Exception e)
+                        {
+                            Finding($"{label}: THREW {e.GetType().Name}: {e.Message}");
+                        }
+                    }
+                }
+            }
+        }
+
+        // fixed point headroom: the wire offset above (max - min) in raw units
+        FixedShape[] fixedShapes = FixedShapes();
+        foreach (FixedShape shape in fixedShapes)
+        {
+            foreach (UInt128Value raw in HeadroomProbes(shape.Span, shape.Bits))
+            {
+                byte[] buf = CraftRaw(raw, shape.Bits, out int fullBytes);
+                foreach (bool batch in new[] { false, true })
+                {
+                    foreach (int bytes in fullBytes == 0 ? new[] { 0 } : new[] { fullBytes, fullBytes - 1 })
+                    {
+                        _cases++;
+                        _headroomCases++;
+                        string label = $"headroom {shape.Name} raw={raw} bits={shape.Bits} bytes={bytes} batch={batch}";
+                        Packet p = new Packet();
+                        SetWideSentinels(p);
+                        string before = WideDigest(p);
+                        try
+                        {
+                            ReadStream rs = new ReadStream(buf, bytes);
+                            bool ok = batch ? shape.Batch(rs, p) : shape.Stream(rs, p);
+                            bool enough = bytes * 8 >= shape.Bits;
+                            bool expectOk = enough && raw <= shape.Span;
+                            SerializeError expectError = !enough ? SerializeError.PastEnd : SerializeError.ValueOutOfRange;
+                            if (ok)
+                            {
+                                UInt128Value expectRaw = shape.StorageBits >= 128
+                                    ? shape.RawMin + raw
+                                    : (shape.RawMin + raw) & (shape.StorageBits >= 64
+                                        ? (UInt128Value)ulong.MaxValue
+                                        : (UInt128Value)((1UL << shape.StorageBits) - 1));
+                                if (shape.GetRaw(p) != expectRaw)
+                                {
+                                    Finding($"{label}: decoded raw {shape.GetRaw(p)}, expected {expectRaw}");
+                                }
+                            }
+                            bool latched = true;
+                            if (!ok)
+                            {
+                                bool okAgain = batch ? shape.Batch(rs, p) : shape.Stream(rs, p);
+                                latched = !okAgain;
+                            }
+                            CheckHeadroom(label, ok, rs.Error, expectOk, expectError,
+                                ok || WideDigest(p) == before, latched);
+                        }
+                        catch (Exception e)
+                        {
+                            Finding($"{label}: THREW {e.GetType().Name}: {e.Message}");
+                        }
+                    }
+                }
+            }
+        }
+        Console.WriteLine($"  wide headroom cases: {_headroomCases} crafted boundary probes (stream and batch)");
+    }
+
+    private sealed class FixedShape
+    {
+        public string Name = "";
+        public int StorageBits;
+        public int Bits;
+        public UInt128Value Span;
+        public UInt128Value RawMin;
+        public Func<IBitStream, Packet, bool> Stream = null!;
+        public Func<ReadStream, Packet, bool> Batch = null!;
+        public Func<Packet, UInt128Value> GetRaw = null!;
+    }
+
+    private static (int Bits, UInt128Value Span, UInt128Value RawMin) FixedParams64(long minUnits, long maxUnits, int fractionBits)
+    {
+        ulong rawMin = unchecked((ulong)minUnits << fractionBits);
+        ulong rawMax = unchecked((ulong)maxUnits << fractionBits);
+        int bits = SerializeUtil.BitsRequired64(rawMin, rawMax);
+        ulong span = unchecked(rawMax - rawMin);
+        return (bits, (UInt128Value)span, (UInt128Value)rawMin);
+    }
+
+    private static (int Bits, UInt128Value Span, UInt128Value RawMin) FixedParams128(long minUnits, long maxUnits, int fractionBits)
+    {
+        UInt128Value rawMin = (UInt128Value)(Int128Value)minUnits << fractionBits;
+        UInt128Value rawMax = (UInt128Value)(Int128Value)maxUnits << fractionBits;
+        int bits = minUnits == maxUnits
+            ? 0
+            : SerializeUtil.BitsRequired64(unchecked((ulong)minUnits), unchecked((ulong)maxUnits)) + fractionBits;
+        return (bits, rawMax - rawMin, rawMin);
+    }
+
+    private static FixedShape[] FixedShapes()
+    {
+        FixedShape Make64(string name, int storage, long min, long max, int frac,
+            Func<IBitStream, Packet, bool> stream, Func<ReadStream, Packet, bool> batch,
+            Func<Packet, UInt128Value> getRaw)
+        {
+            (int bits, UInt128Value span, UInt128Value rawMin) = FixedParams64(min, max, frac);
+            return new FixedShape
+            {
+                Name = name, StorageBits = storage, Bits = bits, Span = span, RawMin = rawMin,
+                Stream = stream, Batch = batch, GetRaw = getRaw,
+            };
+        }
+        FixedShape Make128(string name, long min, long max, int frac,
+            Func<IBitStream, Packet, bool> stream, Func<ReadStream, Packet, bool> batch,
+            Func<Packet, UInt128Value> getRaw)
+        {
+            (int bits, UInt128Value span, UInt128Value rawMin) = FixedParams128(min, max, frac);
+            return new FixedShape
+            {
+                Name = name, StorageBits = 128, Bits = bits, Span = span, RawMin = rawMin,
+                Stream = stream, Batch = batch, GetRaw = getRaw,
+            };
+        }
+        return new FixedShape[]
+        {
+            Make64("fixed-s64-q48.16", 64, -100000, 100000, 16,
+                (s, p) => s.SerializeFixed(ref p.FixedS64, 48, 16, -100000, 100000),
+                (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedS64, 48, 16, -100000, 100000); b.End(); return ok; },
+                p => (UInt128Value)(ulong)p.FixedS64),
+            Make64("fixed-s64-neg-only", 64, -100000, -1, 16,
+                (s, p) => s.SerializeFixed(ref p.FixedS64, 48, 16, -100000, -1),
+                (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedS64, 48, 16, -100000, -1); b.End(); return ok; },
+                p => (UInt128Value)(ulong)p.FixedS64),
+            Make64("fixed-u64-q32.32", 64, 0, 30000, 32,
+                (s, p) => s.SerializeFixed(ref p.FixedU64, 32, 32, 0, 30000),
+                (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedU64, 32, 32, 0, 30000); b.End(); return ok; },
+                p => (UInt128Value)p.FixedU64),
+            Make64("fixed-s32-q16.16", 32, -2000, 2000, 16,
+                (s, p) => s.SerializeFixed(ref p.FixedS32, 16, 16, -2000, 2000),
+                (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedS32, 16, 16, -2000, 2000); b.End(); return ok; },
+                p => (UInt128Value)(uint)p.FixedS32),
+            Make64("fixed-u32-q16.16", 32, 0, 30000, 16,
+                (s, p) => s.SerializeFixed(ref p.FixedU32, 16, 16, 0, 30000),
+                (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedU32, 16, 16, 0, 30000); b.End(); return ok; },
+                p => (UInt128Value)p.FixedU32),
+            Make64("fixed-s16-q8.8", 16, -100, 100, 8,
+                (s, p) => s.SerializeFixed(ref p.FixedS16, 8, 8, -100, 100),
+                (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedS16, 8, 8, -100, 100); b.End(); return ok; },
+                p => (UInt128Value)(ushort)p.FixedS16),
+            Make64("fixed-u16-q8.8", 16, 0, 200, 8,
+                (s, p) => s.SerializeFixed(ref p.FixedU16, 8, 8, 0, 200),
+                (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedU16, 8, 8, 0, 200); b.End(); return ok; },
+                p => (UInt128Value)p.FixedU16),
+            Make64("fixed-s64-q64.0", 64, -1000000, 1000000, 0,
+                (s, p) => s.SerializeFixed(ref p.FixedFrac0, 64, 0, -1000000, 1000000),
+                (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedFrac0, 64, 0, -1000000, 1000000); b.End(); return ok; },
+                p => (UInt128Value)(ulong)p.FixedFrac0),
+            Make64("fixed-s32-degenerate", 32, 42, 42, 16,
+                (s, p) => s.SerializeFixed(ref p.FixedS32, 16, 16, 42, 42),
+                (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedS32, 16, 16, 42, 42); b.End(); return ok; },
+                p => (UInt128Value)(uint)p.FixedS32),
+            Make128("fixed-i128-q112.16", -144115188075855872, 144115188075855872, 16,
+                (s, p) => s.SerializeFixed(ref p.FixedI128, 112, 16, -144115188075855872, 144115188075855872),
+                (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedI128, 112, 16, -144115188075855872, 144115188075855872); b.End(); return ok; },
+                p => (UInt128Value)p.FixedI128),
+            Make128("fixed-u128-q64.64", 0, long.MaxValue, 64,
+                (s, p) => s.SerializeFixed(ref p.FixedU128, 64, 64, 0, long.MaxValue),
+                (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedU128, 64, 64, 0, long.MaxValue); b.End(); return ok; },
+                p => p.FixedU128),
+            Make128("fixed-u128-q1.127", 0, 1, 127,
+                (s, p) => s.SerializeFixed(ref p.FixedU128, 1, 127, 0, 1),
+                (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedU128, 1, 127, 0, 1); b.End(); return ok; },
+                p => p.FixedU128),
+            Make128("fixed-i128-q127.1", -1000, 1000, 1,
+                (s, p) => s.SerializeFixed(ref p.FixedI128Frac0, 127, 1, -1000, 1000),
+                (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedI128Frac0, 127, 1, -1000, 1000); b.End(); return ok; },
+                p => (UInt128Value)p.FixedI128Frac0),
+            Make128("fixed-i128-degenerate", -7, -7, 16,
+                (s, p) => s.SerializeFixed(ref p.FixedI128, 112, 16, -7, -7),
+                (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedI128, 112, 16, -7, -7); b.End(); return ok; },
+                p => (UInt128Value)p.FixedI128),
+        };
+    }
+
+    private static string PrefixWideDigest(byte[] data, int bytes, int slack, byte poison, int prefixBits, bool batch)
+    {
+        byte[] buffer = new byte[bytes + slack];
+        Array.Copy(data, buffer, Math.Min(bytes, data.Length));
+        for (int i = bytes; i < buffer.Length; i++) buffer[i] = poison;
+        ReadStream s = new ReadStream(buffer, bytes);
+        Packet p = new Packet();
+        bool ok;
+        try
+        {
+            uint prefix = 0;
+            s.SerializeBits(ref prefix, prefixBits);
+            ok = batch ? ReadWide128Batch(s, p) : ReadWide128(s, p);
+        }
+        catch (Exception e) { return "THREW " + e.GetType().Name + ": " + e.Message; }
+        return Digest(p, ok, s.Error, s.BitsProcessed);
+    }
+
+    private static void AttackWideUnaligned()
+    {
+        Packet canonical = WideCanonicalPacket();
+        int[] prefixes = { 0, 1, 2, 3, 5, 7, 8, 13, 16, 31, 32, 33, 63, 64, 65, 96, 127 };
+        UInt128Value pattern = new UInt128Value(0xA5A5A5A5A5A5A5A5UL, 0x5A5A5A5A5A5A5A5AUL);
+        foreach (int prefixBits in prefixes)
+        {
+            byte[] buf = new byte[512];
+            WriteStream ws = new WriteStream(buf);
+            WriteRawGroups(ws, pattern, prefixBits);
+            Packet src = WideCanonicalPacket();
+            ReadWide128(ws, src);
+            ws.Flush();
+            int total = (int)ws.BytesProcessed;
+
+            // the full packet at this alignment decodes to the canonical values
+            _cases++;
+            try
+            {
+                ReadStream rs = new ReadStream(buf, total);
+                uint prefix = 0;
+                rs.SerializeBits(ref prefix, prefixBits);
+                Packet back = new Packet();
+                bool ok = ReadWide128(rs, back);
+                if (!ok || WideDigest(back) != WideDigest(canonical))
+                {
+                    Finding($"wide unaligned prefix={prefixBits}: full read back differs (ok={ok}, error={rs.Error})");
+                }
+            }
+            catch (Exception e)
+            {
+                Finding($"wide unaligned prefix={prefixBits}: THREW {e.GetType().Name}: {e.Message}");
+            }
+            foreach (int slack in new[] { 0, 8 })
+            {
+                _cases++;
+                string viaStream = PrefixWideDigest(buf, total, slack, 0xFF, prefixBits, false);
+                string viaBatch = PrefixWideDigest(buf, total, slack, 0xFF, prefixBits, true);
+                if (viaStream != viaBatch)
+                {
+                    Finding($"wide unaligned prefix={prefixBits} slack={slack}: stream and batch differ\n      stream: {viaStream}\n      batch:  {viaBatch}");
+                }
+            }
+            // group-boundary flips at this alignment, both engines
+            foreach (int flip in new[] { 0, 32, 64, 96, 128 })
+            {
+                int bit = prefixBits + flip;
+                if (bit >= total * 8) continue;
+                byte[] d = new byte[total];
+                Array.Copy(buf, d, total);
+                d[bit >> 3] ^= (byte)(1 << (bit & 7));
+                _cases++;
+                string viaStream = PrefixWideDigest(d, total, 0, 0x00, prefixBits, false);
+                string viaBatch = PrefixWideDigest(d, total, 0, 0x00, prefixBits, true);
+                if (viaStream != viaBatch)
+                {
+                    Finding($"wide unaligned prefix={prefixBits} flip={bit}: stream and batch differ");
+                }
+            }
+        }
+        // truncation at every length for the alignments earlier stages never made
+        foreach (int prefixBits in new[] { 1, 7, 8, 31, 33, 63, 127 })
+        {
+            byte[] buf = new byte[512];
+            WriteStream ws = new WriteStream(buf);
+            WriteRawGroups(ws, pattern, prefixBits);
+            Packet src = WideCanonicalPacket();
+            ReadWide128(ws, src);
+            ws.Flush();
+            int total = (int)ws.BytesProcessed;
+            for (int len = 0; len <= total; len++)
+            {
+                _cases++;
+                string viaStream = PrefixWideDigest(buf, len, 0, 0x00, prefixBits, false);
+                string viaBatch = PrefixWideDigest(buf, len, 0, 0x00, prefixBits, true);
+                if (viaStream != viaBatch)
+                {
+                    Finding($"wide unaligned prefix={prefixBits} truncate len={len}: stream and batch differ\n      stream: {viaStream}\n      batch:  {viaBatch}");
+                }
+            }
+        }
+    }
+
     // ---- attack 6: loop termination guards ----
 
     private static void AttackLoopTermination()
@@ -1824,6 +2289,8 @@ internal static class RedTeam
         Stage("random packet fuzz", AttackRandomFuzz);
         Stage("targeted hostile fields", AttackTargeted);
         Stage("compressed float precomputed (hostile)", AttackPrecomputed);
+        Stage("wide headroom smuggling (128 bit + fixed)", AttackWideHeadroom);
+        Stage("wide surface at unaligned offsets", AttackWideUnaligned);
         Stage("loop termination guards", AttackLoopTermination);
         Stage("int64 headroom probe", ProbeInt64Headroom);
         Stage("low level BitReader", AttackBitReader);
