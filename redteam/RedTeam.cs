@@ -846,6 +846,34 @@ internal static class RedTeam
             new WideField { Name = "fixed-i128-q128.0", Stream = (s, p) => s.SerializeFixed(ref p.FixedI128Frac0, 128, 0, -1000, +1000),
                 Batch = (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedI128Frac0, 128, 0, -1000, +1000); b.End(); return ok; },
                 InRange = p => p.FixedI128Frac0 >= (Int128Value)(-1000) && p.FixedI128Frac0 <= (Int128Value)1000 },
+            // signed ranges the first wide pass did not reach: negative-only and
+            // sign-straddling across the 64/96 bit group boundaries, where the
+            // unsigned-domain offset arithmetic wraps past 2^127
+            new WideField { Name = "i128-neg-straddle96", Stream = (s, p) => s.SerializeInt128(ref p.I128Full, (Int128Value)(-1) << 96, ((Int128Value)1 << 96) - (Int128Value)1),
+                Batch = (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeInt128(ref p.I128Full, (Int128Value)(-1) << 96, ((Int128Value)1 << 96) - (Int128Value)1); b.End(); return ok; },
+                InRange = p => p.I128Full >= ((Int128Value)(-1) << 96) && p.I128Full <= (((Int128Value)1 << 96) - (Int128Value)1) },
+            new WideField { Name = "i128-neg-only", Stream = (s, p) => s.SerializeInt128(ref p.I128Group64, (Int128Value)(-1000000), (Int128Value)(-1)),
+                Batch = (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeInt128(ref p.I128Group64, (Int128Value)(-1000000), (Int128Value)(-1)); b.End(); return ok; },
+                InRange = p => p.I128Group64 >= (Int128Value)(-1000000) && p.I128Group64 <= (Int128Value)(-1) },
+            // degenerate fixed ranges cost zero bits: they must succeed on an
+            // empty packet yet still refuse, latched, on a failed stream
+            new WideField { Name = "fixed-degenerate-s32", Stream = (s, p) => s.SerializeFixed(ref p.FixedS32, 16, 16, 42, 42),
+                Batch = (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedS32, 16, 16, 42, 42); b.End(); return ok; },
+                InRange = p => p.FixedS32 == (42 << 16) },
+            new WideField { Name = "fixed-degenerate-i128", Stream = (s, p) => s.SerializeFixed(ref p.FixedI128, 112, 16, -7, -7),
+                Batch = (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedI128, 112, 16, -7, -7); b.End(); return ok; },
+                InRange = p => p.FixedI128 == ((Int128Value)(-7) << 16) },
+            new WideField { Name = "fixed-neg-only-s64", Stream = (s, p) => s.SerializeFixed(ref p.FixedS64, 48, 16, -100000, -1),
+                Batch = (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedS64, 48, 16, -100000, -1); b.End(); return ok; },
+                InRange = p => p.FixedS64 >= (-100000L << 16) && p.FixedS64 <= (-1L << 16) },
+            // extreme Q splits: one integer bit with 127 fraction bits, and the
+            // mirror, where the raw range touches the top of the 128 bit domain
+            new WideField { Name = "fixed-u128-q1.127", Stream = (s, p) => s.SerializeFixed(ref p.FixedU128, 1, 127, 0, 1),
+                Batch = (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedU128, 1, 127, 0, 1); b.End(); return ok; },
+                InRange = p => p.FixedU128 <= ((UInt128Value)1 << 127) },
+            new WideField { Name = "fixed-i128-q127.1", Stream = (s, p) => s.SerializeFixed(ref p.FixedI128Frac0, 127, 1, -1000, +1000),
+                Batch = (rs, p) => { ReadBatch b = rs.BeginBatch(); bool ok = b.SerializeFixed(ref p.FixedI128Frac0, 127, 1, -1000, +1000); b.End(); return ok; },
+                InRange = p => p.FixedI128Frac0 >= (Int128Value)(-2000) && p.FixedI128Frac0 <= (Int128Value)2000 },
         };
     }
 
@@ -1097,6 +1125,32 @@ internal static class RedTeam
             {
                 Finding($"wide pinned fixed: stream decoded ({q88},{q1616},{q4816},{q1616u},{q112},{q6464}) error={rs.Error}");
             }
+            // the batch twin of the same pinned bytes: batch fixed point had
+            // no pinned witness in the first wide pass, only stream/batch parity
+            _cases++;
+            short bq88 = 0;
+            int bq1616 = 0;
+            long bq4816 = 0;
+            uint bq1616u = 0;
+            Int128Value bq112 = Int128Value.Zero;
+            Int128Value bq6464 = Int128Value.Zero;
+            ReadStream rsb2 = new ReadStream(WideFixedGolden, WideFixedGolden.Length);
+            ReadBatch bb2 = rsb2.BeginBatch();
+            bb2.SerializeFixed(ref bq88, 8, 8, -100, +100);
+            bb2.SerializeFixed(ref bq1616, 16, 16, -2000, +2000);
+            bb2.SerializeFixed(ref bq4816, 48, 16, -100000, +100000);
+            bb2.SerializeFixed(ref bq1616u, 16, 16, 0, 30000);
+            bb2.SerializeAlign();
+            bb2.SerializeFixed(ref bq112, 112, 16, -144115188075855872, +144115188075855872);
+            bb2.SerializeFixed(ref bq6464, 64, 64, long.MinValue, long.MaxValue);
+            bb2.End();
+            bool okb2 = rsb2.Error == SerializeError.None
+                && bq88 == q88 && bq1616 == q1616 && bq4816 == q4816 && bq1616u == q1616u
+                && bq112 == q112 && bq6464 == q6464;
+            if (!okb2)
+            {
+                Finding($"wide pinned fixed: batch decoded ({bq88},{bq1616},{bq4816},{bq1616u},{bq112},{bq6464}) error={rsb2.Error}");
+            }
         }
 
         // hostile single-field matrix: all-zero / all-one / truncated / random
@@ -1204,6 +1258,135 @@ internal static class RedTeam
         }
 
         Console.WriteLine($"  wide128 cases: {_wideCases} single-field (stream {_wideStream}, batch {_wideBatch}) plus combined/canonical, seed 0x128128, canonical {canonicalBytes} bytes");
+    }
+
+    // ---- attack 5c: compressed float, precomputed entry point ----
+    //
+    // SerializeCompressedFloatPrecomputed had no hostile coverage: the wire
+    // integer arrives with caller-supplied (maxIntegerValue, bits, delta, min),
+    // so the headroom above maxIntegerValue, truncations, the finite-decode
+    // refusal at the top of float range, destination preservation and the
+    // terminal latch are all reachable by packet data alone. The precomputed
+    // read must agree bit-for-bit with the derive-per-call read on every byte.
+
+    private static void AttemptPrecomputed(string label, byte[] buf, int bytes, uint maxInt, int bits, float delta, float min, float resMin, float resMax, float res)
+    {
+        _cases++;
+        const float sentinel = -98765.25f;
+        try
+        {
+            float vStream = sentinel, vBatch = sentinel, vDerived = sentinel;
+            ReadStream rs = new ReadStream(buf, bytes);
+            bool okStream = rs.SerializeCompressedFloatPrecomputed(ref vStream, maxInt, bits, delta, min);
+            ReadStream rsb = new ReadStream(buf, bytes);
+            ReadBatch b = rsb.BeginBatch();
+            bool okBatch = b.SerializeCompressedFloatPrecomputed(ref vBatch, maxInt, bits, delta, min);
+            b.End();
+            okBatch = okBatch && rsb.Error == SerializeError.None;
+            ReadStream rsd = new ReadStream(buf, bytes);
+            bool okDerived = rsd.SerializeCompressedFloat(ref vDerived, resMin, resMax, res);
+            if (okStream != okBatch || okStream != okDerived
+                || rs.Error != rsb.Error || rs.Error != rsd.Error
+                || BitConverter.SingleToUInt32Bits(vStream) != BitConverter.SingleToUInt32Bits(vBatch)
+                || BitConverter.SingleToUInt32Bits(vStream) != BitConverter.SingleToUInt32Bits(vDerived))
+            {
+                Finding($"{label}: precomputed/batch/derived disagree stream=({okStream},{rs.Error},{vStream}) batch=({okBatch},{rsb.Error},{vBatch}) derived=({okDerived},{rsd.Error},{vDerived})");
+                return;
+            }
+            if (!okStream)
+            {
+                if (vStream != sentinel)
+                {
+                    Finding($"{label}: refused precomputed read wrote its destination ({vStream})");
+                }
+                SerializeError first = rs.Error;
+                float again = sentinel;
+                bool okAgain = rs.SerializeCompressedFloatPrecomputed(ref again, maxInt, bits, delta, min);
+                if (okAgain || rs.Error != first || again != sentinel)
+                {
+                    Finding($"{label}: precomputed read after failure not latched (again={okAgain}, error {first} -> {rs.Error})");
+                }
+            }
+            else if (float.IsNaN(vStream) || float.IsInfinity(vStream))
+            {
+                Finding($"{label}: precomputed read accepted a non-finite decode ({vStream})");
+            }
+        }
+        catch (Exception e)
+        {
+            Finding($"{label}: THREW {e.GetType().Name}: {e.Message}");
+        }
+    }
+
+    private static void AttackPrecomputed()
+    {
+        (float Min, float Max, float Res)[] shapes =
+        {
+            (0f, 10f, 0.01f), (-1f, 1f, 0.5f), (0f, 1f, 1f), (-100f, 100f, 0.001f),
+        };
+        Rng rng = new Rng(0xCF10A7);
+        foreach ((float min, float max, float res) in shapes)
+        {
+            SerializeUtil.CompressedFloatParams(min, max, res, out uint maxInt, out int bits, out float delta);
+            ulong space = bits >= 32 ? 0x100000000UL : 1UL << bits;
+            ulong[] probes = space <= 4096
+                ? null!
+                : new ulong[] { 0, 1, maxInt - 1UL, maxInt, (ulong)maxInt + 1, space - 1, space / 2 };
+            IEnumerable<ulong> seq = probes ?? EnumerateAll(space);
+            foreach (ulong raw in seq)
+            {
+                if (raw >= space) continue;
+                byte[] buf = new byte[16];
+                WriteStream w = new WriteStream(buf);
+                uint rv = (uint)raw;
+                w.SerializeBits(ref rv, bits);
+                w.Flush();
+                int full = (bits + 7) / 8;
+                for (int bytes = 0; bytes <= full; bytes++)
+                {
+                    AttemptPrecomputed($"cfloat-pre shape=[{min},{max},{res}] raw={raw} bytes={bytes}", buf, bytes, maxInt, bits, delta, min, min, max, res);
+                }
+                AttemptPrecomputed($"cfloat-pre shape=[{min},{max},{res}] raw={raw} slack", buf, full + 8, maxInt, bits, delta, min, min, max, res);
+            }
+            for (int trial = 0; trial < 200; trial++)
+            {
+                int len = (int)rng.Range(9);
+                byte[] d = new byte[Math.Max(len, 1)];
+                for (int i = 0; i < d.Length; i++) d[i] = (byte)rng.Next();
+                AttemptPrecomputed($"cfloat-pre shape=[{min},{max},{res}] rand t={trial} len={len}", d, len, maxInt, bits, delta, min, min, max, res);
+            }
+        }
+        // a declaration whose top decode overflows float range: raw 0 decodes
+        // to float.MaxValue (finite, accepted); raw 1 decodes to +infinity and
+        // must be refused as NonFiniteFloat with the destination preserved
+        for (uint raw = 0; raw <= 1; raw++)
+        {
+            byte[] buf = new byte[8];
+            WriteStream w = new WriteStream(buf);
+            uint rv = raw;
+            w.SerializeBits(ref rv, 1);
+            w.Flush();
+            _cases++;
+            try
+            {
+                const float sentinel = -98765.25f;
+                float v = sentinel;
+                ReadStream rs = new ReadStream(buf, 8);
+                bool ok = rs.SerializeCompressedFloatPrecomputed(ref v, 1, 1, float.MaxValue, float.MaxValue);
+                if (raw == 0 && (!ok || v != float.MaxValue))
+                {
+                    Finding($"cfloat-pre overflow-decl raw=0: ok={ok} value={v} error={rs.Error}, expected float.MaxValue accepted");
+                }
+                if (raw == 1 && (ok || rs.Error != SerializeError.NonFiniteFloat || v != sentinel))
+                {
+                    Finding($"cfloat-pre overflow-decl raw=1: ok={ok} value={v} error={rs.Error}, expected NonFiniteFloat refusal, destination preserved");
+                }
+            }
+            catch (Exception e)
+            {
+                Finding($"cfloat-pre overflow-decl raw={raw}: THREW {e.GetType().Name}: {e.Message}");
+            }
+        }
     }
 
     // ---- attack 6: loop termination guards ----
@@ -1640,6 +1823,7 @@ internal static class RedTeam
         Stage("wide surface (128 bit + fixed, stream and batch)", AttackWide128);
         Stage("random packet fuzz", AttackRandomFuzz);
         Stage("targeted hostile fields", AttackTargeted);
+        Stage("compressed float precomputed (hostile)", AttackPrecomputed);
         Stage("loop termination guards", AttackLoopTermination);
         Stage("int64 headroom probe", ProbeInt64Headroom);
         Stage("low level BitReader", AttackBitReader);
