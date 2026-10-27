@@ -2605,7 +2605,11 @@ public sealed class ReadStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeObject(ISerializer obj)
     {
-        if (_error != SerializeError.None)
+        // object terminality: a nested object on a failed stream refuses on entry,
+        // before its callback runs, and on exit, so an empty object (which reads
+        // nothing) after a refusal refuses too. Both checks are the one rule the
+        // object-terminal control deletes: either alone keeps the latch
+        if (_error != SerializeError.None && SerializeConformanceControls.Keeps("object-terminal"))
         {
             return false;
         }
@@ -2614,13 +2618,14 @@ public sealed class ReadStream : IBitStream
             Fail(SerializeError.ValueOutOfRange);
             return false;
         }
-        return _error == SerializeError.None;
+        return _error == SerializeError.None || !SerializeConformanceControls.Keeps("object-terminal");
     }
 
     /// <inheritdoc/>
     public bool SerializeObject<T>(ref T obj) where T : ISerializer
     {
-        if (_error != SerializeError.None)
+        // object terminality, as SerializeObject(ISerializer) above
+        if (_error != SerializeError.None && SerializeConformanceControls.Keeps("object-terminal"))
         {
             return false;
         }
@@ -2629,7 +2634,7 @@ public sealed class ReadStream : IBitStream
             Fail(SerializeError.ValueOutOfRange);
             return false;
         }
-        return _error == SerializeError.None;
+        return _error == SerializeError.None || !SerializeConformanceControls.Keeps("object-terminal");
     }
 
     /// <inheritdoc/>
