@@ -105,10 +105,18 @@ value 1.1 could carry keeps its exact bytes. What changed for a C# caller:
   one value has one byte sequence does not hold for that read.
 - **Every refusal names its reason.** `SerializeError` is the standard's closed list —
   `PastEnd`, `ValueOutOfRange`, `NonzeroPadding`, `TrailingData`, `NonFiniteFloat`,
-  `InvalidUtf8`, `EmbeddedNul`, `NonCanonical` — and `SerializeUtil.RefusalName`
-  spells each exactly as the standard does (`past_end`, `value_out_of_range`, ...).
-  The stream keeps the **first** refusal's reason; later refusals on a failed stream
-  are echoes. 1.x's `Overflow`, `Align` and `InvalidString` are `PastEnd`,
+  `InvalidUtf8`, `EmbeddedNul`, `NonCanonical`, `Rejected` — and
+  `SerializeUtil.RefusalName` spells each exactly as the standard does (`past_end`,
+  `value_out_of_range`, ...). The stream keeps the **first** refusal's reason; later
+  refusals on a failed stream are echoes.
+- **The caller can refuse too** (standard 2.1). `Rejected` is the one reason the
+  caller decides rather than the wire: the bytes were well formed, and your own
+  validation refuses the value they carry. Refuse with `return stream.Reject();` from
+  a serialize function, or by returning false from a nested object's `Serialize` with
+  nothing latched; either latches `Rejected`, terminally, and a wire reason already
+  latched wins. `Reject` is read only: on a write or measure stream it is caller
+  error, a `Debug.Assert`, and returns false without latching anything in release.
+  An object's `Serialize` returning false latched `ValueOutOfRange` before 2.1. 1.x's `Overflow`, `Align` and `InvalidString` are `PastEnd`,
   `NonzeroPadding` and the pair `InvalidUtf8` / `EmbeddedNul`. A string's NUL scan
   runs before its UTF-8 check, so a payload that breaks both is `EmbeddedNul`.
 - **Wide integers are exact**, as they always were here: 64 and 128 bit values are
@@ -282,7 +290,7 @@ proves derive-per-call equals C++; routing this one field through it is what clo
 the triangle against the reference directly.
 
 CI runs this gate in its own job, with `CXX=clang++` and the C++ clone checked out
-at release tag `v2.0.1` (format 2.0, first carried by `v2.0.0`) — the family's one
+at release tag `v2.1.0` (format 2.0, first carried by `v2.0.0`) — the family's one
 interop pin: one policy, one version,
 every port's gate against the same current C++ release. Under the four different
 pins this replaced (`v1.6.2` here and in the Go port, `v1.4.3` in Rust, upstream

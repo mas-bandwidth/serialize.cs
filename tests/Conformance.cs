@@ -131,6 +131,7 @@ internal static partial class Program
         Fixed,
         End,
         Object,     // opens a nested object over the steps that follow
+        Reject,     // the caller refuses here: Reject at the top level, a false callback in an object
     }
 
     private sealed class Step
@@ -638,7 +639,9 @@ internal static partial class Program
             if (SerializeUtil.RefusalName(stream.Error) != vector.ExpectedReason)
             {
                 ConformanceFail(vector, $"a later refusal replaced the first reason with {SerializeUtil.RefusalName(stream.Error)}");
+                return;
             }
+            CheckObjectCallbackRefusal(vector, batch: false);
             return;
         }
 
@@ -706,7 +709,9 @@ internal static partial class Program
             if (SerializeUtil.RefusalName(stream.Error) != vector.ExpectedReason)
             {
                 ConformanceFail(vector, $"a later refusal replaced the first reason with {SerializeUtil.RefusalName(stream.Error)}");
+                return;
             }
+            CheckObjectCallbackRefusal(vector, batch: true);
             return;
         }
 
@@ -725,6 +730,67 @@ internal static partial class Program
         }
 
         CheckConformanceAccepted(vector, steps, stream.BitsProcessed);
+    }
+
+    /*
+        STANDARD.md, "Refusal reasons": a nested object whose serialize function fails with
+        nothing refused inside it refuses as rejected, terminally. Every refused vector in
+        object.txt is presented once more to a callback that returns false at once, on a
+        fresh stream over the same bytes: the stream must latch rejected, refuse a zero
+        bit read, a nested object (without calling it) and a whole byte, and keep the
+        reason through those echoes. Through the stream, or through one ReadBatch whose
+        SerializeObject hands the callback the stream.
+    */
+    private static void CheckObjectCallbackRefusal(ConformanceVector vector, bool batch)
+    {
+        if (!vector.Source.EndsWith("/object.txt", StringComparison.Ordinal))
+        {
+            return;
+        }
+        ReadStream stream = new ReadStream(ConformanceBuffer(vector, ConformanceSlack), vector.Bytes.Length);
+        RefusingObject first = new RefusingObject();
+        RefusingObject after = new RefusingObject();
+        int probe = 12345;
+        uint probeBits = 0xFFFFFFFF;
+        bool accepted, zeroBit, objectAfter, byteAfter;
+        SerializeError latched;
+        if (batch)
+        {
+            ReadBatch b = stream.BeginBatch();
+            accepted = b.SerializeObject(first);
+            latched = b.Error;
+            zeroBit = b.SerializeInt(ref probe, 7, 7);
+            objectAfter = b.SerializeObject(after);
+            byteAfter = b.SerializeBits(ref probeBits, 8);
+            b.End();
+        }
+        else
+        {
+            accepted = stream.SerializeObject(first);
+            latched = stream.Error;
+            zeroBit = stream.SerializeInt(ref probe, 7, 7);
+            objectAfter = stream.SerializeObject(after);
+            byteAfter = stream.SerializeBits(ref probeBits, 8);
+        }
+        if (accepted || !first.Called)
+        {
+            ConformanceFail(vector, "SerializeObject accepted a callback returning false");
+            return;
+        }
+        if (latched != SerializeError.Rejected)
+        {
+            ConformanceFail(vector, $"a callback-only refusal latched {SerializeUtil.RefusalName(latched)}, not rejected");
+            return;
+        }
+        if (zeroBit || probe != 12345 || objectAfter || after.Called || byteAfter || probeBits != 0xFFFFFFFF)
+        {
+            ConformanceFail(vector, "a read succeeded after a callback-only refusal: failure is not terminal");
+            return;
+        }
+        if (stream.Error != SerializeError.Rejected)
+        {
+            ConformanceFail(vector, $"the echoes after a callback-only refusal replaced rejected with {SerializeUtil.RefusalName(stream.Error)}");
+        }
     }
 
     // Failure is terminal (STANDARD.md, Reader Obligations), and a refused vector is
@@ -882,14 +948,39 @@ internal static partial class Program
 
         public bool Serialize(IBitStream stream)
         {
-            return RunSteps(stream, Steps, Start, Count, Run);
+            return RunSteps(stream, Steps, Start, Count, Run, inObject: true);
         }
     }
 
-    private static bool RunSteps(IBitStream stream, List<Step> steps, int start, int count, StepRun run)
+    // The callback that refuses on its own: it returns false and touches nothing, which
+    // SerializeObject must latch as rejected (STANDARD.md, "Refusal reasons").
+    private sealed class RefusingObject : ISerializer
+    {
+        public bool Called;
+
+        public bool Serialize(IBitStream stream)
+        {
+            Called = true;
+            return false;
+        }
+    }
+
+    /*
+        STANDARD.md, "The vector format": a `reject` step at the top level refuses through
+        the implementation's reject entry point (IBitStream.Reject here), and inside an
+        object it is the object's own Serialize returning false with no refusal of its
+        own, which SerializeObject must latch as rejected. The two spellings a caller
+        writes, both pinned.
+    */
+    private static bool RunSteps(IBitStream stream, List<Step> steps, int start, int count, StepRun run, bool inObject = false)
     {
         for (int i = start; i < start + count; i += StepSpan(steps, i))
         {
+            if (steps[i].Kind == StepKind.Reject && inObject)
+            {
+                run.StoppedAt = i;
+                return false;
+            }
             if (steps[i].Kind == StepKind.Object)
             {
                 NestedObject nested = new NestedObject
@@ -1015,6 +1106,12 @@ internal static partial class Program
 
             case StepKind.End:
                 return stream.SerializeEnd();
+
+            case StepKind.Reject:
+                // only a read can be refused: a reject reaching a writer or a measure
+                // belongs to a refused vector, so it refuses here rather than tripping
+                // the write side assertion
+                return stream.IsReading && stream.Reject();
 
             default:
                 // nesting is driven by RunSteps, which owns the step range an object
@@ -1150,6 +1247,9 @@ internal static partial class Program
 
             case StepKind.End:
                 return batch.SerializeEnd();
+
+            case StepKind.Reject:
+                return batch.Reject();
 
             default:
                 return false;
@@ -1320,6 +1420,10 @@ internal static partial class Program
             case "end":
                 if (words.Length != 1) return null;
                 step.Kind = StepKind.End;
+                return step;
+            case "reject":
+                if (words.Length != 1) return null;
+                step.Kind = StepKind.Reject;
                 return step;
             case "int":
             case "int64":
@@ -1553,6 +1657,7 @@ internal static partial class Program
             case StepKind.Object:
             case StepKind.Align:
             case StepKind.End:
+            case StepKind.Reject:
                 // none has a value of its own; for align and end the corpus states the
                 // padding consumed, which a conforming read always finds zero
                 return "0";

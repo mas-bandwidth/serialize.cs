@@ -53,8 +53,16 @@
     forever on a truncated or malicious packet. Use SerializeUtil.Continue and
     SerializeUtil.Until for sentinel-driven loops. On a write or measure stream the
     only failure the library itself can latch is a user abort through SerializeObject
-    (an object's Serialize returning false): write-side validation is debug asserts,
-    so healthy write-mode serialize calls always return true.
+    (an object's Serialize returning false, latched as SerializeError.Rejected):
+    write-side validation is debug asserts, so healthy write-mode serialize calls
+    always return true.
+
+    The caller's own refusal (STANDARD.md 2.1, "Refusal reasons", IMPLEMENTING.md U2):
+    a read whose bytes were well formed can still carry a value the caller refuses.
+    The caller refuses through ReadStream.Reject() (IBitStream.Reject() in a generic
+    serialize function), or by returning false from a nested object's Serialize with
+    nothing latched; either latches SerializeError.Rejected, terminal like every other
+    refusal, and the first reason wins.
 
     This file mirrors the single-header layout of the C++ original:
     error model / utilities / BitWriter / BitReader / stream interface / WriteStream /
@@ -97,9 +105,8 @@ public enum SerializeError
     /// <summary>value_out_of_range: a decoded value outside its declared range or
     /// domain — a ranged offset past its span, a string length past its buffer, a
     /// compressed integer past its maximum integer value, an int_relative outside
-    /// its domain or not increasing. Reads latch it in every build mode. It also
-    /// latches, on any stream, when a user's Serialize function aborts through
-    /// SerializeObject. On write, an out of range value is a writer contract
+    /// its domain or not increasing. Reads latch it in every build mode. On write,
+    /// an out of range value is a writer contract
     /// violation, caught by Debug.Assert in debug builds and unchecked in release
     /// (writes are trusted).</summary>
     ValueOutOfRange,
@@ -129,6 +136,15 @@ public enum SerializeError
     /// the value it carries — the int_relative absolute tier carrying a difference
     /// a bounded tier would have taken.</summary>
     NonCanonical,
+
+    /// <summary>rejected: the bytes were well formed, and the reader's caller refused
+    /// the value they carry — through ReadStream.Reject(), or a nested object's
+    /// Serialize returning false through SerializeObject with nothing latched. The
+    /// one reason the caller decides rather than the wire (STANDARD.md 2.1). Appended
+    /// last, so no existing member's value moved. On a write or measure stream it is
+    /// what an object's Serialize returning false latches: the caller's own
+    /// abort.</summary>
+    Rejected,
 }
 
 /// <summary>
@@ -387,6 +403,16 @@ public interface IBitStream
     /// caller's struct receives the deserialized fields.</summary>
     bool SerializeObject<T>(ref T obj) where T : ISerializer;
 
+    /// <summary>The caller's own refusal (STANDARD.md, "Refusal reasons"): the bytes
+    /// read so far were well formed, and the caller refuses the value they carry. On a
+    /// read stream it latches SerializeError.Rejected, unless an earlier refusal
+    /// already latched (the first reason wins), and returns false; the stream is
+    /// failed from there on, like every refusal. Return its result from your
+    /// Serialize function. Reject is read only: on a write or measure stream there is
+    /// nothing to refuse, so calling it there is caller error, asserted in debug
+    /// builds, and it returns false without latching anything in release.</summary>
+    bool Reject();
+
     /// <summary>Serializes an integer relative to a previous integer, using fewer bits
     /// the closer the two values are. The domain is the non-negative int32 range, 0 to
     /// 2^31 - 1: both previous and current lie in it, and previous must be less than
@@ -465,7 +491,7 @@ public static class SerializeUtil
     /// The family wide name of a refusal reason, exactly as STANDARD.md ("Refusal
     /// reasons") and the conformance corpus spell it: "past_end",
     /// "value_out_of_range", "nonzero_padding", "trailing_data", "non_finite_float",
-    /// "invalid_utf8", "embedded_nul" or "non_canonical", and "none" for
+    /// "invalid_utf8", "embedded_nul", "non_canonical" or "rejected", and "none" for
     /// SerializeError.None. The C# member names are the same words in PascalCase.
     /// </summary>
     public static string RefusalName(SerializeError error)
@@ -481,6 +507,7 @@ public static class SerializeUtil
             case SerializeError.InvalidUtf8: return "invalid_utf8";
             case SerializeError.EmbeddedNul: return "embedded_nul";
             case SerializeError.NonCanonical: return "non_canonical";
+            case SerializeError.Rejected: return "rejected";
             default: return "unknown";
         }
     }
@@ -683,6 +710,7 @@ internal static class SerializeInternal
     internal const string FixedFractionBitsMessage = "fixed point fraction bits can't be negative";
     internal const string FixedWidthMessage = "fixed point integer bits plus fraction bits must equal the number of bits in the storage type";
     internal const string FixedBoundsMessage = "fixed point bounds in whole units do not fit the Q format";
+    internal const string RejectOnWriteMessage = "Reject is read only: a write or measure stream has nothing to refuse, so calling it there is caller error";
     internal const string IntRelativeDomainMessage = "int relative previous must be inside the non-negative int32 domain: it is the caller's own state, never off the wire";
 
     // Writer contract asserts (STANDARD.md writes-trusted doctrine, enacted for C#
@@ -1798,9 +1826,9 @@ public sealed class WriteStream : IBitStream
         }
         if (!obj.Serialize(this))
         {
-            // an object that aborts without a stream failure is an object-level
-            // validation failure: latch it so later calls stay no-ops
-            Fail(SerializeError.ValueOutOfRange);
+            // an object that aborts without a stream failure is the caller's own
+            // abort: latch it so later calls stay no-ops
+            Fail(SerializeError.Rejected);
             return false;
         }
         return _error == SerializeError.None;
@@ -1815,10 +1843,19 @@ public sealed class WriteStream : IBitStream
         }
         if (!obj.Serialize(this))
         {
-            Fail(SerializeError.ValueOutOfRange);
+            Fail(SerializeError.Rejected);
             return false;
         }
         return _error == SerializeError.None;
+    }
+
+    /// <inheritdoc/>
+    public bool Reject()
+    {
+        // read only (IMPLEMENTING.md U2, U9): caller error here, asserted in debug,
+        // and false without latching anything in release
+        Debug.Assert(false, SerializeInternal.RejectOnWriteMessage);
+        return false;
     }
 
     /// <inheritdoc/>
@@ -2628,8 +2665,7 @@ public sealed class ReadStream : IBitStream
         }
         if (!obj.Serialize(this))
         {
-            Fail(SerializeError.ValueOutOfRange);
-            return false;
+            return LatchRejected();
         }
         return _error == SerializeError.None || !SerializeConformanceControls.Keeps("object-terminal");
     }
@@ -2644,10 +2680,27 @@ public sealed class ReadStream : IBitStream
         }
         if (!obj.Serialize(this))
         {
-            Fail(SerializeError.ValueOutOfRange);
-            return false;
+            return LatchRejected();
         }
         return _error == SerializeError.None || !SerializeConformanceControls.Keeps("object-terminal");
+    }
+
+    /// <inheritdoc/>
+    public bool Reject()
+    {
+        // the caller's own refusal routes through the same latch as a wire refusal,
+        // so the first reason wins with no special case
+        return Fail(SerializeConformanceControls.Keeps("reject-reason")
+            ? SerializeError.Rejected : SerializeError.ValueOutOfRange);
+    }
+
+    // A nested object's Serialize returned false. When nothing inside it refused, the
+    // caller refused on its own, and the stream latches rejected; when a primitive
+    // refused first, Fail keeps that reason. Either way the stream is failed from here.
+    private bool LatchRejected()
+    {
+        return Fail(SerializeConformanceControls.Keeps("object-latch-rejected")
+            ? SerializeError.Rejected : SerializeError.ValueOutOfRange);
     }
 
     /// <inheritdoc/>
@@ -3060,7 +3113,7 @@ public sealed class MeasureStream : IBitStream
         }
         if (!obj.Serialize(this))
         {
-            Fail(SerializeError.ValueOutOfRange);
+            Fail(SerializeError.Rejected);
             return false;
         }
         return _error == SerializeError.None;
@@ -3075,10 +3128,19 @@ public sealed class MeasureStream : IBitStream
         }
         if (!obj.Serialize(this))
         {
-            Fail(SerializeError.ValueOutOfRange);
+            Fail(SerializeError.Rejected);
             return false;
         }
         return _error == SerializeError.None;
+    }
+
+    /// <inheritdoc/>
+    public bool Reject()
+    {
+        // read only (IMPLEMENTING.md U2, U9): caller error here, asserted in debug,
+        // and false without latching anything in release
+        Debug.Assert(false, SerializeInternal.RejectOnWriteMessage);
+        return false;
     }
 
     /// <inheritdoc/>
@@ -3487,6 +3549,17 @@ public ref struct WriteBatch
     {
         Sync();
         bool ok = _stream.SerializeObject(ref obj);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>The caller's own refusal. Delegated: syncs state down, runs
+    /// WriteStream.Reject, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool Reject()
+    {
+        Sync();
+        bool ok = _stream.Reject();
         Recapture();
         return ok;
     }
@@ -4120,6 +4193,17 @@ public ref struct ReadBatch
     {
         Sync();
         bool ok = _stream.SerializeObject(ref obj);
+        Recapture();
+        return ok;
+    }
+
+    /// <summary>The caller's own refusal. Delegated: syncs state down, runs
+    /// ReadStream.Reject, recaptures.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool Reject()
+    {
+        Sync();
+        bool ok = _stream.Reject();
         Recapture();
         return ok;
     }
