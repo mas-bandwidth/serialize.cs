@@ -282,7 +282,7 @@ proves derive-per-call equals C++; routing this one field through it is what clo
 the triangle against the reference directly.
 
 CI runs this gate in its own job, with `CXX=clang++` and the C++ clone checked out
-at release tag `v2.0.0`, the first release carrying format 2.0 — the family's one
+at release tag `v2.0.1` (format 2.0, first carried by `v2.0.0`) — the family's one
 interop pin: one policy, one version,
 every port's gate against the same current C++ release. Under the four different
 pins this replaced (`v1.6.2` here and in the Go port, `v1.4.3` in Rust, upstream

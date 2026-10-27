@@ -292,9 +292,10 @@ jobs:
           # load-bearing -- against an older header those rows go red, the
           # cross-language proof serialize#94 found missing. v2.0.0 is format 2.0:
           # the compat sequence carries no wstring and closes with serialize_end,
-          # so no older header compiles it.
+          # so no older header compiles it. v2.0.1 keeps format 2.0 and adds object
+          # read terminality (an empty nested object on a refused stream refuses).
           repository: mas-bandwidth/serialize
-          ref: v2.0.0
+          ref: v2.0.1
           path: cpp-serialize
       - uses: actions/setup-dotnet@v6
         with:
