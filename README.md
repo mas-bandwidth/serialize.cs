@@ -133,12 +133,23 @@ value 1.1 could carry keeps its exact bytes. What changed for a C# caller:
   findings instead of stopping at the first one, so one run gives the whole picture,
   then exits nonzero if any were recorded. CI runs it on every push and pull request;
   the exit code is the verdict.
+- `fuzz/` — the coverage-guided fuzz harness (SharpFuzz + libFuzzer), the counterpart
+  of the C++ reference's `fuzz.cpp`: every input is a hostile read of arbitrary bytes
+  through every `ReadStream` primitive (with and without slack past the data, which
+  must agree), checking that refusals never throw and carry a reason from the closed
+  list, then a differential write → measure → read round trip that fails on any
+  asymmetry and on a measure that under-measures. `scripts/fuzz.sh [seconds]
+  [corpus]` builds, instruments and runs it (Linux x64); `--replay <file|dir>` re-runs
+  reproducers anywhere. CI runs 60 s per push plus a negative control that plants an
+  asymmetry (`-p:SerializeFuzzSabotage=true`) and must be caught; `nightly-fuzz.yml`
+  runs an hour a night with a cumulative corpus.
 - `scripts/interop.sh` — the interop gate as one runnable command.
 - `tools/revendor.sh` — re-vendors `STANDARD.md`, `conformance/` and
   `conformance-controls/` verbatim from a tag of the reference, and prints the diff.
-- `.github/workflows/ci.yml` — eight jobs: the Release test matrix and the Debug test
+- `.github/workflows/ci.yml` — ten jobs: the Release test matrix and the Debug test
   matrix (all three TFM legs, on Linux, macOS and Windows — Unity's authoring
-  platform), the red team run, the checked-arithmetic leg, the conformance controls,
+  platform), the red team run, the 60 s fuzz run and its negative control, the
+  checked-arithmetic leg, the conformance controls,
   the analyzer/style check, the C++ interop gate, and the spec-sync check over
   `STANDARD.md`, `conformance/` and `conformance-controls/`.
 - `STANDARD.md` — the wire format spec, vendored verbatim from the upstream

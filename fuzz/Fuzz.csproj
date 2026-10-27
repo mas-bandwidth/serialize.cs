@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- THE COVERAGE-GUIDED FUZZ HARNESS: SharpFuzz instruments the published
+       Serialize.dll with edge coverage, and libFuzzer (libfuzzer-dotnet, Linux)
+       drives this executable over its shared-memory protocol. Built Debug, like the
+       C++ reference's fuzz target, so the library's Debug.Assert contracts are live
+       and a tripped one is a crash libFuzzer records. scripts/fuzz.sh is the one
+       command that builds, instruments and runs it; the ci workflow's `fuzz` job runs
+       it for 60 s per push, nightly-fuzz.yml for an hour with a cached corpus.
+
+       This is the one project in the repo with a package reference. The family value
+       "zero third-party dependencies" is the LIBRARY's (src/Serialize.csproj) and is
+       untouched: the fuzzer is tooling beside it, never referenced by it. The
+       reference is pinned exactly and restored in locked mode against the committed
+       packages.lock.json, whose content hashes pin every package byte. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Serialize.Fuzz</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode>true</RestoreLockedMode>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../src/Serialize.csproj" />
+    <PackageReference Include="SharpFuzz" Version="[2.3.0]" />
+  </ItemGroup>
+
+  <!-- NEGATIVE CONTROL: SerializeFuzzSabotage=true flows to the library reference
+       (src/Serialize.csproj) and plants a write/read asymmetry there. Never a
+       shipping configuration; see SERIALIZE_FUZZ_SABOTAGE in src/Serialize.cs. -->
+
+</Project>

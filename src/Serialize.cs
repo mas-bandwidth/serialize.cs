@@ -1541,7 +1541,20 @@ public sealed class WriteStream : IBitStream
 
     /// <inheritdoc/>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool SerializeUInt16(ref ushort value) => WriteBits(value, 16);
+    public bool SerializeUInt16(ref ushort value)
+    {
+#if SERIALIZE_FUZZ_SABOTAGE
+        // NEGATIVE CONTROL for the fuzzer only (SerializeFuzzSabotage=true, never a
+        // shipping configuration): the writer drops the top bit of the one extreme
+        // value, a planted write/read asymmetry the differential round trip in
+        // fuzz/Fuzz.cs must find within the smoke budget
+        if (value == ushort.MaxValue)
+        {
+            return WriteBits(0x7FFF, 16);
+        }
+#endif
+        return WriteBits(value, 16);
+    }
 
     /// <inheritdoc/>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
