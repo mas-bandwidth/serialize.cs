@@ -62,6 +62,12 @@
     WriteBatch / ReadBatch (register-resident hot paths over the same streams).
 */
 
+// The library is written with nullable annotations. The directive keeps them
+// meaningful when the file is compiled by a project that leaves nullable off,
+// as a Unity project does by default: without it every `?` annotation is a
+// CS8632 warning there. In this repository's projects it changes nothing.
+#nullable enable
+
 using System;
 using System.Buffers.Binary;
 using System.Diagnostics;

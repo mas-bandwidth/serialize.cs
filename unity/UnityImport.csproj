@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- THE UNITY IMPORT GATE. A Unity project does not build src/Serialize.csproj:
+       it compiles the package's source files (src/package.json, the asmdef beside
+       it) with its own settings — netstandard2.1, C# 9, nullable OFF unless a
+       file says otherwise. This project compiles exactly those files exactly that
+       way, warnings as errors, so a construct the editor would warn about or
+       refuse fails here, in CI. It builds; it has nothing to run. -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AssemblyName>MasBandwidth.Serialize</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../src/*.cs" />
+  </ItemGroup>
+
+</Project>

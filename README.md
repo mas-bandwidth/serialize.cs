@@ -53,9 +53,25 @@ dotnet add YourProject.csproj reference serialize.cs/src/Serialize.csproj
 
 **Copy the files in** — the library is two files, `src/Serialize.cs` and
 `src/Int128Pair.cs`. Drop both into your source tree and they compile with the
-rest of it: there are no package references to satisfy, ever. This is the Unity
-path — put them anywhere under `Assets/`, where the `netstandard2.1` shape CI
-tests is the shape you get.
+rest of it: there are no package references to satisfy, ever.
+
+**Unity Package Manager** — `src/` is a Unity package,
+`com.masbandwidth.serialize`, with its own assembly definition,
+`MasBandwidth.Serialize` (no engine references, no unsafe code). In the Package
+Manager choose *Add package from git URL* and give it the repository, the
+package path and a release tag:
+
+```
+https://github.com/mas-bandwidth/serialize.cs.git?path=src#v2.0.1
+```
+
+Reference `MasBandwidth.Serialize` from your own asmdef. CI holds the package
+two ways: `scripts/unity-package-check.sh` (the package version is the library
+version, and every asset carries a unique `.meta`, which an immutable package
+needs), and `unity/UnityImport.csproj`, which compiles the source the way a
+Unity project does — `netstandard2.1`, C# 9, nullable off, warnings as errors.
+A release bumps `src/package.json` with `<Version>` in `src/Serialize.csproj`;
+the check refuses the two apart.
 
 Either way, pin a release tag rather than tracking `main`. The newest is on the
 [releases page](https://github.com/mas-bandwidth/serialize.cs/releases): a release states

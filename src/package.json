@@ -1,0 +1,18 @@
+{
+  "name": "com.masbandwidth.serialize",
+  "version": "2.0.1",
+  "displayName": "Serialize",
+  "description": "C# bitpacking serialization library, wire compatible with the C, C++, Go and Rust serialize libraries. Zero dependencies, zero allocation on the serialization path, and reads that fail cleanly on hostile input.",
+  "unity": "2021.2",
+  "license": "BSD-3-Clause",
+  "documentationUrl": "https://github.com/mas-bandwidth/serialize.cs#readme",
+  "author": {
+    "name": "Mas Bandwidth LLC",
+    "url": "https://github.com/mas-bandwidth"
+  },
+  "keywords": [
+    "serialization",
+    "bitpacking",
+    "networking"
+  ]
+}

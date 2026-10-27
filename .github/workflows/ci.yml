@@ -59,6 +59,25 @@ jobs:
       - name: Build the compat harness
         run: dotnet build compat/Compat.csproj -c Release
 
+  # THE UNITY PACKAGE (src/package.json, installed by git URL with ?path=src).
+  # Two gates the .NET legs above cannot see: the package's own rules (version
+  # in step with the library, a unique .meta beside every asset), and the
+  # library compiled the way a Unity project compiles it — netstandard2.1, C# 9,
+  # nullable off, warnings as errors (unity/UnityImport.csproj).
+  unity-package:
+    name: unity package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - name: The package's rules
+        run: ./scripts/unity-package-check.sh
+      - name: The library as a Unity project compiles it
+        run: dotnet build unity/UnityImport.csproj -c Release
+
   # THE DEBUG LEG: the write-side contracts AND the API misuse checks are
   # Debug.Assert, compiled out of Release builds — so the Release-only job above
   # can never execute test_write_contract_asserts or test_api_misuse_asserts
