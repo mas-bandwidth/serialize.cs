@@ -294,8 +294,9 @@ jobs:
           # the compat sequence carries no wstring and closes with serialize_end,
           # so no older header compiles it. v2.0.1 keeps format 2.0 and adds object
           # read terminality (an empty nested object on a refused stream refuses).
+          # v2.1.0 keeps format 2.0 and adds the caller's refusal, `rejected`.
           repository: mas-bandwidth/serialize
-          ref: v2.0.1
+          ref: v2.1.0
           path: cpp-serialize
       - uses: actions/setup-dotnet@v6
         with:
