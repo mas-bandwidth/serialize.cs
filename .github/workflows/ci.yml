@@ -104,13 +104,23 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: 10.0.x
+          # 10.0.x builds both legs; 8.0.x supplies the LTS runtime so the
+          # net8.0 leg runs on the real .NET 8, not a roll-forward
+          dotnet-version: |
+            8.0.x
+            10.0.x
       # the harness records findings instead of stopping at the first one, then
       # exits nonzero if any were recorded: the exit code is the verdict. It used
       # to be build-only here, which meant nobody was reading the answers it was
-      # written to produce.
-      - name: Run the red team harness (exit code is the verdict)
-        run: dotnet run -c Release --project redteam/RedTeam.csproj
+      # written to produce. The net8.0 leg proves the same hostile surface —
+      # UInt128, Int128 and fixed point through stream and batch included —
+      # on the LTS runtime. Release only, as the harness has always run:
+      # ReadWide's infinite-delta compressed float is a deliberate
+      # non-conforming declaration that asserts in Debug by design.
+      - name: Run the red team harness (net10.0, Release, exit code is the verdict)
+        run: dotnet run -c Release --project redteam/RedTeam.csproj -f net10.0
+      - name: Run the red team harness (net8.0, Release, exit code is the verdict)
+        run: dotnet run -c Release --project redteam/RedTeam.csproj -f net8.0
 
   # THE COVERAGE-GUIDED FUZZER, the counterpart of the C++ reference's 60 s
   # libFuzzer smoke: SharpFuzz instruments the library, libFuzzer drives
@@ -207,7 +217,7 @@ jobs:
       - name: Tests against the checked-arithmetic library
         run: dotnet run -c Release --project tests/Tests.csproj -f net10.0 -p:SerializeCheckedArithmeticProbe=true
       - name: Red team harness against the checked-arithmetic library
-        run: dotnet run -c Release --project redteam/RedTeam.csproj -p:SerializeCheckedArithmeticProbe=true
+        run: dotnet run -c Release --project redteam/RedTeam.csproj -f net10.0 -p:SerializeCheckedArithmeticProbe=true
 
   conformance-controls:
     name: conformance controls (each rule deleted fails exactly its vectors)
