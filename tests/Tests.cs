@@ -450,6 +450,8 @@ internal static partial class Program
         RunTest("test_public_fail", TestPublicFail);
         RunTest("test_batch_after_end", TestBatchAfterEnd);
         RunTest("test_copy_string", TestCopyString);
+        // IMPLEMENTING.md 2.1.1's rulings U6 and U9 (Uniform.cs)
+        RunTest("test_write_misuse_never_latches", TestWriteMisuseNeverLatches);
 #if DEBUG
         RunTest("test_write_uniform_asserts", TestWriteUniformAsserts);
 #endif
@@ -1886,26 +1888,19 @@ internal static partial class Program
         stream.Flush();
         Check(stream.BitsProcessed == 64, $"expected 64 bits processed, got {stream.BitsProcessed}");
 
-        // the write-side latch: a user abort through SerializeObject latches the
-        // error, SerializeObject returns false, and the first error wins. The
-        // per-field write spine carries NO sticky branch (the 2026-08-16 check-model
-        // audit: the branch was this port's invention — the C++ write path has no
-        // per-field error check): later field calls stay trusted, keep writing and
-        // keep returning true, and the caller discards the packet by checking Error
-        // once at the end. SerializeObject still refuses to descend into an object
-        // after a latched error.
+        // a user abort through SerializeObject on a write: SerializeObject returns
+        // false and records nothing (IMPLEMENTING.md U9, 2.1.1: write misuse never
+        // latches, and a write stream has no refusal state). The caller sees the
+        // false and discards the packet; later calls keep writing
         WriteStream aborted = new WriteStream(new byte[8]);
         uint a = 7;
         Check(aborted.SerializeBits(ref a, 8), "write failed");
         Check(!aborted.SerializeObject(new FailingObject()), "expected the user abort to fail");
-        Check(aborted.Error == SerializeError.Rejected,
-            $"expected Rejected from the abort, got {aborted.Error}");
+        Check(aborted.Ok && aborted.Error == SerializeError.None,
+            $"an abort records nothing on a write stream, got {aborted.Error}");
         bool flag = true;
-        Check(aborted.SerializeBool(ref flag), "field writes after an abort stay trusted and branch-free");
-        Check(aborted.BitsProcessed == 9, "trusted writes advance the stream even after a latched abort");
-        Check(!aborted.SerializeObject(new FailingObject()), "SerializeObject stays guarded after a latch");
-        Check(!aborted.Ok, "Ok must be false once an error is latched");
-        Check(aborted.Error == SerializeError.Rejected, "the first latched error must win");
+        Check(aborted.SerializeBool(ref flag), "field writes after an abort keep writing");
+        Check(aborted.BitsProcessed == 9, "and advance the stream");
     }
 
 #if DEBUG
@@ -2750,7 +2745,7 @@ internal static partial class Program
         WriteStream failStream = new WriteStream(new byte[8]);
         FailingStruct failing = default;
         Check(!failStream.SerializeObject(ref failing), "expected the struct serialize to fail");
-        Check(failStream.Error != SerializeError.None, "expected an error to latch");
+        Check(failStream.Ok, "and records nothing on a write (IMPLEMENTING.md U9)");
     }
 
     private struct FailingStruct : ISerializer
@@ -2802,19 +2797,18 @@ internal static partial class Program
 
     private static void TestSerializeObjectErrorPropagation()
     {
-        // an object that aborts its own serialization must fail the stream and latch.
-        // On the write side the latch is for the caller's final Error check and for
-        // SerializeObject itself — the per-field write spine is branch-free and stays
-        // trusted (2026-08-16 check-model audit), so field calls after the abort
-        // keep returning true. The READ side keeps its sticky no-op model in full
-        // (TestContinue and the redteam suite pin it).
+        // an object that aborts its own serialization makes SerializeObject return
+        // false. On a write it records nothing (IMPLEMENTING.md U9, 2.1.1), so later
+        // calls keep writing; test_write_misuse_never_latches covers measure and
+        // batch. The READ side latches rejected and keeps its sticky no-op model in
+        // full (test_serialize_reject, TestContinue and the redteam suite pin it).
         WriteStream stream = new WriteStream(new byte[8]);
         Check(!stream.SerializeObject(new FailingObject()), "expected the object serialize to fail");
-        Check(stream.Error != SerializeError.None, "expected an error to latch on the stream");
+        Check(stream.Ok && stream.Error == SerializeError.None, "nothing latches on a write stream (U9)");
         uint v = 1;
-        Check(stream.SerializeBits(ref v, 8), "field writes after an abort stay trusted and branch-free");
-        Check(!stream.SerializeObject(new FailingObject()), "SerializeObject stays guarded after a latch");
-        Check(!stream.Ok, "the latch survives for the caller's final check");
+        Check(stream.SerializeBits(ref v, 8), "field writes after an abort keep writing");
+        Check(!stream.SerializeObject(new FailingObject()), "a failing object still returns false");
+        Check(stream.Ok, "and still records nothing");
     }
 
     // Prepares a stream that has just failed a read, one per failure shape

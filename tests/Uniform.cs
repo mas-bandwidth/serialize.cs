@@ -1,7 +1,7 @@
 /*
     Uniform.cs
 
-    IMPLEMENTING.md's uniform rules (reference v2.1.0) that this port broke before
+    IMPLEMENTING.md's uniform rules (reference v2.1.0, and v2.1.1's U6/U9/U15 rulings) that this port broke before
     2.1.0, one test per rule, each citing its number, plus the 2026-10-27 audit's batch
     finding. The rules this port already kept are proven where they always were
     (test_write_contract_asserts, test_api_misuse_asserts, test_serialize_reject,
@@ -323,8 +323,84 @@ internal static partial class Program
         }
     }
 
+    private sealed class OneBitObject : ISerializer
+    {
+        public bool Serialize(IBitStream stream)
+        {
+            bool b = true;
+            return stream.SerializeBool(ref b);
+        }
+    }
+
+    private struct FailingValue : ISerializer
+    {
+        public bool Serialize(IBitStream stream)
+        {
+            return false;
+        }
+    }
+
+    private static void TestWriteMisuseNeverLatches()
+    {
+        // IMPLEMENTING.md U9 (2.1.1): write misuse never latches, and a nested object
+        // whose Serialize returns false on a write or a measure makes the object
+        // operation return false and records nothing. U6: a measure latches nothing.
+        // Before 2.1.1 this port recorded rejected on the write and measure streams
+        // and refused every later object
+        WriteStream writer = new WriteStream(new byte[16]);
+        Check(!writer.SerializeObject(new FailingObject()), "a failing object returns false on write");
+        FailingValue failing = default;
+        Check(!writer.SerializeObject(ref failing), "a failing struct object returns false on write");
+        Check(writer.Ok && writer.Error == SerializeError.None,
+            $"a failing object records nothing on a write stream (U9), got {writer.Error}");
+        Check(writer.SerializeObject(new OneBitObject()), "a later object writes: nothing latched (U9)");
+        Check(writer.BitsProcessed == 1, $"and only its bit was written, at {writer.BitsProcessed}");
+
+        MeasureStream measure = new MeasureStream();
+        Check(!measure.SerializeObject(new FailingObject()), "a failing object returns false on measure");
+        Check(!measure.SerializeObject(ref failing), "a failing struct object returns false on measure");
+        Check(measure.Ok && measure.Error == SerializeError.None,
+            $"a failing object records nothing on a measure stream (U6), got {measure.Error}");
+        Check(measure.SerializeObject(new OneBitObject()), "a later object measures: nothing latched (U6)");
+        Check(measure.BitsProcessed == 1, $"and only its bit was counted, at {measure.BitsProcessed}");
+
+        WriteStream batched = new WriteStream(new byte[16]);
+        WriteBatch batch = batched.BeginBatch();
+        Check(!batch.SerializeObject(new FailingObject()), "a failing object returns false on a write batch");
+        Check(batch.Ok && batch.Error == SerializeError.None,
+            $"a failing object records nothing on a write batch (U9), got {batch.Error}");
+        Check(batch.SerializeObject(new OneBitObject()), "a later batch object writes: nothing latched (U9)");
+        batch.End();
+        Check(batched.Ok && batched.BitsProcessed == 1, "End carries nothing to the stream");
+    }
+
     private static void TestCopyString()
     {
+        // IMPLEMENTING.md U15 (2.1.1), the reference's test_copy_string vectors in
+        // UTF-16: dest_size counts the bytes of the strict UTF-8 encoding. The two
+        // ill-formed byte vectors cannot be held by a C# string and are skipped, as
+        // the ruling allows for value-string ports
+        Check(SerializeUtil.CopyString("abc", 8) == "abc", "(\"abc\", 8) -> \"abc\"");
+        Check(SerializeUtil.CopyString("a\0bc", 8) == "a", "(\"a\\0bc\", 8) -> \"a\"");
+        Check(SerializeUtil.CopyString("abcdefghij", 4) == "abc", "(\"abcdefghij\", 4) -> \"abc\"");
+        Check(SerializeUtil.CopyString("éé", 4) == "é", "(\"éé\", 4) -> \"é\"");
+        Check(SerializeUtil.CopyString("éé", 3) == "é", "(\"éé\", 3) -> \"é\"");
+        Check(SerializeUtil.CopyString("a\U0001F600", 3) == "a", "(\"a😀\", 3) -> \"a\"");
+        Check(SerializeUtil.CopyString("a\U0001F600", 4) == "a", "(\"a😀\", 4) -> \"a\"");
+        Check(SerializeUtil.CopyString("a\U0001F600", 5) == "a", "(\"a😀\", 5) -> \"a\"");
+        Check(SerializeUtil.CopyString("a\U0001F600", 6) == "a\U0001F600", "(\"a😀\", 6) -> whole");
+        Check(SerializeUtil.CopyString("abc", 1) == "", "(\"abc\", 1) -> \"\"");
+#if DEBUG
+        // U3, U9: a source the strict UTF-8 codec refuses is write misuse, trapped by
+        // Debug.Assert, high and low halves alike, wherever they stand; and
+        // dest_size below 1 is write misuse
+        Check(AssertFires(() => SerializeUtil.CopyString("a\uD83D", 8)), "a lone high surrogate source must assert (U3)");
+        Check(AssertFires(() => SerializeUtil.CopyString("a\uDE00b", 8)), "a lone low surrogate source must assert (U3)");
+        Check(AssertFires(() => SerializeUtil.CopyString("abcdef\uD83D", 2)), "a lone surrogate past the cut must assert (U3)");
+        Check(AssertFires(() => SerializeUtil.CopyString("abc", 0)), "dest_size 0 must assert (U9)");
+        Check(!AssertFires(() => SerializeUtil.CopyString("a\U0001F600", 4)), "a surrogate pair is well formed");
+#endif
+
         // IMPLEMENTING.md U15: serialize_copy_string must exist everywhere. The copy
         // stops at a NUL and holds at most bufferSize - 1 UTF-8 bytes, cut at a
         // character boundary (U3)
@@ -374,6 +450,18 @@ internal static partial class Program
             uint v = 0x10;
             batch.SerializeBits(ref v, 4);
         }), "an over-wide batch bits write must assert (U8)");
+        // U6, U9: a measure traps a non-finite compressed float as a write does,
+        // never clamping it in a checked build
+        Check(AssertFires(() => { float v = float.NaN; new MeasureStream().SerializeCompressedFloat(ref v, 0, 10, 0.01f); }),
+            "a NaN compressed float measure must assert (U6, U9)");
+        Check(AssertFires(() => { float v = float.NegativeInfinity; new MeasureStream().SerializeCompressedFloat(ref v, 0, 10, 0.01f); }),
+            "an infinite compressed float measure must assert (U6, U9)");
+        Check(AssertFires(() =>
+        {
+            SerializeUtil.CompressedFloatParams(0, 10, 0.01f, out uint maxIntegerValue, out int bits, out float delta);
+            float v = float.NaN;
+            new MeasureStream().SerializeCompressedFloatPrecomputed(ref v, maxIntegerValue, bits, delta, 0);
+        }), "a NaN precomputed compressed float measure must assert (U6, U9)");
         Check(!AssertFires(() =>
         {
             uint v = uint.MaxValue;

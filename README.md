@@ -25,7 +25,13 @@ compressed floats and declarations) and trusted call-site parameters (bits
 counts, min/max ordering, buffer sizes, Q formats) on write and measure — is
 `Debug.Assert`, compiled out without the `DEBUG` constant, matching the C++
 library's `serialize_assert`; on read a bad call-site parameter is refused as
-`ValueOutOfRange` in every build instead (IMPLEMENTING.md U7, U16, since 2.1.0). A build with the `DEBUG` constant is what STANDARD.md
+`ValueOutOfRange` in every build instead (IMPLEMENTING.md U7, U16, since 2.1.0).
+`Debug.Assert` is this port's **trap**, the one write-misuse mechanism
+(IMPLEMENTING.md U9, since 2.1.1): write misuse never latches, a write or measure
+stream has no refusal state (`Error` is always `None`), and release output after
+misuse is unspecified. `Fail` on a write or measure returns false and records
+nothing; a nested object's `Serialize` returning false on a write or measure makes
+`SerializeObject` return false and records nothing. A build with the `DEBUG` constant is what STANDARD.md
 calls a **checked build**, and every check that page makes conditional on the build
 is conditional on that constant here (STANDARD.md "Writes assume trusted data",
 enacted for C# per serialize#52; parameters joined per the 2026-08-16 check-model audit,
@@ -117,6 +123,9 @@ value 1.1 could carry keeps its exact bytes. What changed for a C# caller:
   nothing latched; either latches `Rejected`, terminally, and a wire reason already
   latched wins. `Reject` is read only: on a write or measure stream it is caller
   error, a `Debug.Assert`, and returns false without latching anything in release.
+  On a write or measure, an object's `Serialize` returning false makes
+  `SerializeObject` return false and records nothing (U9, since 2.1.1; before, it
+  latched `Rejected` on the write stream).
   An object's `Serialize` returning false latched `ValueOutOfRange` before 2.1. 1.x's `Overflow`, `Align` and `InvalidString` are `PastEnd`,
   `NonzeroPadding` and the pair `InvalidUtf8` / `EmbeddedNul`. A string's NUL scan
   runs before its UTF-8 check, so a payload that breaks both is `EmbeddedNul`.
