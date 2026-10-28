@@ -295,8 +295,9 @@ jobs:
           # so no older header compiles it. v2.0.1 keeps format 2.0 and adds object
           # read terminality (an empty nested object on a refused stream refuses).
           # v2.1.0 keeps format 2.0 and adds the caller's refusal, `rejected`.
+          # v2.1.1 keeps format 2.0 and adds the U3, U6, U9 and U15 rulings.
           repository: mas-bandwidth/serialize
-          ref: v2.1.0
+          ref: v2.1.1
           path: cpp-serialize
       - uses: actions/setup-dotnet@v6
         with:

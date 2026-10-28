@@ -300,7 +300,7 @@ proves derive-per-call equals C++; routing this one field through it is what clo
 the triangle against the reference directly.
 
 CI runs this gate in its own job, with `CXX=clang++` and the C++ clone checked out
-at release tag `v2.1.0` (format 2.0, first carried by `v2.0.0`) — the family's one
+at release tag `v2.1.1` (format 2.0, first carried by `v2.0.0`) — the family's one
 interop pin: one policy, one version,
 every port's gate against the same current C++ release. Under the four different
 pins this replaced (`v1.6.2` here and in the Go port, `v1.4.3` in Rust, upstream
@@ -464,9 +464,13 @@ smuggling primitive, where the wire length and the C-string length a downstream
 consumer perceives disagree — and then bytes that are not well-formed UTF-8 as
 `InvalidUtf8`, in that order and in every build mode. An accepted payload decodes to
 exactly its characters: no normalization, no replacement character, no stripped byte
-order mark, every plane. On write, a string that is not well-formed UTF-16 is a
-writer contract violation asserted in debug, because `Encoding.UTF8` would silently
-write an unpaired surrogate as U+FFFD.
+order mark, every plane. On write, a string that is not well-formed UTF-16 (a lone
+surrogate, which the strict UTF-8 codec refuses) is write misuse (IMPLEMENTING.md U3,
+U9): a checked (`DEBUG`) build traps on it with `Debug.Assert` and never replaces it.
+A release build compiles the check out, and its bytes after the misuse are
+unspecified; that `Encoding.UTF8` happens to write U+FFFD there is that unspecified
+output, not documented behaviour, and callers must not depend on it. The same holds
+for `SerializeUtil.CopyString`, whose `bufferSize` counts strict UTF-8 bytes.
 
 Two further rules:
 

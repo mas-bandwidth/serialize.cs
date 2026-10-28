@@ -375,9 +375,10 @@ public interface IBitStream
     /// UTF-8 bytes are block copied. bufferSize mirrors the C++ API, where a string with
     /// its terminating null character must fit into the buffer, keeping streams
     /// compatible between the two languages. On write the string must be well-formed
-    /// UTF-16 (no unpaired surrogate, which an encoder would silently replace with
-    /// U+FFFD) and must hold no U+0000: both are the writer's contract,
-    /// debug-asserted. On read, a payload holding a zero byte fails with
+    /// UTF-16 (no unpaired surrogate, which the strict UTF-8 codec refuses) and must
+    /// hold no U+0000: both are write misuse, trapped by Debug.Assert in a checked
+    /// build (IMPLEMENTING.md U3, U9). In release the bytes after misuse are
+    /// unspecified; any U+FFFD there is not documented behaviour. On read, a payload holding a zero byte fails with
     /// SerializeError.EmbeddedNul, checked first, and one that is not well-formed
     /// UTF-8 fails with SerializeError.InvalidUtf8. An accepted payload decodes to
     /// exactly its characters: no normalization, no replacement, no stripped byte
