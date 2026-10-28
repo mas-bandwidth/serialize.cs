@@ -161,6 +161,22 @@ internal sealed class TestObject : ISerializer
     }
 }
 
+// A serialize function that reads one field and then refuses the value it carries
+// through the generic reject entry point, as a caller's own validation does.
+internal sealed class RejectingObject : ISerializer
+{
+    public uint Value;
+
+    public bool Serialize(IBitStream stream)
+    {
+        if (!stream.SerializeBits(ref Value, 4))
+        {
+            return false;
+        }
+        return stream.Reject();
+    }
+}
+
 internal sealed class FailingObject : ISerializer
 {
     public bool Serialize(IBitStream stream)
@@ -427,6 +443,16 @@ internal static partial class Program
         RunTest("test_string_reader_zero_buffer_size", TestStringReaderZeroBufferSize);
         RunTest("test_int_relative_validation", TestIntRelativeValidation);
         RunTest("test_refusal_names", TestRefusalNames);
+        RunTest("test_serialize_reject", TestSerializeReject);
+        // IMPLEMENTING.md's uniform rules this port broke before 2.1.0 (Uniform.cs)
+        RunTest("test_read_declarations_refuse", TestReadDeclarationsRefuse);
+        RunTest("test_read_stream_bytes_outside_buffer", TestReadStreamBytesOutsideBuffer);
+        RunTest("test_public_fail", TestPublicFail);
+        RunTest("test_batch_after_end", TestBatchAfterEnd);
+        RunTest("test_copy_string", TestCopyString);
+#if DEBUG
+        RunTest("test_write_uniform_asserts", TestWriteUniformAsserts);
+#endif
         RunTest("test_serialize_end", TestSerializeEnd);
         RunTest("test_length_claim_before_allocation", TestLengthClaimBeforeAllocation);
         // the shared corpus, vendored from mas-bandwidth/serialize: every vector run
@@ -1169,6 +1195,94 @@ internal static partial class Program
         Check(value == "unchanged", "a second failed bufferSize 0 read must not write the destination");
     }
 
+    private static void TestSerializeReject()
+    {
+        // STANDARD.md 2.1, "Refusal reasons", and IMPLEMENTING.md U2: the caller's own
+        // refusal latches rejected, terminally, and the first reason wins
+        byte[] data = { 0x05, 0xAB, 0x00, 0x00 };
+
+        // the top level reject entry point
+        {
+            ReadStream stream = new ReadStream(data, 2);
+            uint v = 0;
+            Check(stream.SerializeBits(ref v, 4) && v == 5, "the field before the reject reads");
+            Check(!stream.Reject(), "Reject returns false");
+            Check(stream.Error == SerializeError.Rejected, $"Reject must latch Rejected, got {stream.Error}");
+            Check(SerializeUtil.RefusalName(stream.Error) == "rejected", "rejected is spelled rejected");
+            long bits = stream.BitsProcessed;
+            uint after = 0xFFFFFFFF;
+            Check(!stream.SerializeBits(ref after, 8) && after == 0xFFFFFFFF && stream.BitsProcessed == bits,
+                "a read after a reject must refuse, write nothing and consume nothing");
+            Check(!stream.SerializeObject(new FailingObject()), "an object after a reject refuses");
+            Check(!stream.Reject(), "a second reject still returns false");
+            Check(stream.Error == SerializeError.Rejected, $"the echoes keep rejected, got {stream.Error}");
+        }
+
+        // the first reason wins: a wire refusal, then the caller's reject
+        {
+            ReadStream stream = new ReadStream(data, 1);
+            uint v = 0;
+            Check(!stream.SerializeBits(ref v, 16), "a read past the end refuses");
+            Check(!stream.Reject(), "Reject on a failed stream returns false");
+            Check(stream.Error == SerializeError.PastEnd, $"the wire reason must stay, got {stream.Error}");
+        }
+
+        // a nested object whose Serialize returns false with nothing latched
+        {
+            ReadStream stream = new ReadStream(data, 2);
+            Check(!stream.SerializeObject(new FailingObject()), "a refusing callback refuses the object");
+            Check(stream.Error == SerializeError.Rejected, $"a callback-only refusal latches Rejected, got {stream.Error}");
+            uint after = 0xFFFFFFFF;
+            Check(!stream.SerializeBits(ref after, 8) && after == 0xFFFFFFFF, "the object refusal is terminal");
+        }
+
+        // the generic entry point from inside a serialize function, by ref too
+        {
+            ReadStream stream = new ReadStream(data, 2);
+            RejectingObject obj = new RejectingObject();
+            Check(!stream.SerializeObject(ref obj), "an object rejecting through IBitStream.Reject refuses");
+            Check(obj.Value == 5 && stream.Error == SerializeError.Rejected,
+                $"the field read and the reject latched Rejected, got {stream.Error}");
+        }
+
+        // a primitive refusal inside the object, then the callback returns false: the
+        // primitive's reason is kept
+        {
+            ReadStream stream = new ReadStream(data, 0);
+            RejectingObject obj = new RejectingObject();
+            Check(!stream.SerializeObject(obj), "an object whose field runs past the end refuses");
+            Check(stream.Error == SerializeError.PastEnd, $"the inner reason must win, got {stream.Error}");
+        }
+
+        // through a ReadBatch: delegated to the stream, and End carries it back
+        {
+            ReadStream stream = new ReadStream(data, 2);
+            ReadBatch batch = stream.BeginBatch();
+            uint v = 0;
+            Check(batch.SerializeBits(ref v, 4), "the batch field before the reject reads");
+            Check(!batch.Reject(), "batch Reject returns false");
+            Check(batch.Error == SerializeError.Rejected, $"batch Reject latches Rejected, got {batch.Error}");
+            uint after = 0xFFFFFFFF;
+            Check(!batch.SerializeBits(ref after, 8) && after == 0xFFFFFFFF, "the batch refuses after a reject");
+            batch.End();
+            Check(stream.Error == SerializeError.Rejected, $"End carries Rejected to the stream, got {stream.Error}");
+        }
+
+        // reject is read only: on write and measure it is caller error, asserted in
+        // debug, and in release it returns false and latches nothing (U2, U9)
+#if DEBUG
+        Check(AssertFires(() => new WriteStream(new byte[8]).Reject()), "Reject on a write stream must assert");
+        Check(AssertFires(() => new MeasureStream().Reject()), "Reject on a measure stream must assert");
+#else
+        {
+            WriteStream writer = new WriteStream(new byte[8]);
+            Check(!writer.Reject() && writer.Ok, "Reject on a write stream returns false and latches nothing");
+            MeasureStream measure = new MeasureStream();
+            Check(!measure.Reject() && measure.Ok, "Reject on a measure stream returns false and latches nothing");
+        }
+#endif
+    }
+
     private static void TestRefusalNames()
     {
         // STANDARD.md, "Refusal reasons": the closed list, spelled identically in every
@@ -1184,9 +1298,10 @@ internal static partial class Program
             (SerializeError.InvalidUtf8, "invalid_utf8"),
             (SerializeError.EmbeddedNul, "embedded_nul"),
             (SerializeError.NonCanonical, "non_canonical"),
+            (SerializeError.Rejected, "rejected"),
         };
         Check(Enum.GetValues(typeof(SerializeError)).Length == names.Length,
-            "the refusal list is closed: SerializeError holds exactly the standard's eight reasons and None");
+            "the refusal list is closed: SerializeError holds exactly the standard's nine reasons and None");
         foreach ((SerializeError error, string name) in names)
         {
             Check(SerializeUtil.RefusalName(error) == name, $"{error} must be spelled {name}, got {SerializeUtil.RefusalName(error)}");
@@ -1783,14 +1898,14 @@ internal static partial class Program
         uint a = 7;
         Check(aborted.SerializeBits(ref a, 8), "write failed");
         Check(!aborted.SerializeObject(new FailingObject()), "expected the user abort to fail");
-        Check(aborted.Error == SerializeError.ValueOutOfRange,
-            $"expected ValueOutOfRange from the abort, got {aborted.Error}");
+        Check(aborted.Error == SerializeError.Rejected,
+            $"expected Rejected from the abort, got {aborted.Error}");
         bool flag = true;
         Check(aborted.SerializeBool(ref flag), "field writes after an abort stay trusted and branch-free");
         Check(aborted.BitsProcessed == 9, "trusted writes advance the stream even after a latched abort");
         Check(!aborted.SerializeObject(new FailingObject()), "SerializeObject stays guarded after a latch");
         Check(!aborted.Ok, "Ok must be false once an error is latched");
-        Check(aborted.Error == SerializeError.ValueOutOfRange, "the first latched error must win");
+        Check(aborted.Error == SerializeError.Rejected, "the first latched error must win");
     }
 
 #if DEBUG
@@ -2090,12 +2205,19 @@ internal static partial class Program
             measure.SerializeIntRelative(-1000, ref current);
         }), "an int relative measure with previous outside the domain must assert in debug");
 
-        Check(AssertFires(() =>
         {
+            // on read, previous outside the domain is a bad declaration: refused as
+            // value_out_of_range, never asserted (IMPLEMENTING.md U7, U16)
             ReadStream stream = new ReadStream(new byte[8]);
-            int current = 0;
-            stream.SerializeIntRelative(-1000, ref current);
-        }), "an int relative read with previous outside the domain must assert in debug");
+            int current = 77;
+            bool ok = true;
+            Check(!AssertFires(() =>
+            {
+                ok = stream.SerializeIntRelative(-1000, ref current);
+            }), "an int relative read with previous outside the domain must not assert (U7)");
+            Check(!ok && stream.Error == SerializeError.ValueOutOfRange && current == 77 && stream.BitsProcessed == 0,
+                "an int relative read with previous outside the domain must refuse value_out_of_range (U16)");
+        }
 
         // the measure stream shares the writer's contract
         Check(AssertFires(() =>
@@ -2153,13 +2275,8 @@ internal static partial class Program
             stream.SerializeBits(ref v, 0);
         }), "bits below range must assert in debug (write)");
 
-        // bits out of [1,32], READ stream: same contract, same assert
-        Check(AssertFires(() =>
-        {
-            ReadStream stream = new ReadStream(new byte[8]);
-            uint v = 0;
-            stream.SerializeBits(ref v, 33);
-        }), "bits above range must assert in debug (read)");
+        // the read side refuses these declarations instead, in every build and
+        // never asserting (IMPLEMENTING.md U7, U16): test_read_declarations_refuse
 
         // bits out of [1,64], batch
         Check(AssertFires(() =>
@@ -2170,15 +2287,6 @@ internal static partial class Program
             batch.SerializeBits64(ref v, 65);
             batch.End();
         }), "bits64 above range must assert in debug (batch)");
-
-        // min > max on the read stream (the write-side twin is in
-        // test_degenerate_range)
-        Check(AssertFires(() =>
-        {
-            ReadStream stream = new ReadStream(new byte[8]);
-            int v = 0;
-            stream.SerializeInt(ref v, 10, 5);
-        }), "min > max must assert in debug (read)");
 
         // string buffer size below 1. The floor was 2 here and in Rust until 2026-08-23,
         // which made bufferSize 1 -- the buffer that holds exactly the empty string -- an
@@ -2257,9 +2365,11 @@ internal static partial class Program
             int v = 0;
             Check(stream.SerializeInt(ref v, 10, 5), "release: min > max write completes");
             stream.Flush();
+            // the read refuses it in every build (U7, U16)
             ReadStream read = new ReadStream(new byte[64]);
             int r = 0;
-            Check(read.SerializeInt(ref r, 10, 5), "release: min > max read completes");
+            Check(!read.SerializeInt(ref r, 10, 5) && read.Error == SerializeError.ValueOutOfRange,
+                "release: min > max read refuses value_out_of_range");
         }
 
         // bits = 0: completes as a zero-width write, no throw

@@ -296,17 +296,17 @@ internal static partial class Program
         }
     }
 
-    /// <summary>All three streams treat an invalid Q format or bounds as API misuse:
-    /// Debug.Assert — the C# analog of the C++ static_assert refusals — compiled out
-    /// of release builds (the 2026-08-16 check-model audit), where the call completes
-    /// garbage-in-garbage-out without throwing.</summary>
+    /// <summary>An invalid Q format or bounds is caller error. Write and measure
+    /// treat it as write misuse: Debug.Assert, compiled out of release builds, where
+    /// the call completes garbage-in-garbage-out without throwing. A read refuses it
+    /// as value_out_of_range in every build, before any bits move, and never asserts
+    /// (IMPLEMENTING.md U7, U16).</summary>
     private static void CheckFixedMisuse(
         FixedStorage storage, int integerBits, int fractionBits, long minUnits, long maxUnits)
     {
         IBitStream[] streams =
         {
             new WriteStream(new byte[16]),
-            new ReadStream(new byte[16]),
             new MeasureStream(),
         };
         foreach (IBitStream stream in streams)
@@ -319,12 +319,21 @@ internal static partial class Program
             }), $"fixed {storage} Q{integerBits}.{fractionBits} [{minUnits},{maxUnits}]: must assert in debug");
 #else
             // completing without throwing IS the check: the misuse validation is
-            // compiled out of release builds (GIGO; a read may still latch a range
-            // error from the garbage, which is its normal packet-data behavior)
+            // compiled out of release builds (GIGO)
             Int128Value value = 0;
             _ = SerializeFixedAs(storage, stream, ref value, integerBits, fractionBits, minUnits, maxUnits);
 #endif
         }
+
+        ReadStream read = new ReadStream(new byte[16]);
+        Int128Value sentinel = 12345;
+        bool ok = true;
+        Check(RunsWithoutAssert(() =>
+        {
+            ok = SerializeFixedAs(storage, read, ref sentinel, integerBits, fractionBits, minUnits, maxUnits);
+        }), $"fixed {storage} Q{integerBits}.{fractionBits} [{minUnits},{maxUnits}]: a read must not assert (U7)");
+        Check(!ok && read.Error == SerializeError.ValueOutOfRange && read.BitsProcessed == 0 && sentinel == 12345,
+            $"fixed {storage} Q{integerBits}.{fractionBits} [{minUnits},{maxUnits}]: a read must refuse value_out_of_range before any bits move (U16), got {read.Error}");
     }
 
     /// <summary>A degenerate fixed point range (min == max) is legal and costs ZERO

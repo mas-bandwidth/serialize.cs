@@ -492,16 +492,16 @@ internal static partial class Program
             uint v = 5;
             Check(batch.SerializeBits(ref v, 3), "the first write must succeed");
             Check(!batch.SerializeObject(new FailingObject()), "expected the user abort to fail");
-            Check(batch.Error == SerializeError.ValueOutOfRange, $"expected ValueOutOfRange, got {batch.Error}");
+            Check(batch.Error == SerializeError.Rejected, $"expected Rejected, got {batch.Error}");
             uint one = 1;
             Check(batch.SerializeBits(ref one, 1), "field writes after a latched abort stay trusted and branch-free");
             // a delegated call after a latched abort writes too: the error still
             // rides down to the stream and back untouched
             string s = "abc";
             Check(batch.SerializeString(ref s, 16), "delegated writes after a latched abort stay trusted");
-            Check(batch.Error == SerializeError.ValueOutOfRange, $"expected the error to stay latched, got {batch.Error}");
+            Check(batch.Error == SerializeError.Rejected, $"expected the error to stay latched, got {batch.Error}");
             batch.End();
-            Check(stream.Error == SerializeError.ValueOutOfRange, $"expected the error on the stream, got {stream.Error}");
+            Check(stream.Error == SerializeError.Rejected, $"expected the error on the stream, got {stream.Error}");
         }
 
         // a pre-latched stream error seeds the batch: it begins errored, and the
@@ -514,7 +514,7 @@ internal static partial class Program
             uint one = 1;
             Check(batch.SerializeBits(ref one, 1), "batch field writes stay trusted on a carried-in error");
             batch.End();
-            Check(stream.Error == SerializeError.ValueOutOfRange, $"expected the error to survive, got {stream.Error}");
+            Check(stream.Error == SerializeError.Rejected, $"expected the error to survive, got {stream.Error}");
         }
 
         // a read align of nonzero padding fails with Align through the batch

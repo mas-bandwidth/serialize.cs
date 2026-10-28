@@ -117,6 +117,102 @@ internal static class Program
 
         // pass 3: differential round trip
         RoundTrip(ops, payload);
+
+        // pass 4: the ReadBatch inline reads against the stream on the same bytes, with
+        // and without slack, so the batch's window loads and its slack-free tail
+        // assembly see hostile data (the 2026-10-27 audit: no pass reached them)
+        BatchAgreesWithStream(ops, slack, payload.Length);
+        BatchAgreesWithStream(ops, payload, payload.Length);
+    }
+
+    // ---- pass 4: batch against stream -------------------------------------------
+
+    private static void BatchAgreesWithStream(ReadOnlySpan<byte> ops, byte[] buffer, int bytes)
+    {
+        ReadStream stream = new ReadStream(buffer, bytes);
+        ReadStream under = new ReadStream(buffer, bytes);
+        ReadBatch batch = under.BeginBatch();
+        for (int i = 0; i < ops.Length; i++)
+        {
+            int select = ops[i] & 7;
+            int param = ops[i] >> 3; // [0,31]
+            bool a, b;
+            ulong va, vb;
+            switch (select)
+            {
+                case 0:
+                {
+                    uint x = 0xDEADBEEF, y = 0xDEADBEEF;
+                    a = stream.SerializeBits(ref x, param + 1);
+                    b = batch.SerializeBits(ref y, param + 1);
+                    va = x; vb = y;
+                    break;
+                }
+                case 1:
+                {
+                    ulong x = 7, y = 7;
+                    int bits = param * 2 + 1; // [1,63]
+                    a = stream.SerializeBits64(ref x, bits);
+                    b = batch.SerializeBits64(ref y, bits);
+                    va = x; vb = y;
+                    break;
+                }
+                case 2:
+                {
+                    int x = 12345, y = 12345;
+                    a = stream.SerializeInt(ref x, -param * 1000, param * 7 + 3);
+                    b = batch.SerializeInt(ref y, -param * 1000, param * 7 + 3);
+                    va = (ulong)x; vb = (ulong)y;
+                    break;
+                }
+                case 3:
+                {
+                    long x = 12345, y = 12345;
+                    long bound = 1L << (param * 2);
+                    a = stream.SerializeInt64(ref x, -bound, bound);
+                    b = batch.SerializeInt64(ref y, -bound, bound);
+                    va = (ulong)x; vb = (ulong)y;
+                    break;
+                }
+                case 4:
+                {
+                    float x = 1.5f, y = 1.5f;
+                    a = stream.SerializeFloat(ref x);
+                    b = batch.SerializeFloat(ref y);
+                    va = BitConverter.SingleToUInt32Bits(x); vb = BitConverter.SingleToUInt32Bits(y);
+                    break;
+                }
+                case 5:
+                {
+                    double x = 2.5, y = 2.5;
+                    a = stream.SerializeDouble(ref x);
+                    b = batch.SerializeDouble(ref y);
+                    va = BitConverter.DoubleToUInt64Bits(x); vb = BitConverter.DoubleToUInt64Bits(y);
+                    break;
+                }
+                case 6:
+                {
+                    float x = -3.0f, y = -3.0f;
+                    a = stream.SerializeCompressedFloat(ref x, -1.0f, 1.0f + param, 0.001f);
+                    b = batch.SerializeCompressedFloat(ref y, -1.0f, 1.0f + param, 0.001f);
+                    va = BitConverter.SingleToUInt32Bits(x); vb = BitConverter.SingleToUInt32Bits(y);
+                    break;
+                }
+                default:
+                {
+                    a = stream.SerializeAlign();
+                    b = batch.SerializeAlign();
+                    va = 0; vb = 0;
+                    break;
+                }
+            }
+            Check(a == b && va == vb, "batch and stream disagree on op " + select);
+            Check(stream.Error == batch.Error && stream.BitsProcessed == batch.BitsProcessed,
+                "batch and stream disagree on the stream state after op " + select);
+        }
+        batch.End();
+        Check(under.Error == stream.Error && under.BitsProcessed == stream.BitsProcessed,
+            "End did not carry the batch state to its stream");
     }
 
     // ---- pass 1: hostile read ---------------------------------------------------

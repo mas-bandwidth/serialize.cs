@@ -893,12 +893,19 @@ internal static partial class Program
 
         // ...and on the read stream: the constants are the caller's contract on
         // every stream
-        Check(AssertFires(() =>
+        // ...and on the read stream the same constants are refused, never asserted
+        // (IMPLEMENTING.md U7, U16)
         {
             ReadStream stream = new ReadStream(new byte[8]);
-            float value = 0.0f;
-            stream.SerializeCompressedFloatPrecomputed(ref value, 1000, 11, 10.0f, 0.0f);
-        }), "inconsistent precomputed bits must assert in debug (read)");
+            float value = 0.5f;
+            bool ok = true;
+            Check(!AssertFires(() =>
+            {
+                ok = stream.SerializeCompressedFloatPrecomputed(ref value, 1000, 11, 10.0f, 0.0f);
+            }), "inconsistent precomputed bits must not assert on read (U7)");
+            Check(!ok && stream.Error == SerializeError.ValueOutOfRange && value == 0.5f,
+                "inconsistent precomputed bits must refuse value_out_of_range on read (U16)");
+        }
 
         // a zero step count can never come out of the derivation (values clamps up
         // to 1)
