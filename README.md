@@ -22,9 +22,10 @@ library throws no exceptions of its own; API misuse — writer contract violatio
 (out of range values, buffer overflow, oversized strings, strings that are not
 well-formed UTF-16 or hold U+0000, NaN and infinite floats and doubles, non-finite
 compressed floats and declarations) and trusted call-site parameters (bits
-counts, min/max ordering, buffer sizes, Q formats) on every stream — is
+counts, min/max ordering, buffer sizes, Q formats) on write and measure — is
 `Debug.Assert`, compiled out without the `DEBUG` constant, matching the C++
-library's `serialize_assert`. A build with the `DEBUG` constant is what STANDARD.md
+library's `serialize_assert`; on read a bad call-site parameter is refused as
+`ValueOutOfRange` in every build instead (IMPLEMENTING.md U7, U16, since 2.1.0). A build with the `DEBUG` constant is what STANDARD.md
 calls a **checked build**, and every check that page makes conditional on the build
 is conditional on that constant here (STANDARD.md "Writes assume trusted data",
 enacted for C# per serialize#52; parameters joined per the 2026-08-16 check-model audit,
@@ -386,8 +387,11 @@ and `BitsRequired` never run at serialization time. The wire bytes are identical
 exactly `SerializeUtil.CompressedFloatParams` and then exactly the precomputed
 path's arithmetic. Both are additive — `SerializeCompressedFloat` is untouched. The
 constants are trusted call-site parameters like every other range in the library:
-constants that are not what `CompressedFloatParams` derives are API misuse,
-`Debug.Assert`ed and compiled out of release builds.
+constants that are not what `CompressedFloatParams` derives are API misuse:
+`Debug.Assert`ed on write and measure and compiled out of release builds, and on
+read refused as `ValueOutOfRange` in every build when they cannot be right (a bit
+count that is not `BitsRequired(0, maxIntegerValue)`, a `maxIntegerValue` outside
+`[1, 4294967040]`, a `delta` that is not positive and finite).
 
 **What it is worth here, measured.** Where `min`, `max` and `resolution` reach the
 call site as literals — what a schema compiler emits — RyuJIT already constant-folds
@@ -442,8 +446,8 @@ result is inside the domain and strictly greater than `previous`; the absolute t
 refused. The absolute tier is canonical too: carrying a `current` no more than 69914
 above `previous`, which a bounded tier would have taken, it is refused as
 `NonCanonical`. `previous` is your own state and never arrives off the wire, so a `previous`
-outside the domain is API misuse: `Debug.Assert` on every stream, the read stream
-included, and compiled out of release builds.
+outside the domain is API misuse: `Debug.Assert` on write and measure, compiled out
+of release builds, and on read refused as `ValueOutOfRange` in every build.
 
 String content is validated on read (serialize#8, STANDARD.md "string"):
 `SerializeString` refuses any NUL as `EmbeddedNul` — the classic two-lengths
@@ -457,15 +461,27 @@ write an unpaired surrogate as U+FFFD.
 
 Two further rules:
 
-- **Ranges are trusted inputs.** `min`, `max`, `resolution`, `bufferSize` and
-  fixed point Q format (`integerBits`, `fractionBits`, whole unit bounds)
-  parameters are the caller's contract on every stream: `Debug.Assert` in debug
-  builds, compiled out in release — exactly like the C++ library, whose
-  `serialize_assert` and `static_assert` refusals vanish under `NDEBUG`. If you
-  compute a range from previously decoded packet data, validate it before passing
-  it in: in release a violated parameter contract yields garbage-in-garbage-out
-  bytes (never memory unsafety — the runtime's own bounds checks are the floor),
-  and a checked reader rejects the malformed stream.
+- **Declarations are the caller's contract.** `bits`, `min`, `max`, `resolution`,
+  `bufferSize`, fixed point Q formats (`integerBits`, `fractionBits`, whole unit
+  bounds) and a read stream's byte count are the caller's, never the wire's. On
+  write and measure a bad one is a `Debug.Assert`, compiled out in release, exactly
+  like the C++ library's `serialize_assert`: in release a violated contract yields
+  garbage-in-garbage-out bytes (never memory unsafety — the runtime's own bounds
+  checks are the floor). On read a bad one is refused as `ValueOutOfRange` in every
+  build, before any bits move, and never asserted or thrown (IMPLEMENTING.md U7 and
+  U16, since 2.1.0): a bit count outside `[1,32]` or `[1,64]`, `min > max`, a fixed
+  point format or bounds that do not fit, a compressed float declaration that cannot
+  be quantized, a string `bufferSize` below 1, an `int_relative` `previous` below 0,
+  and a `ReadStream` byte count outside its buffer, which refuses at construction.
+- **A refusal can be stated.** `stream.Fail(reason)` refuses with a reason from the
+  closed list; `None` or any value outside it records `Rejected`, so a refused
+  stream never reports none (U14). On write and measure, `Fail` records nothing and
+  returns false. `SerializeUtil.CopyString(source, bufferSize)` is the port of the
+  C++ `serialize_copy_string`: the longest prefix a string field of that size
+  carries, cut at a character boundary and at the first NUL (U15).
+- **A batch is dead after `End`.** Every read on an ended `ReadBatch` refuses and
+  nothing is written back to its stream; an ended `WriteBatch` is write misuse,
+  asserted in debug, and writes nothing back in release.
 - **Compressed float declarations must decode finite.** When `max - min` overflows to
   infinity (e.g. `[-3.4e38, +3.4e38]`), or the top integer decodes past `FLT_MAX`, the
   declaration is non-conforming: it asserts in debug, and in release a read refuses

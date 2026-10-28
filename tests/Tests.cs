@@ -444,6 +444,15 @@ internal static partial class Program
         RunTest("test_int_relative_validation", TestIntRelativeValidation);
         RunTest("test_refusal_names", TestRefusalNames);
         RunTest("test_serialize_reject", TestSerializeReject);
+        // IMPLEMENTING.md's uniform rules this port broke before 2.1.0 (Uniform.cs)
+        RunTest("test_read_declarations_refuse", TestReadDeclarationsRefuse);
+        RunTest("test_read_stream_bytes_outside_buffer", TestReadStreamBytesOutsideBuffer);
+        RunTest("test_public_fail", TestPublicFail);
+        RunTest("test_batch_after_end", TestBatchAfterEnd);
+        RunTest("test_copy_string", TestCopyString);
+#if DEBUG
+        RunTest("test_write_uniform_asserts", TestWriteUniformAsserts);
+#endif
         RunTest("test_serialize_end", TestSerializeEnd);
         RunTest("test_length_claim_before_allocation", TestLengthClaimBeforeAllocation);
         // the shared corpus, vendored from mas-bandwidth/serialize: every vector run
@@ -2196,12 +2205,19 @@ internal static partial class Program
             measure.SerializeIntRelative(-1000, ref current);
         }), "an int relative measure with previous outside the domain must assert in debug");
 
-        Check(AssertFires(() =>
         {
+            // on read, previous outside the domain is a bad declaration: refused as
+            // value_out_of_range, never asserted (IMPLEMENTING.md U7, U16)
             ReadStream stream = new ReadStream(new byte[8]);
-            int current = 0;
-            stream.SerializeIntRelative(-1000, ref current);
-        }), "an int relative read with previous outside the domain must assert in debug");
+            int current = 77;
+            bool ok = true;
+            Check(!AssertFires(() =>
+            {
+                ok = stream.SerializeIntRelative(-1000, ref current);
+            }), "an int relative read with previous outside the domain must not assert (U7)");
+            Check(!ok && stream.Error == SerializeError.ValueOutOfRange && current == 77 && stream.BitsProcessed == 0,
+                "an int relative read with previous outside the domain must refuse value_out_of_range (U16)");
+        }
 
         // the measure stream shares the writer's contract
         Check(AssertFires(() =>
@@ -2259,13 +2275,8 @@ internal static partial class Program
             stream.SerializeBits(ref v, 0);
         }), "bits below range must assert in debug (write)");
 
-        // bits out of [1,32], READ stream: same contract, same assert
-        Check(AssertFires(() =>
-        {
-            ReadStream stream = new ReadStream(new byte[8]);
-            uint v = 0;
-            stream.SerializeBits(ref v, 33);
-        }), "bits above range must assert in debug (read)");
+        // the read side refuses these declarations instead, in every build and
+        // never asserting (IMPLEMENTING.md U7, U16): test_read_declarations_refuse
 
         // bits out of [1,64], batch
         Check(AssertFires(() =>
@@ -2276,15 +2287,6 @@ internal static partial class Program
             batch.SerializeBits64(ref v, 65);
             batch.End();
         }), "bits64 above range must assert in debug (batch)");
-
-        // min > max on the read stream (the write-side twin is in
-        // test_degenerate_range)
-        Check(AssertFires(() =>
-        {
-            ReadStream stream = new ReadStream(new byte[8]);
-            int v = 0;
-            stream.SerializeInt(ref v, 10, 5);
-        }), "min > max must assert in debug (read)");
 
         // string buffer size below 1. The floor was 2 here and in Rust until 2026-08-23,
         // which made bufferSize 1 -- the buffer that holds exactly the empty string -- an
@@ -2363,9 +2365,11 @@ internal static partial class Program
             int v = 0;
             Check(stream.SerializeInt(ref v, 10, 5), "release: min > max write completes");
             stream.Flush();
+            // the read refuses it in every build (U7, U16)
             ReadStream read = new ReadStream(new byte[64]);
             int r = 0;
-            Check(read.SerializeInt(ref r, 10, 5), "release: min > max read completes");
+            Check(!read.SerializeInt(ref r, 10, 5) && read.Error == SerializeError.ValueOutOfRange,
+                "release: min > max read refuses value_out_of_range");
         }
 
         // bits = 0: completes as a zero-width write, no throw

@@ -1404,6 +1404,18 @@ internal static class RedTeam
 
     private static int _headroomCases;
 
+    /// <summary>Reads a prefix of any width as WriteRawGroups wrote it, in chunks of
+    /// at most 32 bits: a bit count outside [1,32] is a bad declaration a reader
+    /// refuses (IMPLEMENTING.md U16), and a zero-width prefix reads nothing.</summary>
+    private static void ReadRawPrefix(ReadStream s, int bits)
+    {
+        for (int remaining = bits; remaining > 0; remaining -= 32)
+        {
+            uint chunk = 0;
+            s.SerializeBits(ref chunk, Math.Min(32, remaining));
+        }
+    }
+
     private static void WriteRawGroups(WriteStream w, UInt128Value raw, int bits)
     {
         UInt128Value rest = raw;
@@ -1763,8 +1775,7 @@ internal static class RedTeam
         bool ok;
         try
         {
-            uint prefix = 0;
-            s.SerializeBits(ref prefix, prefixBits);
+            ReadRawPrefix(s, prefixBits);
             ok = batch ? ReadWide128Batch(s, p) : ReadWide128(s, p);
         }
         catch (Exception e) { return "THREW " + e.GetType().Name + ": " + e.Message; }
@@ -1791,8 +1802,7 @@ internal static class RedTeam
             try
             {
                 ReadStream rs = new ReadStream(buf, total);
-                uint prefix = 0;
-                rs.SerializeBits(ref prefix, prefixBits);
+                ReadRawPrefix(rs, prefixBits);
                 Packet back = new Packet();
                 bool ok = ReadWide128(rs, back);
                 if (!ok || WideDigest(back) != WideDigest(canonical))
