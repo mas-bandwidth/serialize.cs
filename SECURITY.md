@@ -39,7 +39,10 @@ Especially of interest, in the read path reachable from a hostile buffer:
   corruption, but a length prefix that turns into a multi-gigabyte array.
 - **An exception escaping the read path.** The library's contract is that malicious
   packet data never throws — a bad stream fails cleanly through the sticky latched
-  error, and exceptions are reserved for API misuse by the caller. A hostile buffer that
+  error — and the library throws no exceptions of its own. Caller misuse on write and
+  measure has one mechanism, the trap: `Debug.Assert` in a checked (`DEBUG`) build,
+  compiled out of release (IMPLEMENTING.md U9); misuse on read is a refusal, never a
+  trap (U7). A hostile buffer that
   produces an exception breaks that contract and is a bug worth reporting even though a
   managed exception is not memory-unsafe, because callers are entitled to write their
   packet loop without a catch block.

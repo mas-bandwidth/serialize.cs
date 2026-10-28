@@ -478,43 +478,22 @@ internal static partial class Program
 
     private static void TestBatchErrorLatch()
     {
-        // the write path no longer latches Overflow or ValueOutOfRange of its own
-        // (serialize#52: writes are trusted, contract violations are debug asserts),
-        // so the write-side latch these blocks exercise is the one the library still
-        // owns: a user abort through SerializeObject. an abort through a delegated
-        // batch call latches on the batch and End carries the error to the stream.
-        // Per the 2026-08-16 check-model audit the per-field write spine is
-        // branch-free — field and delegated write calls after the latch stay trusted
-        // and keep returning true; the caller discards via the latched Error
+        // a write batch has no refusal state (IMPLEMENTING.md U9, 2.1.1): a user
+        // abort through a delegated SerializeObject returns false and records
+        // nothing, on the batch or the stream, and later writes keep writing
         {
             WriteStream stream = new WriteStream(new byte[8]);
             WriteBatch batch = stream.BeginBatch();
             uint v = 5;
             Check(batch.SerializeBits(ref v, 3), "the first write must succeed");
             Check(!batch.SerializeObject(new FailingObject()), "expected the user abort to fail");
-            Check(batch.Error == SerializeError.Rejected, $"expected Rejected, got {batch.Error}");
+            Check(batch.Ok && batch.Error == SerializeError.None, $"nothing latches on a write batch, got {batch.Error}");
             uint one = 1;
-            Check(batch.SerializeBits(ref one, 1), "field writes after a latched abort stay trusted and branch-free");
-            // a delegated call after a latched abort writes too: the error still
-            // rides down to the stream and back untouched
+            Check(batch.SerializeBits(ref one, 1), "field writes after an abort keep writing");
             string s = "abc";
-            Check(batch.SerializeString(ref s, 16), "delegated writes after a latched abort stay trusted");
-            Check(batch.Error == SerializeError.Rejected, $"expected the error to stay latched, got {batch.Error}");
+            Check(batch.SerializeString(ref s, 16), "delegated writes after an abort keep writing");
             batch.End();
-            Check(stream.Error == SerializeError.Rejected, $"expected the error on the stream, got {stream.Error}");
-        }
-
-        // a pre-latched stream error seeds the batch: it begins errored, and the
-        // latch survives trusted writes made through it
-        {
-            WriteStream stream = new WriteStream(new byte[8]);
-            Check(!stream.SerializeObject(new FailingObject()), "expected the user abort to fail");
-            WriteBatch batch = stream.BeginBatch();
-            Check(!batch.Ok, "a batch begun on an errored stream must begin errored");
-            uint one = 1;
-            Check(batch.SerializeBits(ref one, 1), "batch field writes stay trusted on a carried-in error");
-            batch.End();
-            Check(stream.Error == SerializeError.Rejected, $"expected the error to survive, got {stream.Error}");
+            Check(stream.Ok && stream.Error == SerializeError.None, $"nothing on the stream either, got {stream.Error}");
         }
 
         // a read align of nonzero padding fails with Align through the batch

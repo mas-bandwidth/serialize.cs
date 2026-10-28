@@ -25,7 +25,13 @@ compressed floats and declarations) and trusted call-site parameters (bits
 counts, min/max ordering, buffer sizes, Q formats) on write and measure — is
 `Debug.Assert`, compiled out without the `DEBUG` constant, matching the C++
 library's `serialize_assert`; on read a bad call-site parameter is refused as
-`ValueOutOfRange` in every build instead (IMPLEMENTING.md U7, U16, since 2.1.0). A build with the `DEBUG` constant is what STANDARD.md
+`ValueOutOfRange` in every build instead (IMPLEMENTING.md U7, U16, since 2.1.0).
+`Debug.Assert` is this port's **trap**, the one write-misuse mechanism
+(IMPLEMENTING.md U9, since 2.1.1): write misuse never latches, a write or measure
+stream has no refusal state (`Error` is always `None`), and release output after
+misuse is unspecified. `Fail` on a write or measure returns false and records
+nothing; a nested object's `Serialize` returning false on a write or measure makes
+`SerializeObject` return false and records nothing. A build with the `DEBUG` constant is what STANDARD.md
 calls a **checked build**, and every check that page makes conditional on the build
 is conditional on that constant here (STANDARD.md "Writes assume trusted data",
 enacted for C# per serialize#52; parameters joined per the 2026-08-16 check-model audit,
@@ -117,6 +123,9 @@ value 1.1 could carry keeps its exact bytes. What changed for a C# caller:
   nothing latched; either latches `Rejected`, terminally, and a wire reason already
   latched wins. `Reject` is read only: on a write or measure stream it is caller
   error, a `Debug.Assert`, and returns false without latching anything in release.
+  On a write or measure, an object's `Serialize` returning false makes
+  `SerializeObject` return false and records nothing (U9, since 2.1.1; before, it
+  latched `Rejected` on the write stream).
   An object's `Serialize` returning false latched `ValueOutOfRange` before 2.1. 1.x's `Overflow`, `Align` and `InvalidString` are `PastEnd`,
   `NonzeroPadding` and the pair `InvalidUtf8` / `EmbeddedNul`. A string's NUL scan
   runs before its UTF-8 check, so a payload that breaks both is `EmbeddedNul`.
@@ -291,7 +300,7 @@ proves derive-per-call equals C++; routing this one field through it is what clo
 the triangle against the reference directly.
 
 CI runs this gate in its own job, with `CXX=clang++` and the C++ clone checked out
-at release tag `v2.1.0` (format 2.0, first carried by `v2.0.0`) — the family's one
+at release tag `v2.1.1` (format 2.0, first carried by `v2.0.0`) — the family's one
 interop pin: one policy, one version,
 every port's gate against the same current C++ release. Under the four different
 pins this replaced (`v1.6.2` here and in the Go port, `v1.4.3` in Rust, upstream
@@ -455,9 +464,13 @@ smuggling primitive, where the wire length and the C-string length a downstream
 consumer perceives disagree — and then bytes that are not well-formed UTF-8 as
 `InvalidUtf8`, in that order and in every build mode. An accepted payload decodes to
 exactly its characters: no normalization, no replacement character, no stripped byte
-order mark, every plane. On write, a string that is not well-formed UTF-16 is a
-writer contract violation asserted in debug, because `Encoding.UTF8` would silently
-write an unpaired surrogate as U+FFFD.
+order mark, every plane. On write, a string that is not well-formed UTF-16 (a lone
+surrogate, which the strict UTF-8 codec refuses) is write misuse (IMPLEMENTING.md U3,
+U9): a checked (`DEBUG`) build traps on it with `Debug.Assert` and never replaces it.
+A release build compiles the check out, and its bytes after the misuse are
+unspecified; that `Encoding.UTF8` happens to write U+FFFD there is that unspecified
+output, not documented behaviour, and callers must not depend on it. The same holds
+for `SerializeUtil.CopyString`, whose `bufferSize` counts strict UTF-8 bytes.
 
 Two further rules:
 

@@ -53,11 +53,15 @@
     that controls a loop must have its result checked before the loop uses it, because
     after an error values are never updated again and a loop waiting for one spins
     forever on a truncated or malicious packet. Use SerializeUtil.Continue and
-    SerializeUtil.Until for sentinel-driven loops. On a write or measure stream the
-    only failure the library itself can latch is a user abort through SerializeObject
-    (an object's Serialize returning false, latched as SerializeError.Rejected):
-    write-side validation is debug asserts, so healthy write-mode serialize calls
-    always return true.
+    SerializeUtil.Until for sentinel-driven loops.
+
+    Write misuse has one mechanism, the trap (IMPLEMENTING.md U6, U9, 2.1.1): this
+    port's trap is Debug.Assert, firing at the call in a checked (DEBUG) build and
+    compiled out of release, where output after misuse is unspecified. A write or
+    measure stream has no refusal state: nothing latches, Error is always None and
+    Ok always true. Fail there returns false and records nothing; a nested object
+    whose Serialize returns false makes SerializeObject return false and records
+    nothing; Reject there traps in a checked build and returns false in release.
 
     The caller's own refusal (STANDARD.md 2.1, "Refusal reasons", IMPLEMENTING.md U2):
     a read whose bytes were well formed can still carry a value the caller refuses.
@@ -183,9 +187,10 @@ public interface ISerializer
 /// write, read and measure.
 ///
 /// All serialize methods take ref parameters so the same call reads or writes the value
-/// depending on the stream. Every method returns true on success; after the first
-/// failure the error latches on the stream (see Error) and every later call returns
-/// false without touching the stream.
+/// depending on the stream. Every method returns true on success; on a read, after the first
+/// refusal the error latches on the stream (see Error) and every later call returns
+/// false without touching the stream. A write or measure stream latches nothing
+/// (IMPLEMENTING.md U9): misuse traps by Debug.Assert in a checked build.
 ///
 /// Write serialize functions against plain IBitStream parameters. Do not reach for
 /// <c>Serialize&lt;TStream&gt;(TStream) where TStream : IBitStream</c> as an
@@ -370,9 +375,10 @@ public interface IBitStream
     /// UTF-8 bytes are block copied. bufferSize mirrors the C++ API, where a string with
     /// its terminating null character must fit into the buffer, keeping streams
     /// compatible between the two languages. On write the string must be well-formed
-    /// UTF-16 (no unpaired surrogate, which an encoder would silently replace with
-    /// U+FFFD) and must hold no U+0000: both are the writer's contract,
-    /// debug-asserted. On read, a payload holding a zero byte fails with
+    /// UTF-16 (no unpaired surrogate, which the strict UTF-8 codec refuses) and must
+    /// hold no U+0000: both are write misuse, trapped by Debug.Assert in a checked
+    /// build (IMPLEMENTING.md U3, U9). In release the bytes after misuse are
+    /// unspecified; any U+FFFD there is not documented behaviour. On read, a payload holding a zero byte fails with
     /// SerializeError.EmbeddedNul, checked first, and one that is not well-formed
     /// UTF-8 fails with SerializeError.InvalidUtf8. An accepted payload decodes to
     /// exactly its characters: no normalization, no replacement, no stripped byte
@@ -447,7 +453,8 @@ public interface IBitStream
     /// writing, this is effectively the packet size.</summary>
     long BytesProcessed { get; }
 
-    /// <summary>The first error latched on the stream, or SerializeError.None.</summary>
+    /// <summary>The first error latched on a read stream, or SerializeError.None;
+    /// always None on a write or measure stream (IMPLEMENTING.md U9).</summary>
     SerializeError Error { get; }
 
     /// <summary>True while no error is latched on the stream. The canonical ending of
@@ -524,17 +531,21 @@ public static class SerializeUtil
     }
 
     /// <summary>
-    /// The port of the C++ serialize_copy_string (IMPLEMENTING.md U15): the longest
-    /// prefix of <paramref name="source"/> that a string field of
+    /// The port of the C++ serialize_copy_string (IMPLEMENTING.md U15, 2.1.1): the
+    /// longest prefix of <paramref name="source"/> that a string field of
     /// <paramref name="bufferSize"/> carries, for filling a value before a write.
-    /// The copy stops at the first U+0000, and holds at most bufferSize - 1 UTF-8
-    /// bytes, cut at a character boundary so the result is always whole text (U3):
-    /// a surrogate pair is kept or dropped together. bufferSize below 1 is caller
-    /// error, asserted in debug builds; in release it yields the empty string.
+    /// The copy stops at the first U+0000, and holds at most bufferSize - 1 bytes
+    /// of the strict UTF-8 encoding, cut at a character boundary so the result is
+    /// always whole text: a surrogate pair is kept or dropped together. Write
+    /// misuse traps by Debug.Assert in a checked (DEBUG) build (U9): bufferSize
+    /// below 1, and a source that is not well-formed UTF-16 (a lone surrogate,
+    /// which the strict codec refuses, U3). In a release build the result after
+    /// misuse is unspecified.
     /// </summary>
     public static string CopyString(string source, int bufferSize)
     {
         Debug.Assert(bufferSize >= 1, SerializeInternal.BufferSizeMessage);
+        Debug.Assert(SerializeCompat.Utf16IsValid(source), SerializeInternal.WriteStringUtf16AssertMessage);
         long room = (long)bufferSize - 1;
         int end = 0;
         long bytes = 0;
@@ -1588,14 +1599,14 @@ public sealed class BitReader
 /// for C# per serialize#52): values, buffer capacity, string lengths and compressed
 /// float finiteness are the writer's contract, checked by Debug.Assert in debug
 /// builds and not at all in release builds — matching the C++ WriteStream, whose
-/// write path is serialize_assert only. Healthy serialize calls always return true;
-/// the sticky latched error model remains for user aborts through SerializeObject,
-/// and the caller can preflight capacity with BitsAvailable.
+/// write path is serialize_assert only. Debug.Assert is the trap (IMPLEMENTING.md
+/// U9): write misuse never latches, and the stream has no refusal state. Serialize
+/// calls return true, except Fail, Reject in release, and an object whose Serialize
+/// returns false. The caller can preflight capacity with BitsAvailable.
 /// </summary>
 public sealed class WriteStream : IBitStream
 {
     private readonly BitWriter _writer;
-    private SerializeError _error;
 
     /// <summary>Creates a write stream that writes to the given buffer. The buffer size
     /// must be a multiple of 8 bytes, because the bit writer stores qwords to
@@ -1605,14 +1616,12 @@ public sealed class WriteStream : IBitStream
         _writer = new BitWriter(buffer);
     }
 
-    /// <summary>Points the stream at a buffer and clears all write state including any
-    /// latched error, allowing a single stream to be reused without allocation. The
-    /// context is kept.</summary>
+    /// <summary>Points the stream at a buffer and clears all write state, allowing a
+    /// single stream to be reused without allocation. The context is kept.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Reset(byte[] buffer)
     {
         _writer.Reset(buffer);
-        _error = SerializeError.None;
     }
 
     /// <inheritdoc/>
@@ -2012,43 +2021,19 @@ public sealed class WriteStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeObject(ISerializer obj)
     {
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
-        if (!obj.Serialize(this))
-        {
-            // an object that aborts is the caller's own abort: recorded on the
-            // stream so the caller discards the packet by checking Error once
-            // (the write-side abort record; a public Fail records nothing)
-            if (_error == SerializeError.None)
-            {
-                _error = SerializeError.Rejected;
-            }
-            return false;
-        }
-        return _error == SerializeError.None;
+        // an object that returns false on a write or a measure makes this return
+        // false and records nothing (IMPLEMENTING.md U6, U9): a write or measure
+        // stream has no refusal state
+        return obj.Serialize(this);
     }
 
     /// <inheritdoc/>
     public bool SerializeObject<T>(ref T obj) where T : ISerializer
     {
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
-        if (!obj.Serialize(this))
-        {
-            // an object that aborts is the caller's own abort: recorded on the
-            // stream so the caller discards the packet by checking Error once
-            // (the write-side abort record; a public Fail records nothing)
-            if (_error == SerializeError.None)
-            {
-                _error = SerializeError.Rejected;
-            }
-            return false;
-        }
-        return _error == SerializeError.None;
+        // an object that returns false on a write or a measure makes this return
+        // false and records nothing (IMPLEMENTING.md U6, U9): a write or measure
+        // stream has no refusal state
+        return obj.Serialize(this);
     }
 
     /// <inheritdoc/>
@@ -2115,19 +2100,6 @@ public sealed class WriteStream : IBitStream
     /// <summary>The bit writer, for batch state capture and delegated calls.</summary>
     internal BitWriter Writer => _writer;
 
-    /// <summary>
-    /// The latched error, batch transfer form: an open batch carries the error
-    /// itself (seeded from the stream at BeginBatch) and preserves first-error
-    /// latching internally, so storing it back is a plain assignment.
-    /// </summary>
-    internal SerializeError BatchError
-    {
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        get => _error;
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        set => _error = value;
-    }
-
     /// <summary>The written portion of the buffer: the packet you should send.
     ///
     /// IMPORTANT: Call Flush first.</summary>
@@ -2146,11 +2118,14 @@ public sealed class WriteStream : IBitStream
     /// whether a value fits without dropping to the BitWriter layer.</summary>
     public long BitsAvailable => _writer.BitsAvailable;
 
-    /// <inheritdoc/>
-    public SerializeError Error => _error;
+    /// <summary>Always SerializeError.None: a write-mode stream has no refusal state.
+    /// Write misuse traps by Debug.Assert in a checked build and never latches
+    /// (IMPLEMENTING.md U6, U9).</summary>
+    public SerializeError Error => SerializeError.None;
 
-    /// <inheritdoc/>
-    public bool Ok => _error == SerializeError.None;
+    /// <summary>Always true: a write-mode stream has no refusal state
+    /// (IMPLEMENTING.md U6, U9).</summary>
+    public bool Ok => true;
 
     /// <inheritdoc/>
     public object? Context { get; set; }
@@ -3121,19 +3096,16 @@ public sealed class ReadStream : IBitStream
 public sealed class MeasureStream : IBitStream
 {
     private long _bitsWritten;
-    private SerializeError _error;
 
     /// <summary>Creates a measure stream.</summary>
     public MeasureStream()
     {
     }
 
-    /// <summary>Clears the measured bit count and any latched error. The context is
-    /// kept.</summary>
+    /// <summary>Clears the measured bit count. The context is kept.</summary>
     public void Reset()
     {
         _bitsWritten = 0;
-        _error = SerializeError.None;
     }
 
     /// <inheritdoc/>
@@ -3238,6 +3210,9 @@ public sealed class MeasureStream : IBitStream
     {
         SerializeUtil.CompressedFloatParams(min, max, resolution,
             out _, out int bits, out float delta);
+        // a measure makes every check a write makes (IMPLEMENTING.md U6, U9): a
+        // non-finite value traps as it does in QuantizeCompressedFloat
+        Debug.Assert(float.IsFinite(value), SerializeInternal.FloatValueAssertMessage);
         SerializeInternal.ValidateCompressedFloatTop(min, delta);
         return Measure(bits);
     }
@@ -3246,6 +3221,7 @@ public sealed class MeasureStream : IBitStream
     public bool SerializeCompressedFloatPrecomputed(ref float value, uint maxIntegerValue, int bits, float delta, float min)
     {
         SerializeInternal.ValidatePrecomputedFloatParams(maxIntegerValue, bits, delta);
+        Debug.Assert(float.IsFinite(value), SerializeInternal.FloatValueAssertMessage);
         SerializeInternal.ValidateCompressedFloatTop(min, delta);
         return Measure(bits);
     }
@@ -3378,43 +3354,19 @@ public sealed class MeasureStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeObject(ISerializer obj)
     {
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
-        if (!obj.Serialize(this))
-        {
-            // an object that aborts is the caller's own abort: recorded on the
-            // stream so the caller discards the packet by checking Error once
-            // (the write-side abort record; a public Fail records nothing)
-            if (_error == SerializeError.None)
-            {
-                _error = SerializeError.Rejected;
-            }
-            return false;
-        }
-        return _error == SerializeError.None;
+        // an object that returns false on a write or a measure makes this return
+        // false and records nothing (IMPLEMENTING.md U6, U9): a write or measure
+        // stream has no refusal state
+        return obj.Serialize(this);
     }
 
     /// <inheritdoc/>
     public bool SerializeObject<T>(ref T obj) where T : ISerializer
     {
-        if (_error != SerializeError.None)
-        {
-            return false;
-        }
-        if (!obj.Serialize(this))
-        {
-            // an object that aborts is the caller's own abort: recorded on the
-            // stream so the caller discards the packet by checking Error once
-            // (the write-side abort record; a public Fail records nothing)
-            if (_error == SerializeError.None)
-            {
-                _error = SerializeError.Rejected;
-            }
-            return false;
-        }
-        return _error == SerializeError.None;
+        // an object that returns false on a write or a measure makes this return
+        // false and records nothing (IMPLEMENTING.md U6, U9): a write or measure
+        // stream has no refusal state
+        return obj.Serialize(this);
     }
 
     /// <inheritdoc/>
@@ -3464,11 +3416,14 @@ public sealed class MeasureStream : IBitStream
     /// <inheritdoc/>
     public long BytesProcessed => (_bitsWritten + 7) / 8;
 
-    /// <inheritdoc/>
-    public SerializeError Error => _error;
+    /// <summary>Always SerializeError.None: a write-mode stream has no refusal state.
+    /// Write misuse traps by Debug.Assert in a checked build and never latches
+    /// (IMPLEMENTING.md U6, U9).</summary>
+    public SerializeError Error => SerializeError.None;
 
-    /// <inheritdoc/>
-    public bool Ok => _error == SerializeError.None;
+    /// <summary>Always true: a write-mode stream has no refusal state
+    /// (IMPLEMENTING.md U6, U9).</summary>
+    public bool Ok => true;
 
     /// <inheritdoc/>
     public object? Context { get; set; }
@@ -3499,7 +3454,7 @@ public sealed class MeasureStream : IBitStream
 ///     FlushBits.
 ///   - Always call End, on every path out of the serialize code, including
 ///     early aborts. End is idempotent, and it is what stores the packer state
-///     and the latched error back to the stream: a batch dropped without End
+///     back to the stream: a batch dropped without End
 ///     silently loses its writes. Serialize calls on an ended batch are API
 ///     misuse.
 ///   - Batches nest by sequence, not by scope: End one batch before beginning
@@ -3538,7 +3493,6 @@ public ref struct WriteBatch
     private long _bitsWritten;
     private long _wordIndex;
     private int _scratchBits;
-    private SerializeError _error;
     private bool _ended;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -3547,7 +3501,6 @@ public ref struct WriteBatch
         _stream = stream;
         stream.Writer.CaptureState(out _data, out _scratch, out _numBits,
             out _bitsWritten, out _wordIndex, out _scratchBits);
-        _error = stream.BatchError;
         _ended = false;
     }
 
@@ -3558,7 +3511,7 @@ public ref struct WriteBatch
     public bool IsReading => false;
 
     /// <summary>
-    /// Ends the batch, storing the packer state and the latched error back to the
+    /// Ends the batch, storing the packer state back to the
     /// stream. Idempotent. Always call this on every path out; the batch's writes
     /// are not visible to the stream until it runs.
     /// </summary>
@@ -3586,10 +3539,6 @@ public ref struct WriteBatch
             return false;
         }
         _stream.Writer.RestoreState(_scratch, _bitsWritten, _wordIndex, _scratchBits);
-        if (_stream.BatchError == SerializeError.None)
-        {
-            _stream.BatchError = _error;
-        }
         return true;
     }
 
@@ -3599,13 +3548,12 @@ public ref struct WriteBatch
     {
         _stream.Writer.CaptureState(out _data, out _scratch, out _numBits,
             out _bitsWritten, out _wordIndex, out _scratchBits);
-        _error = _stream.BatchError;
     }
 
     /// <summary>A refusal is read only: on a write batch there is nothing to refuse,
     /// so Fail records nothing and returns false, in every build (IMPLEMENTING.md
-    /// U9, U14). Nothing in a WriteBatch latches an error directly: writer contract
-    /// violations are Debug.Assert.</summary>
+    /// U9, U14). Nothing in a WriteBatch latches: write misuse traps by
+    /// Debug.Assert in a checked build.</summary>
     public bool Fail(SerializeError error)
     {
         return false;
@@ -4050,12 +3998,14 @@ public ref struct WriteBatch
     /// <summary>The number of bits still available to write.</summary>
     public long BitsAvailable => _numBits - _bitsWritten;
 
-    /// <summary>The first error latched on the batch or carried in from the stream,
-    /// or SerializeError.None.</summary>
-    public SerializeError Error => _error;
+    /// <summary>Always SerializeError.None: a write batch has no refusal state.
+    /// Write misuse traps by Debug.Assert in a checked build and never latches
+    /// (IMPLEMENTING.md U9).</summary>
+    public SerializeError Error => SerializeError.None;
 
-    /// <summary>True while no error is latched.</summary>
-    public bool Ok => _error == SerializeError.None;
+    /// <summary>Always true: a write batch has no refusal state (IMPLEMENTING.md
+    /// U9).</summary>
+    public bool Ok => true;
 
     /// <summary>The context value of the underlying stream.</summary>
     public object? Context
