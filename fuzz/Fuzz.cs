@@ -76,11 +76,19 @@ internal static class Program
         if (args.Length > 0 && args[0] == "--replay-corpus")
         {
             List<byte[]> corpus = BuildDeterministicCorpus(256);
+            s_seenFirstRefusals.Clear();
             foreach (byte[] input in corpus)
             {
                 TestOneInput(input);
             }
-            Console.WriteLine($"replayed {corpus.Count} deterministic corpus inputs, no findings");
+            foreach (string expectedOp in s_expectedFirstRefusals)
+            {
+                if (!s_seenFirstRefusals.Contains(expectedOp))
+                {
+                    throw new InvalidOperationException("FUZZ REPLAY CORPUS FAILED: missing first-refusal coverage for '" + expectedOp + "'");
+                }
+            }
+            Console.WriteLine($"replayed {corpus.Count} deterministic corpus inputs ({s_seenFirstRefusals.Count} first-refusal ops covered), no findings");
             return 0;
         }
         if (args.Length > 0 && args[0] == "--replay")
@@ -141,6 +149,45 @@ internal static class Program
         tierSeed[NumOps + 3] = 50;
         corpus.Add(tierSeed);
 
+        // Directed per-operation first-refusal seeds (including [0x04] x 32 + [0x00]
+        // for bool PastEnd and every grouped member in cases 3, 7, 8, and 15).
+        static byte[] MakeSeed(byte opsFill, int payloadLen, byte payloadFill = 0x00, int? firstOp = null)
+        {
+            byte[] b = new byte[NumOps + payloadLen];
+            Array.Fill(b, opsFill, 0, NumOps);
+            if (firstOp.HasValue)
+            {
+                b[0] = (byte)firstOp.Value;
+            }
+            Array.Fill(b, payloadFill, NumOps, payloadLen);
+            return b;
+        }
+
+        for (int op = 0; op < 16; op++)
+        {
+            corpus.Add(MakeSeed((byte)op, 1, op == 11 ? (byte)0xFF : (byte)0x00));
+        }
+        // Case 3 (ReadWide) grouped members:
+        foreach (int len in new int[] { 1, 4, 12, 17, 21, 28, 38, 40, 44, 49, 59, 62 })
+        {
+            corpus.Add(MakeSeed(3, len, 0x00));
+        }
+        // Case 7 grouped members: compressed float (1 byte) and compressed float precomputed (2 bytes).
+        corpus.Add(MakeSeed(7, 1, 0x00));
+        corpus.Add(MakeSeed(7, 2, 0x00));
+        // Case 8 grouped members: uint64 (1 byte), uint128 (8 bytes), bits64 (24 bytes with param=3 -> 16 bits).
+        corpus.Add(MakeSeed(8, 1, 0x00));
+        corpus.Add(MakeSeed(8, 8, 0x00));
+        corpus.Add(MakeSeed((3 << 4) | 8, 24, 0x00));
+        // Case 9: bytes(17) on 1-byte stream.
+        corpus.Add(MakeSeed((1 << 4) | 9, 1, 0x00));
+        // Case 12: align after 1 bit on 0xFF byte.
+        corpus.Add(MakeSeed(12, 1, 0xFF, 4));
+        // Case 15 grouped members: uint8 (after 1 bit), uint16 (1 byte), uint32 (3 bytes).
+        corpus.Add(MakeSeed(15, 1, 0x00, 0));
+        corpus.Add(MakeSeed(15, 1, 0x00));
+        corpus.Add(MakeSeed(15, 3, 0x00));
+
         uint state = 0x9E3779B9u;
         for (int n = 0; n < count; n++)
         {
@@ -169,9 +216,17 @@ internal static class Program
     {
         List<byte[]> corpus = BuildDeterministicCorpus(128);
         s_activeControl = null;
+        s_seenFirstRefusals.Clear();
         foreach (byte[] input in corpus)
         {
             TestOneInput(input);
+        }
+        foreach (string expectedOp in s_expectedFirstRefusals)
+        {
+            if (!s_seenFirstRefusals.Contains(expectedOp))
+            {
+                throw new InvalidOperationException("FUZZ CONTROL SELF-TEST FAILED: missing first-refusal coverage for '" + expectedOp + "'");
+            }
         }
 
         (string Name, string Expected)[] controls = new (string Name, string Expected)[]
@@ -179,7 +234,7 @@ internal static class Program
             ("sentinel", "a refused read wrote its destination"),
             ("terminality", "a failed stream advanced BitsProcessed"),
             ("slack", "read with slack and read without slack disagree"),
-            ("roundtrip", "roundtrip negative control"),
+            ("roundtrip", "roundtrip bits: wrote "),
             ("canary", "canary byte"),
             ("trailing", "a byte past the writer's end was accepted"),
         };
@@ -416,6 +471,43 @@ internal static class Program
     // ---- pass 1: hostile read ---------------------------------------------------
 
     /// <summary>An order-sensitive digest of everything a read pass observed.</summary>
+    private static readonly HashSet<string> s_seenFirstRefusals = new HashSet<string>(StringComparer.Ordinal);
+
+    private static readonly string[] s_expectedFirstRefusals = new string[]
+    {
+        "read bits",
+        "read int [-100,100]",
+        "read int full range",
+        "read int64 full range",
+        "read int64 ranged",
+        "read fixed Q16.16 int",
+        "read fixed Q48.16 long",
+        "read fixed Q112.16 int128",
+        "read fixed Q8.8 short",
+        "read fixed Q16.16 uint",
+        "read fixed Q48.16 ulong",
+        "read fixed Q112.16 uint128",
+        "read int128 ranged",
+        "read int128 full range",
+        "read bool",
+        "read float",
+        "read double",
+        "read compressed float",
+        "read compressed float precomputed",
+        "read uint64",
+        "read uint128",
+        "read bits64",
+        "read bytes",
+        "read string",
+        "read end",
+        "read align",
+        "read int_relative",
+        "read int [0,max]",
+        "read uint8",
+        "read uint16",
+        "read uint32",
+    };
+
     private sealed class Trace
     {
         public ulong Hash = 0xCBF29CE484222325;
@@ -483,6 +575,7 @@ internal static class Program
         Check(!stream.Ok, op + ": refused but the stream is Ok");
         first = error;
         refusedBits = stream.BitsProcessed;
+        s_seenFirstRefusals.Add(op);
         return false;
     }
 
@@ -1071,7 +1164,11 @@ internal static class Program
         writeBuffer[written8] = 0;
         ReadStream longerStream = new ReadStream(writeBuffer, written8 + 1);
         FuzzRoundTrip(longerStream, ops, new ValuePool(payload), readPositions);
-        bool longerAccepted = ControlEnabled("trailing") || longerStream.SerializeEnd();
+        bool longerAccepted = longerStream.SerializeEnd();
+        if (ControlEnabled("trailing"))
+        {
+            longerAccepted = true;
+        }
         Check(!longerAccepted, "roundtrip end: a byte past the writer's end was accepted");
         Check(longerStream.Error == SerializeError.TrailingData, "roundtrip end: a byte past the writer's end was " + longerStream.Error + ", not trailing_data");
     }
@@ -1100,7 +1197,7 @@ internal static class Program
                     {
                         value ^= 1u;
                     }
-                    Check(value == expected, "roundtrip bits: wrote " + expected + ", read " + value + " (roundtrip negative control)");
+                    Check(value == expected, "roundtrip bits: wrote " + expected + ", read " + value);
                     break;
                 }
 
