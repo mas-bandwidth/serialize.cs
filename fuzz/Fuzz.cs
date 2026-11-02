@@ -4,14 +4,15 @@
 
     Every input runs these passes:
 
-    1. Hostile read (FuzzRead). ReadStream is the trust boundary of this library: it
-       must survive arbitrary hostile bytes, failing reads by returning false with a
-       reason from the closed list, never by throwing or tripping a Debug.Assert (the
-       library is built Debug here, so its asserts are live). Every refusal is checked:
-       a reason is latched, the reason is one this operation can give, a refused scalar
-       destination is left exactly as the caller left it, and every later call on the
-       failed stream echoes the FIRST reason. Every acceptance is checked against the
-       declared range or rule.
+    1. Hostile read (FuzzRead) across two bit-complementary sentinel patterns (0x5A
+       and 0xA5). ReadStream is the trust boundary of this library: it must survive
+       arbitrary hostile bytes, failing reads by returning false with a reason from the
+       closed list, never by throwing or tripping a Debug.Assert (the library is built
+       Debug here, so its asserts are live). Every refusal is checked: a reason is
+       latched, the reason is one this operation can give, a refused scalar destination
+       is left at its sentinel under both 0x5A and 0xA5 patterns, and every later call
+       on the failed stream echoes the FIRST reason without advancing BitsProcessed.
+       Every acceptance is checked against the declared range or rule.
 
     2. The same hostile bytes from an allocation with NO slack past the data. Pass 1's
        buffer carries 8 bytes of nonzero garbage past the packet; this one ends at the
@@ -20,11 +21,16 @@
        decodes differently from its windowed path, disagrees with itself here.
 
     3. Differential round trip (FuzzRoundTrip). Values generated from the input are
-       written with WriteStream, measured with MeasureStream, read back with ReadStream
-       and compared. Any write/read asymmetry fails, the reader must consume exactly the
-       bits the writer wrote for each operation, and MeasureStream must never measure
-       fewer bits than the writer wrote, per operation as well as in total. The read
-       then ends exactly where the writer stopped, and one byte more is trailing_data.
+       written with WriteStream into a 0xAA-canaried buffer, measured with MeasureStream,
+       read back with ReadStream and compared. Any write/read asymmetry fails, the
+       flushed word tail must be zero, the 16-byte 0xAA canary past the last flushed
+       word must stay intact, the reader must consume exactly the bits the writer wrote
+       for each operation, and MeasureStream must never measure fewer bits than the
+       writer wrote, per operation as well as in total. The read then ends exactly where
+       the writer stopped, and one byte more is trailing_data.
+
+    4. ReadBatch inline reads against ReadStream on the same bytes, with and without
+       slack, across both 0x5A and 0xA5 sentinel patterns.
 
     The first 32 bytes of the input are an op program selecting which serialize calls
     run and with what parameter; the rest is the hostile bitstream for passes 1 and 2
@@ -32,10 +38,13 @@
 
     A failed check throws: SharpFuzz reports the escaping exception to libFuzzer as a
     crash and libFuzzer writes the reproducer. Run `Fuzz --replay <file|dir>...` to
-    re-run reproducers or a corpus without libFuzzer.
+    re-run reproducers or a corpus without libFuzzer, `Fuzz --replay-corpus` to run
+    the built-in deterministic corpus, or `Fuzz --controls` to verify that every
+    harness negative control traps.
 */
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using SharpFuzz;
@@ -47,12 +56,33 @@ internal static class Program
     private const int NumOps = 32;
     private const int MaxPayloadBytes = 4096;
     private const int WriteBufferSize = 16 * 1024;
+    private const int CanaryBytes = 16;
 
     // Q112.16 bounds of +-2^60 whole units: a raw range past 64 bits
     private const long Wide = 1152921504606846976;
 
+    private static string? s_activeControl = Environment.GetEnvironmentVariable("SERIALIZE_FUZZ_CONTROL");
+
+    private static bool ControlEnabled(string name) =>
+        string.Equals(s_activeControl, name, StringComparison.Ordinal);
+
     public static int Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "--controls")
+        {
+            RunControlsSelfTest();
+            return 0;
+        }
+        if (args.Length > 0 && args[0] == "--replay-corpus")
+        {
+            List<byte[]> corpus = BuildDeterministicCorpus(256);
+            foreach (byte[] input in corpus)
+            {
+                TestOneInput(input);
+            }
+            Console.WriteLine($"replayed {corpus.Count} deterministic corpus inputs, no findings");
+            return 0;
+        }
         if (args.Length > 0 && args[0] == "--replay")
         {
             int inputs = 0;
@@ -81,6 +111,107 @@ internal static class Program
         return 0;
     }
 
+    private static List<byte[]> BuildDeterministicCorpus(int count)
+    {
+        List<byte[]> corpus = new List<byte[]>(count + 4);
+
+        // Seed 1: op 0 = bits (select 0, param 15 -> 16 bits) over a 1-byte payload (refuses PastEnd)
+        byte[] truncatedBits = new byte[NumOps + 1];
+        truncatedBits[0] = 0xF0;
+        truncatedBits[NumOps] = 0x5A;
+        corpus.Add(truncatedBits);
+
+        // Seed 2: op 15 = uint8/uint16/uint32 with 0xFFFF in the uint16 slot
+        byte[] uint16MaxSeed = new byte[NumOps + 9];
+        uint16MaxSeed[0] = 15;
+        for (int i = 1; i < NumOps; i++)
+        {
+            uint16MaxSeed[i] = 12; // align
+        }
+        uint16MaxSeed[NumOps] = 0x42;
+        uint16MaxSeed[NumOps + 1] = 0xFF;
+        uint16MaxSeed[NumOps + 2] = 0xFF;
+        uint16MaxSeed[NumOps + 3] = 0xFF;
+        uint16MaxSeed[NumOps + 4] = 0xFF;
+        corpus.Add(uint16MaxSeed);
+
+        // Seed 3: op 13 = int_relative medium tier (difference in [24..280])
+        byte[] tierSeed = new byte[NumOps + 8];
+        tierSeed[0] = 13;
+        tierSeed[NumOps + 3] = 50;
+        corpus.Add(tierSeed);
+
+        uint state = 0x9E3779B9u;
+        for (int n = 0; n < count; n++)
+        {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            int payloadLen = 1 + (int)(state % 96);
+            byte[] buf = new byte[NumOps + payloadLen];
+            for (int i = 0; i < buf.Length; i++)
+            {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                buf[i] = (byte)(state & 0xFF);
+            }
+            if (n % 7 == 0)
+            {
+                Array.Fill(buf, n % 2 == 0 ? (byte)0x00 : (byte)0xFF, NumOps, payloadLen);
+            }
+            corpus.Add(buf);
+        }
+        return corpus;
+    }
+
+    private static void RunControlsSelfTest()
+    {
+        List<byte[]> corpus = BuildDeterministicCorpus(128);
+        s_activeControl = null;
+        foreach (byte[] input in corpus)
+        {
+            TestOneInput(input);
+        }
+
+        (string Name, string Expected)[] controls = new (string Name, string Expected)[]
+        {
+            ("sentinel", "a refused read wrote its destination"),
+            ("terminality", "a failed stream advanced BitsProcessed"),
+            ("slack", "read with slack and read without slack disagree"),
+            ("roundtrip", "roundtrip negative control"),
+            ("canary", "canary byte"),
+            ("trailing", "a byte past the writer's end was accepted"),
+        };
+
+        foreach ((string control, string expected) in controls)
+        {
+            s_activeControl = control;
+            bool caught = false;
+            try
+            {
+                foreach (byte[] input in corpus)
+                {
+                    TestOneInput(input);
+                }
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("FUZZ CHECK FAILED:", StringComparison.Ordinal) &&
+                                                      ex.Message.Contains(expected, StringComparison.Ordinal))
+            {
+                caught = true;
+            }
+            finally
+            {
+                s_activeControl = null;
+            }
+            if (!caught)
+            {
+                throw new InvalidOperationException("FUZZ CONTROL SELF-TEST FAILED: control '" + control + "' did not trap with '" + expected + "'");
+            }
+        }
+        Console.WriteLine($"verified {corpus.Count} deterministic corpus inputs and {controls.Length} negative controls");
+    }
+
     private static void Check(bool condition, string what)
     {
         if (!condition)
@@ -88,6 +219,32 @@ internal static class Program
             throw new InvalidOperationException("FUZZ CHECK FAILED: " + what);
         }
     }
+
+    private static byte SentinelU8(byte pattern) => pattern;
+
+    private static ushort SentinelU16(byte pattern) => (ushort)((pattern << 8) | pattern);
+
+    private static short SentinelI16(byte pattern) => unchecked((short)SentinelU16(pattern));
+
+    private static uint SentinelU32(byte pattern) => 0x01010101u * pattern;
+
+    private static int SentinelI32(byte pattern) => unchecked((int)SentinelU32(pattern));
+
+    private static ulong SentinelU64(byte pattern) => 0x0101010101010101ul * pattern;
+
+    private static long SentinelI64(byte pattern) => unchecked((long)SentinelU64(pattern));
+
+    private static bool SentinelBool(byte pattern) => pattern == 0x5A;
+
+    private static float SentinelFloat(byte pattern) => pattern == 0x5A ? 1.5f : -2.25f;
+
+    private static double SentinelDouble(byte pattern) => pattern == 0x5A ? 1.5 : -2.25;
+
+    private static UInt128Value SentinelU128(byte pattern) =>
+        new UInt128Value(SentinelU64(pattern), SentinelU64(unchecked((byte)~pattern)));
+
+    private static Int128Value SentinelI128(byte pattern) =>
+        new Int128Value(SentinelU64(pattern), SentinelU64(unchecked((byte)~pattern)));
 
     private static void TestOneInput(ReadOnlySpan<byte> data)
     {
@@ -99,7 +256,8 @@ internal static class Program
         ReadOnlySpan<byte> ops = data.Slice(0, NumOps);
         byte[] payload = data.Slice(NumOps).ToArray();
 
-        // pass 1: hostile read, with 8 bytes of nonzero garbage slack past the packet
+        // pass 1: hostile read across two bit-complementary sentinels (0x5A and 0xA5),
+        // with 8 bytes of nonzero garbage slack past the packet
         byte[] slack = new byte[payload.Length + 8];
         payload.CopyTo(slack, 0);
         for (int i = payload.Length; i < slack.Length; i++)
@@ -107,11 +265,20 @@ internal static class Program
             slack[i] = 0xA5;
         }
         Trace withSlack = new Trace();
-        FuzzRead(new ReadStream(slack, payload.Length), ops, withSlack);
+        FuzzRead(new ReadStream(slack, payload.Length), ops, withSlack, 0x5A);
+
+        Trace withSlackAlt = new Trace();
+        FuzzRead(new ReadStream(slack, payload.Length), ops, withSlackAlt, 0xA5);
+        Check(withSlack.Hash == withSlackAlt.Hash && withSlack.Calls == withSlackAlt.Calls,
+            "two-sentinel hostile reads disagree on the same bytes");
 
         // pass 2: the same bytes from an allocation that ends at the packet
         Trace exact = new Trace();
-        FuzzRead(new ReadStream(payload, payload.Length), ops, exact);
+        FuzzRead(new ReadStream(payload, payload.Length), ops, exact, 0x5A);
+        if (ControlEnabled("slack"))
+        {
+            exact.Mix(1);
+        }
         Check(withSlack.Hash == exact.Hash && withSlack.Calls == exact.Calls,
             "read with slack and read without slack disagree on the same bytes");
 
@@ -119,15 +286,15 @@ internal static class Program
         RoundTrip(ops, payload);
 
         // pass 4: the ReadBatch inline reads against the stream on the same bytes, with
-        // and without slack, so the batch's window loads and its slack-free tail
-        // assembly see hostile data (the 2026-10-27 audit: no pass reached them)
-        BatchAgreesWithStream(ops, slack, payload.Length);
-        BatchAgreesWithStream(ops, payload, payload.Length);
+        // and without slack, across both 0x5A and 0xA5 sentinels
+        BatchAgreesWithStream(ops, slack, payload.Length, 0x5A);
+        BatchAgreesWithStream(ops, slack, payload.Length, 0xA5);
+        BatchAgreesWithStream(ops, payload, payload.Length, 0x5A);
     }
 
     // ---- pass 4: batch against stream -------------------------------------------
 
-    private static void BatchAgreesWithStream(ReadOnlySpan<byte> ops, byte[] buffer, int bytes)
+    private static void BatchAgreesWithStream(ReadOnlySpan<byte> ops, byte[] buffer, int bytes, byte pattern)
     {
         ReadStream stream = new ReadStream(buffer, bytes);
         ReadStream under = new ReadStream(buffer, bytes);
@@ -142,59 +309,90 @@ internal static class Program
             {
                 case 0:
                 {
-                    uint x = 0xDEADBEEF, y = 0xDEADBEEF;
+                    uint x = SentinelU32(pattern), y = SentinelU32(pattern);
                     a = stream.SerializeBits(ref x, param + 1);
                     b = batch.SerializeBits(ref y, param + 1);
+                    if (!b)
+                    {
+                        Check(y == SentinelU32(pattern), "batch read bits: a refused read wrote its destination");
+                    }
                     va = x; vb = y;
                     break;
                 }
                 case 1:
                 {
-                    ulong x = 7, y = 7;
+                    ulong x = SentinelU64(pattern), y = SentinelU64(pattern);
                     int bits = param * 2 + 1; // [1,63]
                     a = stream.SerializeBits64(ref x, bits);
                     b = batch.SerializeBits64(ref y, bits);
+                    if (!b)
+                    {
+                        Check(y == SentinelU64(pattern), "batch read bits64: a refused read wrote its destination");
+                    }
                     va = x; vb = y;
                     break;
                 }
                 case 2:
                 {
-                    int x = 12345, y = 12345;
+                    int x = SentinelI32(pattern), y = SentinelI32(pattern);
                     a = stream.SerializeInt(ref x, -param * 1000, param * 7 + 3);
                     b = batch.SerializeInt(ref y, -param * 1000, param * 7 + 3);
+                    if (!b)
+                    {
+                        Check(y == SentinelI32(pattern), "batch read int: a refused read wrote its destination");
+                    }
                     va = (ulong)x; vb = (ulong)y;
                     break;
                 }
                 case 3:
                 {
-                    long x = 12345, y = 12345;
+                    long x = SentinelI64(pattern), y = SentinelI64(pattern);
                     long bound = 1L << (param * 2);
                     a = stream.SerializeInt64(ref x, -bound, bound);
                     b = batch.SerializeInt64(ref y, -bound, bound);
+                    if (!b)
+                    {
+                        Check(y == SentinelI64(pattern), "batch read int64: a refused read wrote its destination");
+                    }
                     va = (ulong)x; vb = (ulong)y;
                     break;
                 }
                 case 4:
                 {
-                    float x = 1.5f, y = 1.5f;
+                    float x = SentinelFloat(pattern), y = SentinelFloat(pattern);
                     a = stream.SerializeFloat(ref x);
                     b = batch.SerializeFloat(ref y);
+                    if (!b)
+                    {
+                        Check(BitConverter.SingleToUInt32Bits(y) == BitConverter.SingleToUInt32Bits(SentinelFloat(pattern)),
+                            "batch read float: a refused read wrote its destination");
+                    }
                     va = BitConverter.SingleToUInt32Bits(x); vb = BitConverter.SingleToUInt32Bits(y);
                     break;
                 }
                 case 5:
                 {
-                    double x = 2.5, y = 2.5;
+                    double x = SentinelDouble(pattern), y = SentinelDouble(pattern);
                     a = stream.SerializeDouble(ref x);
                     b = batch.SerializeDouble(ref y);
+                    if (!b)
+                    {
+                        Check(BitConverter.DoubleToUInt64Bits(y) == BitConverter.DoubleToUInt64Bits(SentinelDouble(pattern)),
+                            "batch read double: a refused read wrote its destination");
+                    }
                     va = BitConverter.DoubleToUInt64Bits(x); vb = BitConverter.DoubleToUInt64Bits(y);
                     break;
                 }
                 case 6:
                 {
-                    float x = -3.0f, y = -3.0f;
+                    float x = SentinelFloat(pattern), y = SentinelFloat(pattern);
                     a = stream.SerializeCompressedFloat(ref x, -1.0f, 1.0f + param, 0.001f);
                     b = batch.SerializeCompressedFloat(ref y, -1.0f, 1.0f + param, 0.001f);
+                    if (!b)
+                    {
+                        Check(BitConverter.SingleToUInt32Bits(y) == BitConverter.SingleToUInt32Bits(SentinelFloat(pattern)),
+                            "batch read compressed float: a refused read wrote its destination");
+                    }
                     va = BitConverter.SingleToUInt32Bits(x); vb = BitConverter.SingleToUInt32Bits(y);
                     break;
                 }
@@ -252,9 +450,12 @@ internal static class Program
     /// Checks one read call's result against the stream's failure state and returns
     /// whether the value it produced may be inspected. A refusal must carry a reason
     /// from the closed list that this operation can give; once the stream has failed,
-    /// every call must refuse and the latched reason must stay the first one.
+    /// every call must refuse, the latched reason must stay the first one, and
+    /// BitsProcessed must not advance.
     /// </summary>
-    private static bool Accepted(ReadStream stream, bool ok, ref SerializeError first, int allowed, string op, Trace trace)
+    private static bool Accepted(
+        ReadStream stream, bool ok, ref SerializeError first, ref long refusedBits,
+        int allowed, string op, Trace trace)
     {
         trace.Calls++;
         trace.Mix(ok ? 1UL : 2UL);
@@ -263,8 +464,11 @@ internal static class Program
         trace.Mix((ulong)stream.BitsProcessed);
         if (first != SerializeError.None)
         {
+            long observedBits = ControlEnabled("terminality") ? stream.BitsProcessed + 1 : stream.BitsProcessed;
             Check(!ok, op + ": a failed stream accepted a read");
             Check(error == first, op + ": the latched reason changed from " + first + " to " + error);
+            Check(observedBits == refusedBits,
+                op + ": a failed stream advanced BitsProcessed from " + refusedBits + " to " + observedBits);
             return false;
         }
         if (ok)
@@ -278,13 +482,15 @@ internal static class Program
         Check((Mask(error) & allowed) != 0, op + ": refused for " + SerializeUtil.RefusalName(error) + ", a reason this operation cannot give");
         Check(!stream.Ok, op + ": refused but the stream is Ok");
         first = error;
+        refusedBits = stream.BitsProcessed;
         return false;
     }
 
-    private static void FuzzRead(ReadStream stream, ReadOnlySpan<byte> ops, Trace trace)
+    private static void FuzzRead(ReadStream stream, ReadOnlySpan<byte> ops, Trace trace, byte pattern)
     {
         byte[] bytes = new byte[256];
         SerializeError first = SerializeError.None;
+        long refusedBits = 0;
 
         for (int i = 0; i < ops.Length; i++)
         {
@@ -297,48 +503,55 @@ internal static class Program
                 case 1:
                 {
                     int bits = select == 0 ? param + 1 : param + 17; // [1,32]
-                    uint value = 0xDEADBEEF;
-                    if (Accepted(stream, stream.SerializeBits(ref value, bits), ref first, PastEnd, "read bits", trace))
+                    uint sentinel = SentinelU32(pattern);
+                    uint value = sentinel;
+                    if (Accepted(stream, stream.SerializeBits(ref value, bits), ref first, ref refusedBits, PastEnd, "read bits", trace))
                     {
                         Check(bits == 32 || value < (1U << bits), "read bits: value wider than its bits");
                         trace.Mix(value);
                     }
                     else
                     {
-                        Check(value == 0xDEADBEEF, "read bits: a refused read wrote its destination");
+                        if (ControlEnabled("sentinel") && pattern == 0xA5)
+                        {
+                            value ^= 1u;
+                        }
+                        Check(value == sentinel, "read bits: a refused read wrote its destination");
                     }
                     break;
                 }
 
                 case 2:
                 {
-                    int value = 12345;
-                    if (Accepted(stream, stream.SerializeInt(ref value, -100, +100), ref first, Ranged, "read int [-100,100]", trace))
+                    int sentinel = SentinelI32(pattern);
+                    int value = sentinel;
+                    if (Accepted(stream, stream.SerializeInt(ref value, -100, +100), ref first, ref refusedBits, Ranged, "read int [-100,100]", trace))
                     {
                         Check(value >= -100 && value <= +100, "read int [-100,100]: value out of range");
                         trace.Mix((ulong)value);
                     }
                     else
                     {
-                        Check(value == 12345, "read int [-100,100]: a refused read wrote its destination");
+                        Check(value == sentinel, "read int [-100,100]: a refused read wrote its destination");
                     }
                     break;
                 }
 
                 case 3:
-                    ReadWide(stream, param, ref first, trace);
+                    ReadWide(stream, param, ref first, ref refusedBits, trace, pattern);
                     break;
 
                 case 4:
                 {
-                    bool value = true;
-                    if (Accepted(stream, stream.SerializeBool(ref value), ref first, PastEnd, "read bool", trace))
+                    bool sentinel = SentinelBool(pattern);
+                    bool value = sentinel;
+                    if (Accepted(stream, stream.SerializeBool(ref value), ref first, ref refusedBits, PastEnd, "read bool", trace))
                     {
                         trace.Mix(value ? 1UL : 0UL);
                     }
                     else
                     {
-                        Check(value, "read bool: a refused read wrote its destination");
+                        Check(value == sentinel, "read bool: a refused read wrote its destination");
                     }
                     break;
                 }
@@ -346,94 +559,99 @@ internal static class Program
                 case 5:
                 {
                     // finite values only: whatever the bytes, an accepted float is never NaN or infinite
-                    float value = 1.5f;
-                    if (Accepted(stream, stream.SerializeFloat(ref value), ref first, FloatReasons, "read float", trace))
+                    float sentinel = SentinelFloat(pattern);
+                    float value = sentinel;
+                    if (Accepted(stream, stream.SerializeFloat(ref value), ref first, ref refusedBits, FloatReasons, "read float", trace))
                     {
                         Check(float.IsFinite(value), "read float: accepted a non-finite value");
                         trace.Mix(BitConverter.SingleToUInt32Bits(value));
                     }
                     else
                     {
-                        Check(BitConverter.SingleToUInt32Bits(value) == BitConverter.SingleToUInt32Bits(1.5f), "read float: a refused read wrote its destination");
+                        Check(BitConverter.SingleToUInt32Bits(value) == BitConverter.SingleToUInt32Bits(sentinel), "read float: a refused read wrote its destination");
                     }
                     break;
                 }
 
                 case 6:
                 {
-                    double value = 1.5;
-                    if (Accepted(stream, stream.SerializeDouble(ref value), ref first, FloatReasons, "read double", trace))
+                    double sentinel = SentinelDouble(pattern);
+                    double value = sentinel;
+                    if (Accepted(stream, stream.SerializeDouble(ref value), ref first, ref refusedBits, FloatReasons, "read double", trace))
                     {
                         Check(double.IsFinite(value), "read double: accepted a non-finite value");
                         trace.Mix(BitConverter.DoubleToUInt64Bits(value));
                     }
                     else
                     {
-                        Check(BitConverter.DoubleToUInt64Bits(value) == BitConverter.DoubleToUInt64Bits(1.5), "read double: a refused read wrote its destination");
+                        Check(BitConverter.DoubleToUInt64Bits(value) == BitConverter.DoubleToUInt64Bits(sentinel), "read double: a refused read wrote its destination");
                     }
                     break;
                 }
 
                 case 7:
                 {
-                    float value = 99.0f;
-                    if (Accepted(stream, stream.SerializeCompressedFloat(ref value, -10.0f, +10.0f, 0.01f), ref first, CompressedReasons, "read compressed float", trace))
+                    float sentinel = SentinelFloat(pattern);
+                    float value = sentinel;
+                    if (Accepted(stream, stream.SerializeCompressedFloat(ref value, -10.0f, +10.0f, 0.01f), ref first, ref refusedBits, CompressedReasons, "read compressed float", trace))
                     {
                         Check(float.IsFinite(value) && value >= -10.001f && value <= +10.001f, "read compressed float: value outside [min,max]");
                         trace.Mix(BitConverter.SingleToUInt32Bits(value));
                     }
                     else
                     {
-                        Check(value == 99.0f, "read compressed float: a refused read wrote its destination");
+                        Check(BitConverter.SingleToUInt32Bits(value) == BitConverter.SingleToUInt32Bits(sentinel), "read compressed float: a refused read wrote its destination");
                     }
 
                     SerializeUtil.CompressedFloatParams(-10.0f, +10.0f, 0.01f, out uint maxIntegerValue, out int cbits, out float delta);
-                    float pre = 99.0f;
-                    if (Accepted(stream, stream.SerializeCompressedFloatPrecomputed(ref pre, maxIntegerValue, cbits, delta, -10.0f), ref first, CompressedReasons, "read compressed float precomputed", trace))
+                    float pre = sentinel;
+                    if (Accepted(stream, stream.SerializeCompressedFloatPrecomputed(ref pre, maxIntegerValue, cbits, delta, -10.0f), ref first, ref refusedBits, CompressedReasons, "read compressed float precomputed", trace))
                     {
                         Check(float.IsFinite(pre) && pre >= -10.001f && pre <= +10.001f, "read compressed float precomputed: value outside [min,max]");
                         trace.Mix(BitConverter.SingleToUInt32Bits(pre));
                     }
                     else
                     {
-                        Check(pre == 99.0f, "read compressed float precomputed: a refused read wrote its destination");
+                        Check(BitConverter.SingleToUInt32Bits(pre) == BitConverter.SingleToUInt32Bits(sentinel), "read compressed float precomputed: a refused read wrote its destination");
                     }
                     break;
                 }
 
                 case 8:
                 {
-                    ulong value = 0xDEADBEEF;
-                    if (Accepted(stream, stream.SerializeUInt64(ref value), ref first, PastEnd, "read uint64", trace))
+                    ulong sentinel64 = SentinelU64(pattern);
+                    ulong value = sentinel64;
+                    if (Accepted(stream, stream.SerializeUInt64(ref value), ref first, ref refusedBits, PastEnd, "read uint64", trace))
                     {
                         trace.Mix(value);
                     }
                     else
                     {
-                        Check(value == 0xDEADBEEF, "read uint64: a refused read wrote its destination");
+                        Check(value == sentinel64, "read uint64: a refused read wrote its destination");
                     }
 
-                    UInt128Value value128 = new UInt128Value(7, 7);
-                    if (Accepted(stream, stream.SerializeUInt128(ref value128), ref first, PastEnd, "read uint128", trace))
+                    UInt128Value sentinel128 = SentinelU128(pattern);
+                    UInt128Value value128 = sentinel128;
+                    if (Accepted(stream, stream.SerializeUInt128(ref value128), ref first, ref refusedBits, PastEnd, "read uint128", trace))
                     {
                         trace.Mix(value128.Lo);
                         trace.Mix(value128.Hi);
                     }
                     else
                     {
-                        Check(value128 == new UInt128Value(7, 7), "read uint128: a refused read wrote its destination");
+                        Check(value128 == sentinel128, "read uint128: a refused read wrote its destination");
                     }
 
                     int bits64 = param * 4 + 4; // [4,64]
-                    ulong valueBits64 = 0xDEADBEEF;
-                    if (Accepted(stream, stream.SerializeBits64(ref valueBits64, bits64), ref first, PastEnd, "read bits64", trace))
+                    ulong valueBits64 = sentinel64;
+                    if (Accepted(stream, stream.SerializeBits64(ref valueBits64, bits64), ref first, ref refusedBits, PastEnd, "read bits64", trace))
                     {
                         Check(bits64 == 64 || valueBits64 < (1UL << bits64), "read bits64: value wider than its bits");
                         trace.Mix(valueBits64);
                     }
                     else
                     {
-                        Check(valueBits64 == 0xDEADBEEF, "read bits64: a refused read wrote its destination");
+                        Check(valueBits64 == sentinel64, "read bits64: a refused read wrote its destination");
                     }
                     break;
                 }
@@ -442,11 +660,19 @@ internal static class Program
                 {
                     int numBytes = param * 16 + 1; // [1,241]
                     Span<byte> span = bytes.AsSpan(0, numBytes);
-                    if (Accepted(stream, stream.SerializeBytes(span), ref first, AlignReasons, "read bytes", trace))
+                    span.Fill(pattern);
+                    if (Accepted(stream, stream.SerializeBytes(span), ref first, ref refusedBits, AlignReasons, "read bytes", trace))
                     {
                         foreach (byte b in span)
                         {
                             trace.Mix(b);
+                        }
+                    }
+                    else
+                    {
+                        for (int j = 0; j < span.Length; j++)
+                        {
+                            Check(span[j] == pattern, "read bytes: a refused read wrote its destination");
                         }
                     }
                     break;
@@ -454,8 +680,9 @@ internal static class Program
 
                 case 10:
                 {
-                    string value = "";
-                    if (Accepted(stream, stream.SerializeString(ref value, 256), ref first, StringReasons, "read string", trace))
+                    string sentinelStr = pattern == 0x5A ? "sentinel-5A" : "sentinel-A5";
+                    string value = sentinelStr;
+                    if (Accepted(stream, stream.SerializeString(ref value, 256), ref first, ref refusedBits, StringReasons, "read string", trace))
                     {
                         Check(value.IndexOf('\0') < 0, "read string: accepted an embedded NUL");
                         Check(Encoding.UTF8.GetByteCount(value) <= 255, "read string: longer than its buffer");
@@ -464,19 +691,23 @@ internal static class Program
                             trace.Mix(c);
                         }
                     }
+                    else
+                    {
+                        Check(value == sentinelStr, "read string: a refused read wrote its destination");
+                    }
                     break;
                 }
 
                 case 11:
                 {
                     // the end of the object: an accepted end leaves nothing in the stream
-                    if (Accepted(stream, stream.SerializeEnd(), ref first, EndReasons, "read end", trace))
+                    if (Accepted(stream, stream.SerializeEnd(), ref first, ref refusedBits, EndReasons, "read end", trace))
                     {
                         Check(stream.BitsProcessed % 8 == 0, "read end: accepted end not on a byte boundary");
-                        uint after = 0xDEADBEEF;
+                        uint after = SentinelU32(pattern);
                         Check(!stream.SerializeBits(ref after, 1), "read end: a read after an accepted end succeeded");
                         Check(stream.Error == SerializeError.PastEnd, "read end: a read after an accepted end was not past_end");
-                        Check(after == 0xDEADBEEF, "read end: a refused read after the end wrote its destination");
+                        Check(after == SentinelU32(pattern), "read end: a refused read after the end wrote its destination");
                     }
                     trace.Mix((ulong)stream.Error);
                     return;
@@ -484,22 +715,23 @@ internal static class Program
 
                 case 12:
                 {
-                    Accepted(stream, stream.SerializeAlign(), ref first, AlignReasons, "read align", trace);
+                    Accepted(stream, stream.SerializeAlign(), ref first, ref refusedBits, AlignReasons, "read align", trace);
                     break;
                 }
 
                 case 13:
                 {
                     int previous = param * 1000; // int_relative's domain starts at 0: a negative previous is caller error
-                    int current = -7;
-                    if (Accepted(stream, stream.SerializeIntRelative(previous, ref current), ref first, RelativeReasons, "read int_relative", trace))
+                    int sentinel = SentinelI32(pattern);
+                    int current = sentinel;
+                    if (Accepted(stream, stream.SerializeIntRelative(previous, ref current), ref first, ref refusedBits, RelativeReasons, "read int_relative", trace))
                     {
                         Check(current > previous, "read int_relative: accepted a value not above previous");
                         trace.Mix((ulong)current);
                     }
                     else
                     {
-                        Check(current == -7, "read int_relative: a refused read wrote its destination");
+                        Check(current == sentinel, "read int_relative: a refused read wrote its destination");
                     }
                     break;
                 }
@@ -507,116 +739,135 @@ internal static class Program
                 case 14:
                 {
                     int max = (param + 1) * 1000; // ranges of varying width exercise bits_required
-                    int value = -1;
-                    if (Accepted(stream, stream.SerializeInt(ref value, 0, max), ref first, Ranged, "read int [0,max]", trace))
+                    int sentinel = SentinelI32(pattern);
+                    int value = sentinel;
+                    if (Accepted(stream, stream.SerializeInt(ref value, 0, max), ref first, ref refusedBits, Ranged, "read int [0,max]", trace))
                     {
                         Check(value >= 0 && value <= max, "read int [0,max]: value out of range");
                         trace.Mix((ulong)value);
                     }
                     else
                     {
-                        Check(value == -1, "read int [0,max]: a refused read wrote its destination");
+                        Check(value == sentinel, "read int [0,max]: a refused read wrote its destination");
                     }
                     break;
                 }
 
                 case 15:
                 {
-                    byte value8 = 0x5A;
-                    if (Accepted(stream, stream.SerializeByte(ref value8), ref first, PastEnd, "read uint8", trace))
+                    byte sentinel8 = SentinelU8(pattern);
+                    byte value8 = sentinel8;
+                    if (Accepted(stream, stream.SerializeByte(ref value8), ref first, ref refusedBits, PastEnd, "read uint8", trace))
                     {
                         trace.Mix(value8);
                     }
                     else
                     {
-                        Check(value8 == 0x5A, "read uint8: a refused read wrote its destination");
+                        Check(value8 == sentinel8, "read uint8: a refused read wrote its destination");
                     }
-                    ushort value16 = 0x5A5A;
-                    if (Accepted(stream, stream.SerializeUInt16(ref value16), ref first, PastEnd, "read uint16", trace))
+                    ushort sentinel16 = SentinelU16(pattern);
+                    ushort value16 = sentinel16;
+                    if (Accepted(stream, stream.SerializeUInt16(ref value16), ref first, ref refusedBits, PastEnd, "read uint16", trace))
                     {
                         trace.Mix(value16);
                     }
                     else
                     {
-                        Check(value16 == 0x5A5A, "read uint16: a refused read wrote its destination");
+                        Check(value16 == sentinel16, "read uint16: a refused read wrote its destination");
                     }
-                    uint value32 = 0x5A5A5A5A;
-                    if (Accepted(stream, stream.SerializeUInt32(ref value32), ref first, PastEnd, "read uint32", trace))
+                    uint sentinel32 = SentinelU32(pattern);
+                    uint value32 = sentinel32;
+                    if (Accepted(stream, stream.SerializeUInt32(ref value32), ref first, ref refusedBits, PastEnd, "read uint32", trace))
                     {
                         trace.Mix(value32);
                     }
                     else
                     {
-                        Check(value32 == 0x5A5A5A5A, "read uint32: a refused read wrote its destination");
+                        Check(value32 == sentinel32, "read uint32: a refused read wrote its destination");
                     }
                     break;
                 }
             }
         }
+
+        if (first != SerializeError.None)
+        {
+            uint post = SentinelU32(pattern);
+            Check(!stream.SerializeBits(ref post, 1), "post-refusal read bits: a failed stream accepted a read");
+            Check(post == SentinelU32(pattern), "post-refusal read bits: a refused read wrote its destination");
+            Check(stream.Error == first, "post-refusal read bits: the latched reason changed");
+            Check(stream.BitsProcessed == refusedBits,
+                "post-refusal read bits: a failed stream advanced BitsProcessed from " + refusedBits + " to " + stream.BitsProcessed);
+        }
     }
 
     /// <summary>The wide integers and every fixed point storage width, off hostile bytes.</summary>
-    private static void ReadWide(ReadStream stream, int param, ref SerializeError first, Trace trace)
+    private static void ReadWide(
+        ReadStream stream, int param, ref SerializeError first, ref long refusedBits,
+        Trace trace, byte pattern)
     {
-        int full = 12345;
-        if (Accepted(stream, stream.SerializeInt(ref full, int.MinValue, int.MaxValue), ref first, PastEnd, "read int full range", trace))
+        int sentinel32 = SentinelI32(pattern);
+        int full = sentinel32;
+        if (Accepted(stream, stream.SerializeInt(ref full, int.MinValue, int.MaxValue), ref first, ref refusedBits, PastEnd, "read int full range", trace))
         {
             trace.Mix((ulong)full);
         }
         else
         {
-            Check(full == 12345, "read int full range: a refused read wrote its destination");
+            Check(full == sentinel32, "read int full range: a refused read wrote its destination");
         }
 
-        long full64 = 12345;
-        if (Accepted(stream, stream.SerializeInt64(ref full64, long.MinValue, long.MaxValue), ref first, PastEnd, "read int64 full range", trace))
+        long sentinel64 = SentinelI64(pattern);
+        long full64 = sentinel64;
+        if (Accepted(stream, stream.SerializeInt64(ref full64, long.MinValue, long.MaxValue), ref first, ref refusedBits, PastEnd, "read int64 full range", trace))
         {
             trace.Mix((ulong)full64);
         }
         else
         {
-            Check(full64 == 12345, "read int64 full range: a refused read wrote its destination");
+            Check(full64 == sentinel64, "read int64 full range: a refused read wrote its destination");
         }
 
         long bound = (long)(param + 1) << 35; // spans of varying width exercise bits_required64
-        long ranged64 = long.MaxValue;
-        if (Accepted(stream, stream.SerializeInt64(ref ranged64, -bound, +bound), ref first, Ranged, "read int64 ranged", trace))
+        long ranged64 = sentinel64;
+        if (Accepted(stream, stream.SerializeInt64(ref ranged64, -bound, +bound), ref first, ref refusedBits, Ranged, "read int64 ranged", trace))
         {
             Check(ranged64 >= -bound && ranged64 <= +bound, "read int64 ranged: value out of range");
             trace.Mix((ulong)ranged64);
         }
         else
         {
-            Check(ranged64 == long.MaxValue, "read int64 ranged: a refused read wrote its destination");
+            Check(ranged64 == sentinel64, "read int64 ranged: a refused read wrote its destination");
         }
 
         // fixed point: values read off hostile bytes must decode within the raw bounds or fail
-        int fixed32 = int.MaxValue;
-        if (Accepted(stream, stream.SerializeFixed(ref fixed32, 16, 16, -1000, +1000), ref first, Ranged, "read fixed Q16.16 int", trace))
+        int fixed32 = sentinel32;
+        if (Accepted(stream, stream.SerializeFixed(ref fixed32, 16, 16, -1000, +1000), ref first, ref refusedBits, Ranged, "read fixed Q16.16 int", trace))
         {
             Check(fixed32 >= -1000 * 65536 && fixed32 <= 1000 * 65536, "read fixed Q16.16 int: value out of range");
             trace.Mix((ulong)fixed32);
         }
         else
         {
-            Check(fixed32 == int.MaxValue, "read fixed Q16.16 int: a refused read wrote its destination");
+            Check(fixed32 == sentinel32, "read fixed Q16.16 int: a refused read wrote its destination");
         }
 
-        long fixed64 = long.MaxValue;
-        if (Accepted(stream, stream.SerializeFixed(ref fixed64, 48, 16, -100000000000, +100000000000), ref first, Ranged, "read fixed Q48.16 long", trace))
+        long fixed64 = sentinel64;
+        if (Accepted(stream, stream.SerializeFixed(ref fixed64, 48, 16, -100000000000, +100000000000), ref first, ref refusedBits, Ranged, "read fixed Q48.16 long", trace))
         {
             Check(fixed64 >= -100000000000L * 65536 && fixed64 <= 100000000000L * 65536, "read fixed Q48.16 long: value out of range");
             trace.Mix((ulong)fixed64);
         }
         else
         {
-            Check(fixed64 == long.MaxValue, "read fixed Q48.16 long: a refused read wrote its destination");
+            Check(fixed64 == sentinel64, "read fixed Q48.16 long: a refused read wrote its destination");
         }
 
-        Int128Value wide = Int128Value.MaxValue;
+        Int128Value sentinelI128 = SentinelI128(pattern);
+        Int128Value wide = sentinelI128;
         Int128Value wideMin = (Int128Value)(-Wide) * (Int128Value)65536;
         Int128Value wideMax = (Int128Value)Wide * (Int128Value)65536;
-        if (Accepted(stream, stream.SerializeFixed(ref wide, 112, 16, -Wide, +Wide), ref first, Ranged, "read fixed Q112.16 int128", trace))
+        if (Accepted(stream, stream.SerializeFixed(ref wide, 112, 16, -Wide, +Wide), ref first, ref refusedBits, Ranged, "read fixed Q112.16 int128", trace))
         {
             Check(wide >= wideMin && wide <= wideMax, "read fixed Q112.16 int128: value out of range");
             trace.Mix(wide.Lo);
@@ -624,44 +875,48 @@ internal static class Program
         }
         else
         {
-            Check(wide == Int128Value.MaxValue, "read fixed Q112.16 int128: a refused read wrote its destination");
+            Check(wide == sentinelI128, "read fixed Q112.16 int128: a refused read wrote its destination");
         }
 
-        short fixed16 = short.MaxValue;
-        if (Accepted(stream, stream.SerializeFixed(ref fixed16, 8, 8, -100, +100), ref first, Ranged, "read fixed Q8.8 short", trace))
+        short sentinel16 = SentinelI16(pattern);
+        short fixed16 = sentinel16;
+        if (Accepted(stream, stream.SerializeFixed(ref fixed16, 8, 8, -100, +100), ref first, ref refusedBits, Ranged, "read fixed Q8.8 short", trace))
         {
             Check(fixed16 >= -100 * 256 && fixed16 <= 100 * 256, "read fixed Q8.8 short: value out of range");
             trace.Mix((ulong)fixed16);
         }
         else
         {
-            Check(fixed16 == short.MaxValue, "read fixed Q8.8 short: a refused read wrote its destination");
+            Check(fixed16 == sentinel16, "read fixed Q8.8 short: a refused read wrote its destination");
         }
 
-        uint ufixed32 = uint.MaxValue;
-        if (Accepted(stream, stream.SerializeFixed(ref ufixed32, 16, 16, 0, 60000), ref first, Ranged, "read fixed Q16.16 uint", trace))
+        uint sentinelU32 = SentinelU32(pattern);
+        uint ufixed32 = sentinelU32;
+        if (Accepted(stream, stream.SerializeFixed(ref ufixed32, 16, 16, 0, 60000), ref first, ref refusedBits, Ranged, "read fixed Q16.16 uint", trace))
         {
             Check(ufixed32 <= 60000U * 65536, "read fixed Q16.16 uint: value out of range");
             trace.Mix(ufixed32);
         }
         else
         {
-            Check(ufixed32 == uint.MaxValue, "read fixed Q16.16 uint: a refused read wrote its destination");
+            Check(ufixed32 == sentinelU32, "read fixed Q16.16 uint: a refused read wrote its destination");
         }
 
-        ulong ufixed64 = ulong.MaxValue;
-        if (Accepted(stream, stream.SerializeFixed(ref ufixed64, 48, 16, 0, 1000000000), ref first, Ranged, "read fixed Q48.16 ulong", trace))
+        ulong sentinelU64 = SentinelU64(pattern);
+        ulong ufixed64 = sentinelU64;
+        if (Accepted(stream, stream.SerializeFixed(ref ufixed64, 48, 16, 0, 1000000000), ref first, ref refusedBits, Ranged, "read fixed Q48.16 ulong", trace))
         {
             Check(ufixed64 <= 1000000000UL * 65536, "read fixed Q48.16 ulong: value out of range");
             trace.Mix(ufixed64);
         }
         else
         {
-            Check(ufixed64 == ulong.MaxValue, "read fixed Q48.16 ulong: a refused read wrote its destination");
+            Check(ufixed64 == sentinelU64, "read fixed Q48.16 ulong: a refused read wrote its destination");
         }
 
-        UInt128Value ufixed128 = UInt128Value.MaxValue;
-        if (Accepted(stream, stream.SerializeFixed(ref ufixed128, 112, 16, 0, 2 * Wide), ref first, Ranged, "read fixed Q112.16 uint128", trace))
+        UInt128Value sentinelU128 = SentinelU128(pattern);
+        UInt128Value ufixed128 = sentinelU128;
+        if (Accepted(stream, stream.SerializeFixed(ref ufixed128, 112, 16, 0, 2 * Wide), ref first, ref refusedBits, Ranged, "read fixed Q112.16 uint128", trace))
         {
             Check(ufixed128 <= ((UInt128Value)(ulong)(2 * Wide) << 16), "read fixed Q112.16 uint128: value out of range");
             trace.Mix(ufixed128.Lo);
@@ -669,15 +924,15 @@ internal static class Program
         }
         else
         {
-            Check(ufixed128 == UInt128Value.MaxValue, "read fixed Q112.16 uint128: a refused read wrote its destination");
+            Check(ufixed128 == sentinelU128, "read fixed Q112.16 uint128: a refused read wrote its destination");
         }
 
         // ranged 128 bit integers, the bound width varying with param so the run walks
         // every group structure: one group, two, three and four. hostile bytes must
         // decode inside the bounds or fail the read: never clamp, never wrap.
         Int128Value bound128 = Int128Value.One << (20 + param * 7); // 2^20 .. 2^125
-        Int128Value ranged128 = Int128Value.MaxValue;
-        if (Accepted(stream, stream.SerializeInt128(ref ranged128, -bound128, bound128), ref first, Ranged, "read int128 ranged", trace))
+        Int128Value ranged128 = sentinelI128;
+        if (Accepted(stream, stream.SerializeInt128(ref ranged128, -bound128, bound128), ref first, ref refusedBits, Ranged, "read int128 ranged", trace))
         {
             Check(ranged128 >= -bound128 && ranged128 <= bound128, "read int128 ranged: value out of range");
             trace.Mix(ranged128.Lo);
@@ -685,18 +940,18 @@ internal static class Program
         }
         else
         {
-            Check(ranged128 == Int128Value.MaxValue, "read int128 ranged: a refused read wrote its destination");
+            Check(ranged128 == sentinelI128, "read int128 ranged: a refused read wrote its destination");
         }
 
-        Int128Value full128 = Int128Value.One;
-        if (Accepted(stream, stream.SerializeInt128(ref full128, Int128Value.MinValue, Int128Value.MaxValue), ref first, PastEnd, "read int128 full range", trace))
+        Int128Value full128 = sentinelI128;
+        if (Accepted(stream, stream.SerializeInt128(ref full128, Int128Value.MinValue, Int128Value.MaxValue), ref first, ref refusedBits, PastEnd, "read int128 full range", trace))
         {
             trace.Mix(full128.Lo);
             trace.Mix(full128.Hi);
         }
         else
         {
-            Check(full128 == Int128Value.One, "read int128 full range: a refused read wrote its destination");
+            Check(full128 == sentinelI128, "read int128 full range: a refused read wrote its destination");
         }
     }
 
@@ -768,6 +1023,7 @@ internal static class Program
         // worst case is ~300 bytes per op (a 241 byte bytes field plus alignment and
         // the wide integer group), so 32 ops fit comfortably
         byte[] writeBuffer = new byte[WriteBufferSize];
+        Array.Fill(writeBuffer, (byte)0xAA);
         long[] writePositions = new long[NumOps + 1];
         long[] measurePositions = new long[NumOps + 1];
         long[] readPositions = new long[NumOps + 1];
@@ -775,6 +1031,22 @@ internal static class Program
         WriteStream writeStream = new WriteStream(writeBuffer);
         FuzzRoundTrip(writeStream, ops, new ValuePool(payload), writePositions);
         writeStream.Flush();
+
+        int written8 = (int)writeStream.BytesProcessed;
+        int wordBoundary = (written8 + 7) & ~7;
+        for (int k = written8; k < wordBoundary; k++)
+        {
+            Check(writeBuffer[k] == 0x00, "roundtrip flush: trailing byte " + k + " inside flushed word is nonzero");
+        }
+        if (ControlEnabled("canary"))
+        {
+            writeBuffer[wordBoundary] ^= 0xFF;
+        }
+        for (int k = 0; k < CanaryBytes; k++)
+        {
+            Check(writeBuffer[wordBoundary + k] == 0xAA,
+                "roundtrip canary: canary byte " + k + " past flushed word boundary was overwritten");
+        }
 
         MeasureStream measureStream = new MeasureStream();
         FuzzRoundTrip(measureStream, ops, new ValuePool(payload), measurePositions);
@@ -787,7 +1059,6 @@ internal static class Program
         Check(measureStream.BitsProcessed >= writeStream.BitsProcessed, "roundtrip measure: the measure is smaller than the write");
 
         // the 16 KB buffer extends well past the written bytes
-        int written8 = (int)writeStream.BytesProcessed;
         ReadStream readStream = new ReadStream(writeBuffer, written8);
         FuzzRoundTrip(readStream, ops, new ValuePool(payload), readPositions);
         for (int i = 0; i <= ops.Length; i++)
@@ -797,9 +1068,11 @@ internal static class Program
         Check(readStream.SerializeEnd(), "roundtrip end: the read did not end where the writer stopped (" + readStream.Error + ")");
 
         // one byte more than the writer reported is trailing data, refused at the end
+        writeBuffer[written8] = 0;
         ReadStream longerStream = new ReadStream(writeBuffer, written8 + 1);
         FuzzRoundTrip(longerStream, ops, new ValuePool(payload), readPositions);
-        Check(!longerStream.SerializeEnd(), "roundtrip end: a byte past the writer's end was accepted");
+        bool longerAccepted = ControlEnabled("trailing") || longerStream.SerializeEnd();
+        Check(!longerAccepted, "roundtrip end: a byte past the writer's end was accepted");
         Check(longerStream.Error == SerializeError.TrailingData, "roundtrip end: a byte past the writer's end was " + longerStream.Error + ", not trailing_data");
     }
 
@@ -823,7 +1096,11 @@ internal static class Program
                     uint expected = pool.NextUInt32() & mask;
                     uint value = writing ? expected : 0;
                     Ok(stream, stream.SerializeBits(ref value, bits), "bits");
-                    Check(value == expected, "roundtrip bits: wrote " + expected + ", read " + value);
+                    if (stream.IsReading && ControlEnabled("roundtrip"))
+                    {
+                        value ^= 1u;
+                    }
+                    Check(value == expected, "roundtrip bits: wrote " + expected + ", read " + value + " (roundtrip negative control)");
                     break;
                 }
 

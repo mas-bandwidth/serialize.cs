@@ -2209,6 +2209,13 @@ public sealed class ReadStream : IBitStream
         }
         if (_reader.BitsRead + bits > _reader.NumBits)
         {
+#if SERIALIZE_FUZZ_READ_SABOTAGE
+            // NEGATIVE CONTROL for the fuzzer's two-sentinel hostile-read pass only
+            // (SerializeFuzzReadSabotage=true, never a shipping configuration):
+            // clobber the refused destination with the first pass's 0x5A5A5A5A
+            // sentinel so only the second (0xA5A5A5A5) sentinel pass can catch it.
+            value = 0x5A5A5A5A;
+#endif
             return Fail(SerializeError.PastEnd);
         }
         value = _reader.ReadBitsUnchecked(bits);

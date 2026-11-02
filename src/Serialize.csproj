@@ -61,6 +61,9 @@
   <PropertyGroup Condition="'$(SerializeFuzzSabotage)' == 'true'">
     <DefineConstants>$(DefineConstants);SERIALIZE_FUZZ_SABOTAGE</DefineConstants>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(SerializeFuzzReadSabotage)' == 'true'">
+    <DefineConstants>$(DefineConstants);SERIALIZE_FUZZ_READ_SABOTAGE</DefineConstants>
+  </PropertyGroup>
 
   <!-- Version and package identity. Version travels with the tag: a release is
        tagged vX.Y.Z and this property carries the same X.Y.Z, so the assembly a
