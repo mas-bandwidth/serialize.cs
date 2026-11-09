@@ -41,6 +41,10 @@ jobs:
         run: dotnet build tests/Tests.csproj -c Release
       - name: Build (netstandard2.1, the Unity-class target, C# 9 pinned)
         run: dotnet build src/Serialize.csproj -c Release -f netstandard2.1
+      # the README's copy-in path: a project with the nullable context off by
+      # default (Unity) compiles the two source files as they are
+      - name: Build (nullable context disabled, the copy-in path)
+        run: dotnet build src/Serialize.csproj -c Release -p:Nullable=disable --no-incremental
       - name: Tests (net10.0)
         run: dotnet run -c Release --project tests/Tests.csproj -f net10.0 --no-build
       - name: Tests (net8.0, the LTS leg)
