@@ -13,6 +13,8 @@
 // (Hi, Lo) ulong halves. Nothing speculative: no mul/div/parse. ToString is
 // hex, for diagnostics.
 
+#nullable enable
+
 using System;
 using System.Runtime.CompilerServices;
 

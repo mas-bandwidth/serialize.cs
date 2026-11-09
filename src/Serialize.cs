@@ -76,6 +76,8 @@
     WriteBatch / ReadBatch (register-resident hot paths over the same streams).
 */
 
+#nullable enable
+
 using System;
 using System.Buffers.Binary;
 using System.Diagnostics;
