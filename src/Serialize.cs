@@ -804,6 +804,7 @@ internal static class SerializeInternal
     internal const string FloatPrecomputedMaxIntegerValueMessage = "precomputed compressed float constants are the caller's contract: maxIntegerValue must be at least 1";
     internal const string FloatPrecomputedBitsMessage = "precomputed compressed float constants are the caller's contract: bits must equal BitsRequired(0, maxIntegerValue)";
     internal const string FloatPrecomputedDeltaMessage = "precomputed compressed float constants are the caller's contract: delta must be positive";
+    internal const string FlushedWriterMessage = "flushed writer state: the scratch bit count must match the written bit position";
 
     /// <summary>
     /// The difference buckets used by SerializeIntRelative. Each bucket costs one
@@ -1223,6 +1224,8 @@ public sealed class BitWriter
 
     internal long NumBits => _numBits;
 
+    internal int ScratchBits => _scratchBits;
+
     /// <summary>
     /// Lifts the packer state out into locals for a WriteBatch, which serializes
     /// against register-resident copies of these fields and stores them back once
@@ -1298,6 +1301,7 @@ public sealed class BitWriter
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteBits(uint value, int bits)
     {
+        Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
         Debug.Assert(bits >= 1 && bits <= 32, SerializeInternal.BitsRangeMessage);
         Debug.Assert(_bitsWritten + bits <= _numBits, SerializeInternal.WriteOverflowMessage);
         WriteBitsUnchecked(value, bits);
@@ -1362,6 +1366,7 @@ public sealed class BitWriter
     /// boundary: call WriteAlign first.</summary>
     public void WriteBytes(ReadOnlySpan<byte> data)
     {
+        Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
         Debug.Assert(_bitsWritten % 8 == 0, SerializeInternal.NotAlignedMessage);
         Debug.Assert(_bitsWritten + (long)data.Length * 8 <= _numBits, SerializeInternal.WriteOverflowMessage);
         WriteBytesUnchecked(data);
@@ -1643,6 +1648,7 @@ public sealed class WriteStream : IBitStream
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool WriteBits(uint value, int bits)
     {
+        Debug.Assert(_writer.ScratchBits == (int)(_writer.BitsWritten % 64), SerializeInternal.FlushedWriterMessage);
         Debug.Assert(_writer.BitsWritten + bits <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
         _writer.WriteBitsUnchecked(value, bits);
         return true;
@@ -3501,6 +3507,7 @@ public ref struct WriteBatch
         _stream = stream;
         stream.Writer.CaptureState(out _data, out _scratch, out _numBits,
             out _bitsWritten, out _wordIndex, out _scratchBits);
+        Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
         _ended = false;
     }
 
