@@ -3077,8 +3077,9 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <summary>The number of bits still available to read, so callers can preflight a
-    /// read without dropping to the BitReader layer.</summary>
-    public long BitsRemaining => _reader.BitsRemaining;
+    /// read without dropping to the BitReader layer. Returns -1 once the stream has
+    /// failed.</summary>
+    public long BitsRemaining => _error == SerializeError.None ? _reader.BitsRemaining : -1;
 
     /// <inheritdoc/>
     public SerializeError Error => _error;
@@ -4774,8 +4775,9 @@ public ref struct ReadBatch
     /// batch's own reads.</summary>
     public long BytesProcessed => (_bitsRead + 7) / 8;
 
-    /// <summary>The number of bits still available to read.</summary>
-    public long BitsRemaining => _numBits - _bitsRead;
+    /// <summary>The number of bits still available to read. Returns -1 once the batch
+    /// has failed.</summary>
+    public long BitsRemaining => _error == SerializeError.None ? _numBits - _bitsRead : -1;
 
     /// <summary>The first error latched on the batch or carried in from the stream,
     /// or SerializeError.None.</summary>
