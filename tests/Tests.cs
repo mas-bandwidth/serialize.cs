@@ -2251,6 +2251,56 @@ internal static partial class Program
             float v = 0.0f;
             stream.SerializeCompressedFloat(ref v, -3.4e38f, +3.4e38f, 1.0f);
         }), "a non-finite compressed float declaration must assert in debug");
+
+        // flushed writer state: further writes through each entry point must
+        // assert in debug
+        Check(AssertFires(() =>
+        {
+            BitWriter writer = new BitWriter(new byte[64]);
+            writer.WriteBits(0xAB, 8);
+            writer.FlushBits();
+            writer.WriteBits(0xCD, 8);
+        }), "a flushed BitWriter WriteBits must assert in debug");
+
+        Check(AssertFires(() =>
+        {
+            BitWriter writer = new BitWriter(new byte[64]);
+            writer.WriteBits(0xAB, 8);
+            writer.FlushBits();
+            writer.WriteBytes(new byte[] { 0xCD });
+        }), "a flushed BitWriter WriteBytes must assert in debug");
+
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[64]);
+            uint first = 0xAB;
+            stream.SerializeBits(ref first, 8);
+            stream.Flush();
+            uint second = 0xCD;
+            stream.SerializeBits(ref second, 8);
+        }), "a flushed WriteStream write must assert in debug");
+
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[64]);
+            uint first = 0xAB;
+            stream.SerializeBits(ref first, 8);
+            stream.Flush();
+            WriteBatch batch = stream.BeginBatch();
+            batch.End();
+        }), "a flushed WriteStream BeginBatch must assert in debug");
+
+        // reversed witness: a flush at a qword boundary leaves the writer
+        // resumable, so the next write must not assert
+        Check(!AssertFires(() =>
+        {
+            BitWriter writer = new BitWriter(new byte[64]);
+            writer.WriteBits(0xAB, 32);
+            writer.WriteBits(0xCD, 32);
+            writer.FlushBits();
+            writer.WriteBits(0xEF, 8);
+            writer.FlushBits();
+        }), "a qword-boundary flush must not assert on the next write");
     }
 
     private static void TestApiMisuseAsserts()
