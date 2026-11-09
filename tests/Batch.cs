@@ -524,6 +524,19 @@ internal static partial class Program
             batch.End();
             Check(stream.Error == SerializeError.PastEnd, $"expected PastEnd on the stream, got {stream.Error}");
         }
+
+        // a struct passed to the delegated non-generic read overload is refused
+        // with ValueOutOfRange before any bits move
+        {
+            ReadStream stream = new ReadStream(new byte[8]);
+            ReadBatch batch = stream.BeginBatch();
+            StructPoint boxed = default;
+            Check(!batch.SerializeObject(boxed), "a struct read through the non-generic batch overload must refuse");
+            Check(batch.Error == SerializeError.ValueOutOfRange, $"expected ValueOutOfRange, got {batch.Error}");
+            Check(batch.BitsProcessed == 0, $"the refusal consumed {batch.BitsProcessed} bits, expected 0");
+            batch.End();
+            Check(stream.Error == SerializeError.ValueOutOfRange, $"expected ValueOutOfRange on the stream, got {stream.Error}");
+        }
     }
 
     private static void TestBatchEndIdempotent()

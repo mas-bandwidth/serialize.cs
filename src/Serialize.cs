@@ -162,8 +162,8 @@ public enum SerializeError
 ///
 /// Struct implementers must be serialized through the generic
 /// SerializeObject&lt;T&gt;(ref T) overload: passing a struct to the non-generic
-/// SerializeObject(ISerializer) boxes a copy, the read fills the box, and the caller's
-/// struct is silently left unchanged.
+/// SerializeObject(ISerializer) boxes a copy, so a read refuses it with
+/// SerializeError.ValueOutOfRange before any bits move.
 ///
 /// IMPORTANT: A value that controls how much more work your serialize function does —
 /// a loop count or a continuation bit — must have its serialize result checked before
@@ -402,8 +402,8 @@ public interface IBitStream
 
     /// <summary>Serializes an object that implements ISerializer. For struct
     /// implementers use the generic SerializeObject&lt;T&gt;(ref T) overload instead:
-    /// this one boxes a copy of a struct and the caller's struct is silently left
-    /// unchanged on read.</summary>
+    /// this one boxes a copy of a struct, so a read refuses a struct with
+    /// SerializeError.ValueOutOfRange before any bits move.</summary>
     bool SerializeObject(ISerializer obj);
 
     /// <summary>Serializes an object that implements ISerializer, by ref. This is the
@@ -2902,6 +2902,12 @@ public sealed class ReadStream : IBitStream
         if (_error != SerializeError.None && SerializeConformanceControls.Keeps("object-terminal"))
         {
             return false;
+        }
+        // a struct arrives here boxed: the read would fill the box, not the
+        // caller's value, so it is refused before any bits move
+        if (obj.GetType().IsValueType)
+        {
+            return Fail(SerializeError.ValueOutOfRange);
         }
         if (!obj.Serialize(this))
         {
