@@ -655,4 +655,44 @@ internal static partial class Program
         readBatch.End();
         Check(readStream.BitsProcessed == 3, $"expected the cursor to store back, got {readStream.BitsProcessed}");
     }
+
+#if DEBUG
+    private static void TestBatchAfterEndInline()
+    {
+        // Inline writes pack bits in the batch. On an ended WriteBatch that is
+        // misuse, asserted in debug. Release leaves the call unspecified.
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[16]);
+            WriteBatch batch = stream.BeginBatch();
+            batch.End();
+            uint value = 1;
+            batch.SerializeBits(ref value, 4);
+        }), "an inline write on an ended write batch must assert in debug");
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[16]);
+            WriteBatch batch = stream.BeginBatch();
+            batch.End();
+            ulong value = 1;
+            batch.SerializeBits64(ref value, 40);
+        }), "a wide bits write on an ended write batch must assert in debug");
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[16]);
+            WriteBatch batch = stream.BeginBatch();
+            batch.End();
+            long value = 0;
+            batch.SerializeInt64(ref value, long.MinValue, long.MaxValue);
+        }), "a wide int64 write on an ended write batch must assert in debug");
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[16]);
+            WriteBatch batch = stream.BeginBatch();
+            batch.End();
+            ulong value = 1;
+            batch.SerializeUInt64(ref value);
+        }), "a uint64 write on an ended write batch must assert in debug");
+    }
+#endif
 }

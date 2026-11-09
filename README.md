@@ -493,8 +493,9 @@ Two further rules:
   C++ `serialize_copy_string`: the longest prefix a string field of that size
   carries, cut at a character boundary and at the first NUL (U15).
 - **A batch is dead after `End`.** Every read on an ended `ReadBatch` refuses and
-  nothing is written back to its stream; an ended `WriteBatch` is write misuse,
-  asserted in debug, and writes nothing back in release.
+  nothing is written back to its stream. Delegated writes on an ended `WriteBatch`
+  are misuse, asserted in debug, and write nothing back in release. Inline writes
+  on an ended `WriteBatch` are misuse, asserted in debug, and unspecified in release.
 - **Compressed float declarations must decode finite.** When `max - min` overflows to
   infinity (e.g. `[-3.4e38, +3.4e38]`), or the top integer decodes past `FLT_MAX`, the
   declaration is non-conforming: it asserts in debug, and in release a read refuses

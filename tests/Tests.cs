@@ -449,6 +449,9 @@ internal static partial class Program
         RunTest("test_read_stream_bytes_outside_buffer", TestReadStreamBytesOutsideBuffer);
         RunTest("test_public_fail", TestPublicFail);
         RunTest("test_batch_after_end", TestBatchAfterEnd);
+#if DEBUG
+        RunTest("test_batch_after_end_inline", TestBatchAfterEndInline);
+#endif
         RunTest("test_copy_string", TestCopyString);
         // IMPLEMENTING.md 2.1.1's rulings U6 and U9 (Uniform.cs)
         RunTest("test_write_misuse_never_latches", TestWriteMisuseNeverLatches);
