@@ -557,6 +557,126 @@ internal static partial class Program
             Check(!batch.Fail(SerializeError.ValueOutOfRange), "Fail must return false");
             Check(!stream.Ok && stream.Error == SerializeError.ValueOutOfRange, $"expected ValueOutOfRange on the stream, got {stream.Error}");
         }
+
+        TestBatchSentinelLoops();
+    }
+
+    private static void TestBatchSentinelLoops()
+    {
+        // a sentinel loop written with batch.Continue and batch.Until round trips
+        // through a read batch, byte identical to the class path
+        {
+            uint[] items = { 1, 2, 3, 4, 5 };
+            byte[] buffer = new byte[64];
+            WriteStream writeStream = new WriteStream(buffer);
+            WriteBatch writeBatch = writeStream.BeginBatch();
+            int i = 0;
+            bool more = items.Length > 0;
+            while (writeBatch.Continue(ref more))
+            {
+                writeBatch.SerializeBits(ref items[i], 8);
+                i++;
+                more = i < items.Length;
+            }
+            i = 0;
+            bool done = items.Length == 0;
+            while (writeBatch.Until(ref done))
+            {
+                writeBatch.SerializeBits(ref items[i], 8);
+                i++;
+                done = i == items.Length;
+            }
+            writeBatch.End();
+            writeStream.Flush();
+
+            byte[] reference = new byte[64];
+            WriteStream referenceStream = new WriteStream(reference);
+            i = 0;
+            more = items.Length > 0;
+            while (referenceStream.Continue(ref more))
+            {
+                referenceStream.SerializeBits(ref items[i], 8);
+                i++;
+                more = i < items.Length;
+            }
+            i = 0;
+            done = items.Length == 0;
+            while (referenceStream.Until(ref done))
+            {
+                referenceStream.SerializeBits(ref items[i], 8);
+                i++;
+                done = i == items.Length;
+            }
+            referenceStream.Flush();
+            Check(writeStream.BitsProcessed == referenceStream.BitsProcessed && buffer.AsSpan().SequenceEqual(reference),
+                "a batch sentinel loop must write the same bits as the class path");
+
+            ReadStream readStream = new ReadStream(buffer, (int)writeStream.BytesProcessed);
+            ReadBatch readBatch = readStream.BeginBatch();
+            uint[] continued = new uint[items.Length];
+            int continuedCount = 0;
+            more = false;
+            while (continuedCount < continued.Length && readBatch.Continue(ref more))
+            {
+                Check(readBatch.SerializeBits(ref continued[continuedCount], 8), "a Continue element must read");
+                continuedCount++;
+            }
+            Check(continuedCount == items.Length && !readBatch.Continue(ref more),
+                "the Continue loop must end after the last element");
+            uint[] untilDone = new uint[items.Length];
+            int untilCount = 0;
+            done = false;
+            while (untilCount < untilDone.Length && readBatch.Until(ref done))
+            {
+                Check(readBatch.SerializeBits(ref untilDone[untilCount], 8), "an Until element must read");
+                untilCount++;
+            }
+            Check(untilCount == items.Length && !readBatch.Until(ref done),
+                "the Until loop must end after the last element");
+            Check(readBatch.Ok, $"the round trip must not fail, got {readBatch.Error}");
+            readBatch.End();
+            Check(continued.AsSpan().SequenceEqual(items), "the Continue loop must read back every element");
+            Check(untilDone.AsSpan().SequenceEqual(items), "the Until loop must read back every element");
+            Check(readStream.BitsProcessed == writeStream.BitsProcessed,
+                $"read {readStream.BitsProcessed} bits, wrote {writeStream.BitsProcessed}");
+        }
+
+        // on a packet of all ones the Continue loop on a read batch is bounded by the
+        // packet and ends with PastEnd; once failed, Continue and Until end at once
+        {
+            byte[] packet = new byte[4];
+            Array.Fill(packet, (byte)0xFF);
+            ReadStream stream = new ReadStream(packet);
+            ReadBatch batch = stream.BeginBatch();
+            int iterations = 0;
+            bool more = true;
+            while (batch.Continue(ref more))
+            {
+                uint item = 0;
+                batch.SerializeBits(ref item, 8);
+                iterations++;
+            }
+            Check(batch.Error == SerializeError.PastEnd, $"expected PastEnd, got {batch.Error}");
+            Check(iterations <= packet.Length * 8, $"loop ran {iterations} iterations, more than the packet's bits");
+
+            more = true;
+            Check(!batch.Continue(ref more), "Continue on a failed batch must end the loop");
+            bool done = false;
+            Check(!batch.Until(ref done), "Until on a failed batch must end the loop");
+            Check(batch.Error == SerializeError.PastEnd, $"expected PastEnd to stay latched, got {batch.Error}");
+            batch.End();
+            Check(stream.Error == SerializeError.PastEnd, $"expected PastEnd on the stream, got {stream.Error}");
+        }
+
+        // a read batch over an empty packet ends a Until loop on its first bit
+        {
+            ReadStream stream = new ReadStream(new byte[8], 0);
+            ReadBatch batch = stream.BeginBatch();
+            bool done = false;
+            Check(!batch.Until(ref done), "Until on an empty packet must end the loop");
+            Check(batch.Error == SerializeError.PastEnd, $"expected PastEnd, got {batch.Error}");
+            batch.End();
+        }
     }
 
     private static void TestBatchEndIdempotent()

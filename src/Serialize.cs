@@ -76,6 +76,8 @@
     WriteBatch / ReadBatch (register-resident hot paths over the same streams).
 */
 
+#nullable enable
+
 using System;
 using System.Buffers.Binary;
 using System.Diagnostics;
@@ -2804,7 +2806,6 @@ public sealed class ReadStream : IBitStream
         {
             return Fail(SerializeError.ValueOutOfRange);
         }
-        SerializeInternal.ValidateBufferSize(bufferSize);
         if (_error != SerializeError.None)
         {
             return false;
@@ -3710,6 +3711,16 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeBool(ref bool value) => WriteBits(value ? 1u : 0u, 1);
 
+    /// <summary>Serializes a continuation bit and reports whether a sentinel-driven
+    /// loop should proceed. Identical semantics to SerializeUtil.Continue.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool Continue(ref bool more) => SerializeBool(ref more) && more;
+
+    /// <summary>Serializes a termination bit and reports whether a sentinel-driven
+    /// loop should proceed. Identical semantics to SerializeUtil.Until.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool Until(ref bool done) => SerializeBool(ref done) && !done;
+
     /// <summary>Serializes an uncompressed 32 bit floating point value. Identical
     /// semantics to WriteStream.SerializeFloat.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -4371,6 +4382,20 @@ public ref struct ReadBatch
         value = v != 0;
         return true;
     }
+
+    /// <summary>Serializes a continuation bit and reports whether a sentinel-driven
+    /// loop should proceed: false as soon as the batch has an error, so the loop
+    /// always ends on a truncated packet. Identical semantics to
+    /// SerializeUtil.Continue.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool Continue(ref bool more) => SerializeBool(ref more) && more;
+
+    /// <summary>Serializes a termination bit and reports whether a sentinel-driven
+    /// loop should proceed: false as soon as the batch has an error, so the loop
+    /// always ends on a truncated packet. Identical semantics to
+    /// SerializeUtil.Until.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool Until(ref bool done) => SerializeBool(ref done) && !done;
 
     /// <summary>Serializes an uncompressed 32 bit floating point value. Identical
     /// semantics to ReadStream.SerializeFloat.</summary>
