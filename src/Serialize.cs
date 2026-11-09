@@ -2804,7 +2804,6 @@ public sealed class ReadStream : IBitStream
         {
             return Fail(SerializeError.ValueOutOfRange);
         }
-        SerializeInternal.ValidateBufferSize(bufferSize);
         if (_error != SerializeError.None)
         {
             return false;
