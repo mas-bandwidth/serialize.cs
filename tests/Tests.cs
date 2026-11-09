@@ -2746,6 +2746,15 @@ internal static partial class Program
         FailingStruct failing = default;
         Check(!failStream.SerializeObject(ref failing), "expected the struct serialize to fail");
         Check(failStream.Ok, "and records nothing on a write (IMPLEMENTING.md U9)");
+
+        // a struct passed to the non-generic read overload is refused before any
+        // bits move, so the caller's struct is never left default behind a success
+        ReadStream boxedStream = new ReadStream(buffer, (int)writeStream.BytesProcessed);
+        StructPoint boxed = default;
+        Check(!boxedStream.SerializeObject(boxed), "a struct read through the non-generic overload must refuse");
+        Check(boxedStream.Error == SerializeError.ValueOutOfRange,
+            $"expected ValueOutOfRange, got {boxedStream.Error}");
+        Check(boxedStream.BitsProcessed == 0, $"the refusal consumed {boxedStream.BitsProcessed} bits, expected 0");
     }
 
     private struct FailingStruct : ISerializer
