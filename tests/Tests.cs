@@ -3018,6 +3018,8 @@ internal static partial class Program
         {
             ReadStream stream = prepare();
             Check(!stream.Ok, $"{name}: the failure must have latched");
+            Check(stream.BitsRemaining == -1,
+                $"{name}: expected BitsRemaining -1 on a failed stream, got {stream.BitsRemaining}");
             SerializeError latched = stream.Error;
             long position = stream.BitsProcessed;
 
