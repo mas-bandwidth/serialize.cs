@@ -521,6 +521,7 @@ internal static partial class Program
             Check(!batch.SerializeBits(ref w, 8), "expected the second byte to overflow");
             Check(w == 777, "a failed read must leave the value unmodified");
             Check(batch.Error == SerializeError.PastEnd, $"expected PastEnd, got {batch.Error}");
+            Check(batch.BitsRemaining == -1, $"expected BitsRemaining -1 on a failed batch, got {batch.BitsRemaining}");
             batch.End();
             Check(stream.Error == SerializeError.PastEnd, $"expected PastEnd on the stream, got {stream.Error}");
         }
