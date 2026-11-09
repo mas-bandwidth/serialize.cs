@@ -296,8 +296,9 @@ jobs:
           # read terminality (an empty nested object on a refused stream refuses).
           # v2.1.0 keeps format 2.0 and adds the caller's refusal, `rejected`.
           # v2.1.1 keeps format 2.0 and adds the U3, U6, U9 and U15 rulings.
+          # v2.1.3 keeps format 2.0. The wire is unchanged since v2.1.1.
           repository: mas-bandwidth/serialize
-          ref: v2.1.1
+          ref: v2.1.3
           path: cpp-serialize
       - uses: actions/setup-dotnet@v6
         with:
