@@ -3606,6 +3606,7 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool WriteBits(uint value, int bits)
     {
+        Debug.Assert(!_ended, SerializeInternal.BatchEndedMessage);
         Debug.Assert(_bitsWritten + bits <= _numBits, SerializeInternal.WriteOverflowMessage);
         WriteBitsUnchecked(value, bits);
         return true;
@@ -3627,6 +3628,7 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeBits64(ref ulong value, int bits)
     {
+        Debug.Assert(!_ended, SerializeInternal.BatchEndedMessage);
         Debug.Assert(bits >= 1 && bits <= 64, SerializeInternal.BitsRange64Message);
         // U8: an over-wide value is caught in the checked build, never masked
         Debug.Assert(bits >= 64 || value >> bits == 0, SerializeInternal.ValueFitsMessage);
@@ -3659,6 +3661,7 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt64(ref long value, long min, long max)
     {
+        Debug.Assert(!_ended, SerializeInternal.BatchEndedMessage);
         Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         long v = value;
         Debug.Assert(v >= min && v <= max, SerializeInternal.WriteRangeAssertMessage);
@@ -3695,6 +3698,7 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeUInt64(ref ulong value)
     {
+        Debug.Assert(!_ended, SerializeInternal.BatchEndedMessage);
         Debug.Assert(_bitsWritten + 64 <= _numBits, SerializeInternal.WriteOverflowMessage);
         WriteBitsUnchecked(unchecked((uint)value), 32);
         WriteBitsUnchecked(unchecked((uint)(value >> 32)), 32);
