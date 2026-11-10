@@ -449,6 +449,9 @@ internal static partial class Program
         RunTest("test_read_stream_bytes_outside_buffer", TestReadStreamBytesOutsideBuffer);
         RunTest("test_public_fail", TestPublicFail);
         RunTest("test_batch_after_end", TestBatchAfterEnd);
+#if DEBUG
+        RunTest("test_batch_after_end_inline", TestBatchAfterEndInline);
+#endif
         RunTest("test_copy_string", TestCopyString);
         // IMPLEMENTING.md 2.1.1's rulings U6 and U9 (Uniform.cs)
         RunTest("test_write_misuse_never_latches", TestWriteMisuseNeverLatches);
@@ -1181,7 +1184,7 @@ internal static partial class Program
 
     private static void TestStringReaderZeroBufferSize()
     {
-        // security#33-F1: with bufferSize < 1 the length read saw the degenerate
+        // With bufferSize < 1 the length read saw the degenerate
         // range [0, -1]; the release range compare passed every value, so a hostile
         // 32-bit length with the top bit set decoded negative, slipped the payload
         // bound, and threw from AsSpan / new char[]. The read path must fail-latch
@@ -1634,9 +1637,10 @@ internal static partial class Program
 
     private static void TestCompressedFloatTopOfRangeClamp()
     {
-        // STANDARD.md's normative integer clamp (2026-08-23, schema#109; ruling:
-        // Glenn, live). In [2^23, 2^24) the float32 ulp is 1, so scaled + 0.5f lands
-        // on a tie and round-to-even can push the code past maxIntegerValue. Before
+        // STANDARD.md's normative integer clamp: a compressed float code must
+        // stay within [min, maxIntegerValue]. In [2^23, 2^24) the float32 ulp
+        // is 1, so scaled + 0.5f lands on a tie and round-to-even can push the
+        // code past maxIntegerValue. Before
         // the clamp, witness A wrote a top-of-range code its own reader rejected,
         // and witness B wrote a code one bit wider than the 24 bit field, which
         // this port's bitpacker masked to zero on the wire.
@@ -2252,6 +2256,56 @@ internal static partial class Program
             float v = 0.0f;
             stream.SerializeCompressedFloat(ref v, -3.4e38f, +3.4e38f, 1.0f);
         }), "a non-finite compressed float declaration must assert in debug");
+
+        // flushed writer state: further writes through each entry point must
+        // assert in debug
+        Check(AssertFires(() =>
+        {
+            BitWriter writer = new BitWriter(new byte[64]);
+            writer.WriteBits(0xAB, 8);
+            writer.FlushBits();
+            writer.WriteBits(0xCD, 8);
+        }), "a flushed BitWriter WriteBits must assert in debug");
+
+        Check(AssertFires(() =>
+        {
+            BitWriter writer = new BitWriter(new byte[64]);
+            writer.WriteBits(0xAB, 8);
+            writer.FlushBits();
+            writer.WriteBytes(new byte[] { 0xCD });
+        }), "a flushed BitWriter WriteBytes must assert in debug");
+
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[64]);
+            uint first = 0xAB;
+            stream.SerializeBits(ref first, 8);
+            stream.Flush();
+            uint second = 0xCD;
+            stream.SerializeBits(ref second, 8);
+        }), "a flushed WriteStream write must assert in debug");
+
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[64]);
+            uint first = 0xAB;
+            stream.SerializeBits(ref first, 8);
+            stream.Flush();
+            WriteBatch batch = stream.BeginBatch();
+            batch.End();
+        }), "a flushed WriteStream BeginBatch must assert in debug");
+
+        // reversed witness: a flush at a qword boundary leaves the writer
+        // resumable, so the next write must not assert
+        Check(!AssertFires(() =>
+        {
+            BitWriter writer = new BitWriter(new byte[64]);
+            writer.WriteBits(0xAB, 32);
+            writer.WriteBits(0xCD, 32);
+            writer.FlushBits();
+            writer.WriteBits(0xEF, 8);
+            writer.FlushBits();
+        }), "a qword-boundary flush must not assert on the next write");
     }
 
     private static void TestApiMisuseAsserts()
@@ -2984,6 +3038,8 @@ internal static partial class Program
         {
             ReadStream stream = prepare();
             Check(!stream.Ok, $"{name}: the failure must have latched");
+            Check(stream.BitsRemaining == -1,
+                $"{name}: expected BitsRemaining -1 on a failed stream, got {stream.BitsRemaining}");
             SerializeError latched = stream.Error;
             long position = stream.BitsProcessed;
 
@@ -3061,8 +3117,8 @@ internal static partial class Program
         for (int i = 0; i < numChunks; i++)
         {
             Check(readStream.SerializeBytes(readChunk), "bulk read failed");
+            Check(readChunk.AsSpan().SequenceEqual(chunk), "the final chunk did not round trip");
         }
-        Check(readChunk.AsSpan().SequenceEqual(chunk), "the final chunk did not round trip");
         uint readSentinel = 0;
         Check(readStream.SerializeBits(ref readSentinel, 32), "sentinel read failed");
         Check(readSentinel == sentinel, $"expected sentinel {sentinel:x}, got {readSentinel:x}");

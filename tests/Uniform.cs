@@ -97,7 +97,7 @@ internal static partial class Program
         // IMPLEMENTING.md U7 and U16: a caller declaration that cannot be right is
         // refused on read as value_out_of_range, in every build, before any bits
         // move, and never asserted or thrown. Each was a Debug.Assert on read before
-        // 2.1.0, and in release a rewound cursor and a throw (the audit's R4b).
+        // 2.1.0, and in release a rewound cursor and a throw.
         foreach (int bits in new[] { 0, 33, -8, int.MinValue, int.MaxValue })
         {
             CheckDeclarationRefused($"bits {bits}", s => { uint v = 7; bool r = s.SerializeBits(ref v, bits); Check(v == 7, "untouched"); return r; });
@@ -140,7 +140,7 @@ internal static partial class Program
         (uint maxIntegerValue, int bits, float delta)[] badPrecomputed =
         {
             (1000, 11, 10.0f),           // bits disagree with the step count
-            (1000, -8, 10.0f),           // the audit's R4b
+            (1000, -8, 10.0f),           // negative bit count
             (0, 1, 1.0f),                // no steps
             (4294967295u, 32, 1.0f),     // above 4294967040
             (1000, 10, 0.0f),            // delta zero
@@ -161,6 +161,8 @@ internal static partial class Program
         CheckDeclarationRefused("fixed min > max", s => { int v = 7; return s.SerializeFixed(ref v, 16, 16, 100, 0); });
         CheckDeclarationRefused("fixed bound past the Q format", s => { short v = 7; return s.SerializeFixed(ref v, 8, 8, 0, 1000); });
         CheckDeclarationRefused("fixed negative fraction bits", s => { int v = 7; return s.SerializeFixed(ref v, 33, -1, 0, 1); });
+        CheckDeclarationRefused("fixed integer bits int.MaxValue", s => { long v = 7; return s.SerializeFixed(ref v, int.MaxValue, 1, 0, 1); });
+        CheckBatchDeclarationRefused("batch fixed integer bits int.MaxValue", (ref ReadBatch b) => { long v = 7; return b.SerializeFixed(ref v, int.MaxValue, 1, 0, 1); });
         CheckDeclarationRefused("fixed unsigned negative bound", s => { uint v = 7; return s.SerializeFixed(ref v, 16, 16, -1, 1); });
         CheckDeclarationRefused("fixed 128 Q8.8", s => { Int128Value v = 7; return s.SerializeFixed(ref v, 8, 8, 0, 1); });
         CheckBatchDeclarationRefused("batch fixed Q16.8 in 64 bits", (ref ReadBatch b) => { long v = 7; return b.SerializeFixed(ref v, 16, 8, 0, 100); });
@@ -183,9 +185,9 @@ internal static partial class Program
     private static void TestReadStreamBytesOutsideBuffer()
     {
         // IMPLEMENTING.md U7: a byte count outside the buffer is caller misuse on a
-        // read stream, refused at initialization, never a throw on a later read (the
-        // audit's R4c: a byte read threw ArgumentOutOfRangeException, and a negative
-        // count read as an empty, healthy stream)
+        // read stream, refused at initialization, never a throw on a later read (a
+        // byte read must not throw ArgumentOutOfRangeException, and a negative
+        // count must not read as an empty, healthy stream)
         foreach (int bytes in new[] { -4, -1, 5, 64, int.MaxValue, int.MinValue })
         {
             ReadStream stream = null!;
@@ -253,7 +255,7 @@ internal static partial class Program
 
     private static void TestBatchAfterEnd()
     {
-        // The 2026-10-27 audit (cs, medium, R4a): a ReadBatch used after End synced its
+        // A ReadBatch used after End must not sync its
         // stale cursor and error back into the stream, clearing a refusal the stream
         // latched after the batch ended. A batch is dead after End: every read refuses
         // and nothing is written back
@@ -294,7 +296,7 @@ internal static partial class Program
             Check(batch.Ok, "an ended batch reports the stream's health");
         }
 
-        // WriteBatch: the same pattern (audit R4a's write twin). Use after End is write
+        // WriteBatch: the ended-write-batch rule. Use after End is write
         // misuse: asserted in debug, and in release the delegated call writes nothing
         // back, so the stream's cursor never rewinds
         {
