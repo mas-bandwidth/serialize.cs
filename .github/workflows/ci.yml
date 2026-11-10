@@ -41,6 +41,10 @@ jobs:
         run: dotnet build tests/Tests.csproj -c Release
       - name: Build (netstandard2.1, the Unity-class target, C# 9 pinned)
         run: dotnet build src/Serialize.csproj -c Release -f netstandard2.1
+      # the README's copy-in path: a project with the nullable context off by
+      # default (Unity) compiles the two source files as they are
+      - name: Build (nullable context disabled, the copy-in path)
+        run: dotnet build src/Serialize.csproj -c Release -p:Nullable=disable --no-incremental
       - name: Tests (net10.0)
         run: dotnet run -c Release --project tests/Tests.csproj -f net10.0 --no-build
       - name: Tests (net8.0, the LTS leg)
@@ -62,8 +66,8 @@ jobs:
   # THE DEBUG LEG: the write-side contracts AND the API misuse checks are
   # Debug.Assert, compiled out of Release builds — so the Release-only job above
   # can never execute test_write_contract_asserts or test_api_misuse_asserts
-  # (they exist only under DEBUG: 62 tests in Debug vs 60 in Release, whose
-  # extra test proves the misuse checks ABSENT from the release binary). This
+  # (they exist only under DEBUG; Release runs its own test instead, which
+  # proves the misuse checks ABSENT from the release binary). This
   # job is the only place the assert-execution tests run in CI. Same matrix, TFMs and dotnet setup as the Release job; tests only — the
   # compat harness and the standalone netstandard2.1 compile gate are
   # Release-job concerns (the Unity-class run below still builds the Debug
@@ -91,8 +95,8 @@ jobs:
         run: dotnet run -c Debug --project tests/Tests.csproj -f net8.0 --no-build
       # the Unity-class leg in Debug: Unity's editor is exactly where consumers
       # run Debug-class builds, so the contract asserts are proven against the
-      # netstandard2.1 assembly surface too (60 tests: the two System.Int128
-      # oracle tests need a TFM that 2.1 lacks)
+      # netstandard2.1 assembly surface too (all but the two System.Int128
+      # oracle tests, which need a TFM that 2.1 lacks)
       - name: Tests (netstandard2.1 assembly, Debug)
         run: dotnet run -c Debug --project tests-ns21/TestsNs21.csproj
 
@@ -296,8 +300,9 @@ jobs:
           # read terminality (an empty nested object on a refused stream refuses).
           # v2.1.0 keeps format 2.0 and adds the caller's refusal, `rejected`.
           # v2.1.1 keeps format 2.0 and adds the U3, U6, U9 and U15 rulings.
+          # v2.1.3 keeps format 2.0. The wire is unchanged since v2.1.1.
           repository: mas-bandwidth/serialize
-          ref: v2.1.1
+          ref: v2.1.3
           path: cpp-serialize
       - uses: actions/setup-dotnet@v6
         with:

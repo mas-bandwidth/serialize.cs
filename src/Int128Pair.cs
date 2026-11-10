@@ -14,6 +14,8 @@
 // generation — implemented as two's-complement math on (Hi, Lo) ulong halves.
 // There is no parse. ToString is hex, for diagnostics.
 
+#nullable enable
+
 using System;
 using System.Runtime.CompilerServices;
 
