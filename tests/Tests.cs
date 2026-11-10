@@ -3098,8 +3098,8 @@ internal static partial class Program
         for (int i = 0; i < numChunks; i++)
         {
             Check(readStream.SerializeBytes(readChunk), "bulk read failed");
+            Check(readChunk.AsSpan().SequenceEqual(chunk), "the final chunk did not round trip");
         }
-        Check(readChunk.AsSpan().SequenceEqual(chunk), "the final chunk did not round trip");
         uint readSentinel = 0;
         Check(readStream.SerializeBits(ref readSentinel, 32), "sentinel read failed");
         Check(readSentinel == sentinel, $"expected sentinel {sentinel:x}, got {readSentinel:x}");
