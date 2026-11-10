@@ -662,12 +662,14 @@ public static class SerializeUtil
     {
         Debug.Assert(min < max && resolution > 0, SerializeInternal.FloatParamsMessage);
 
-        delta = max - min;
+        // ECMA-334 permits float arithmetic wider than float32; the explicit (float)
+        // conversions pin every intermediate to float32, as STANDARD.md requires
+        delta = (float)(max - min);
 
         // finite min < max cannot produce NaN, only an infinite overflow
         Debug.Assert(!float.IsInfinity(delta), SerializeInternal.FloatDeltaAssertMessage);
 
-        float values = delta / resolution;
+        float values = (float)(delta / resolution);
 
         Debug.Assert(!float.IsInfinity(values), SerializeInternal.FloatValuesAssertMessage);
 
@@ -896,7 +898,7 @@ internal static class SerializeInternal
         Debug.Assert(float.IsFinite(value), FloatValueAssertMessage);
         ValidateCompressedFloatTop(min, delta);
 
-        float normalizedValue = (value - min) / delta;
+        float normalizedValue = (float)((float)(value - min) / delta);
         if (!(normalizedValue >= 0.0f))
         {
             normalizedValue = 0.0f; // the !>= form of the clamp forces NaN into range too
@@ -919,7 +921,7 @@ internal static class SerializeInternal
         // quantum agree). Do not fold the product back into one expression, and do
         // not drop the casts. Matches serialize.h serialize_compressed_float_internal
         // (`const float scaled`) and serialize.c serialize_write_compressed_float.
-        float scaled = (float)(normalizedValue * maxIntegerValue);
+        float scaled = (float)(normalizedValue * (float)maxIntegerValue);
         uint integerValue = (uint)Math.Floor((double)(float)(scaled + 0.5f));
         // STANDARD.md: the integer clamp is normative (2026-08-23, schema#109). Once
         // maxIntegerValue >= 2^23 the float32 ulp at the top of the range reaches 1,
@@ -950,7 +952,7 @@ internal static class SerializeInternal
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static float DecodeCompressedFloat(uint integerValue, uint maxIntegerValue, float delta, float min)
     {
-        float normalizedValue = (float)integerValue / maxIntegerValue;
+        float normalizedValue = (float)((float)integerValue / (float)maxIntegerValue);
         // STANDARD.md pins the DECODE the same way it pins the write quantization:
         // "the quotient rounds, the product rounds BEFORE min is added, and the sum
         // rounds", and an implementation "must not contract the multiply and the add
@@ -1114,8 +1116,10 @@ internal static class SerializeInternal
         {
             return false;
         }
-        float delta = max - min;
-        return !float.IsInfinity(delta) && !float.IsInfinity(delta / resolution);
+        // float32 intermediates, as CompressedFloatParams: a wider evaluation would
+        // accept a declaration whose delta overflows float32
+        float delta = (float)(max - min);
+        return !float.IsInfinity(delta) && !float.IsInfinity((float)(delta / resolution));
     }
 
     /// <summary>Precomputed compressed float constants that can be right, checked

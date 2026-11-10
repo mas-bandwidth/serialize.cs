@@ -473,6 +473,7 @@ internal static partial class Program
         RunTest("test_compressed_float_validation", TestCompressedFloatValidation);
         RunTest("test_compressed_float_top_of_range_clamp", TestCompressedFloatTopOfRangeClamp);
         RunTest("test_compressed_float_quantization_boundaries", TestCompressedFloatQuantizationBoundaries);
+        RunTest("test_compressed_float_float32_intermediates", TestCompressedFloatFloat32Intermediates);
         RunTest("test_compressed_float_precomputed_validation", TestCompressedFloatPrecomputedValidation);
         RunTest("test_compressed_float_precomputed_conformance", TestCompressedFloatPrecomputedConformance);
         RunTest("test_compressed_float_precomputed_differential", TestCompressedFloatPrecomputedDifferential);
