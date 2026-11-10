@@ -301,8 +301,9 @@ jobs:
           # v2.1.0 keeps format 2.0 and adds the caller's refusal, `rejected`.
           # v2.1.1 keeps format 2.0 and adds the U3, U6, U9 and U15 rulings.
           # v2.1.3 keeps format 2.0. The wire is unchanged since v2.1.1.
+          # v2.1.4 keeps format 2.0 and states U7, U11 and U16 for every port.
           repository: mas-bandwidth/serialize
-          ref: v2.1.3
+          ref: v2.1.4
           path: cpp-serialize
       - uses: actions/setup-dotnet@v6
         with:
