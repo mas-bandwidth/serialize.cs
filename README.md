@@ -31,7 +31,10 @@ library's `serialize_assert`; on read a bad call-site parameter is refused as
 stream has no refusal state (`Error` is always `None`), and release output after
 misuse is unspecified. `Fail` on a write or measure returns false and records
 nothing; a nested object's `Serialize` returning false on a write or measure makes
-`SerializeObject` return false and records nothing. A build with the `DEBUG` constant is what STANDARD.md
+`SerializeObject` return false and records nothing. Since 2.2.0 a write after a
+`Flush` that stored a partial word asserts on every write path (U11), and a struct
+passed to the boxing `SerializeObject(ISerializer)` asserts on write and measure, as
+a read refuses it with `ValueOutOfRange`; use `SerializeObject<T>(ref T)` for structs. A build with the `DEBUG` constant is what STANDARD.md
 calls a **checked build**, and every check that page makes conditional on the build
 is conditional on that constant here (STANDARD.md "Writes assume trusted data",
 enacted for C# per serialize#52; parameters joined per the 2026-08-16 check-model audit,
