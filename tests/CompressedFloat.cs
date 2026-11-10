@@ -925,4 +925,60 @@ internal static partial class Program
         }), "a non-positive precomputed delta must assert in debug");
     }
 #endif // DEBUG
+
+    private static void TestCompressedFloatFloat32Intermediates()
+    {
+        // STANDARD.md: "the arithmetic is float32". ECMA-334 lets a runtime evaluate
+        // float expressions wider than float32, so every intermediate is pinned with an
+        // explicit (float) conversion. Each case pins the bits at an input where the
+        // same arithmetic in double gives a different answer, and checks that it does,
+        // so the pin stays discriminating.
+
+        // the step count: 10 / 0.01f is 1000.0000224 in double, which ceils to 1001
+        SerializeUtil.CompressedFloatParams(0.0f, 10.0f, 0.01f,
+            out uint maxIntegerValue, out int bits, out float delta);
+        Check(maxIntegerValue == 1000 && bits == 10 && BitConverter.SingleToUInt32Bits(delta) == 0x41200000u,
+            $"[0,10] at 0.01 derives {maxIntegerValue} steps in {bits} bits, delta 0x{BitConverter.SingleToUInt32Bits(delta):X8}");
+        Check((uint)Math.Ceiling((10.0 - 0.0) / 0.01f) == 1001, "the double step count no longer differs");
+
+        // the read declaration check: max - min overflows float32 but not double
+        {
+            float min = -3.0e38f;
+            float max = 3.0e38f;
+            ReadStream stream = new ReadStream(new byte[8]);
+            float value = 0.5f;
+            Check(!stream.SerializeCompressedFloat(ref value, min, max, 1.0f) && stream.Error == SerializeError.ValueOutOfRange && value == 0.5f,
+                $"[-3e38,3e38] must be refused as a declaration whose delta is not finite in float32, got {stream.Error}");
+            Check(!double.IsInfinity((double)max - min), "the double delta no longer differs");
+        }
+
+        // the write: 0.005 over [0,10] at 0.01 quantizes to 1 in float32 and to 0 in
+        // double (STANDARD.md, compressed_float)
+        {
+            byte[] buffer = new byte[8];
+            WriteStream stream = new WriteStream(buffer);
+            float value = 0.005f;
+            stream.SerializeCompressedFloat(ref value, 0.0f, 10.0f, 0.01f);
+            stream.Flush();
+            Check(buffer[0] == 0x01 && buffer[1] == 0x00, $"0.005 must write code 1, wrote {buffer[1]:X2}{buffer[0]:X2}");
+            Check((uint)Math.Floor((double)value / 10.0f * 1000 + 0.5) == 0, "the double quantization no longer differs");
+        }
+
+        // the decode: code 6666 of 20000 over [-100,100] decodes to 0xC2055C2A in
+        // float32, every step rounded
+        {
+            byte[] buffer = new byte[8];
+            WriteStream writer = new WriteStream(buffer);
+            uint code = 6666;
+            writer.SerializeBits(ref code, 15);
+            writer.Flush();
+            ReadStream stream = new ReadStream(buffer);
+            float value = 0.0f;
+            Check(stream.SerializeCompressedFloat(ref value, -100.0f, 100.0f, 0.01f), $"decode failed: {stream.Error}");
+            Check(BitConverter.SingleToUInt32Bits(value) == 0xC2055C2Au,
+                $"code 6666 decoded to 0x{BitConverter.SingleToUInt32Bits(value):X8}");
+            Check(BitConverter.SingleToUInt32Bits((float)(6666.0 / 20000 * 200.0f + -100.0f)) != 0xC2055C2Au,
+                "the double decode no longer differs");
+        }
+    }
 }

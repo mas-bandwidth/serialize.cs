@@ -406,7 +406,8 @@ public interface IBitStream
     /// <summary>Serializes an object that implements ISerializer. For struct
     /// implementers use the generic SerializeObject&lt;T&gt;(ref T) overload instead:
     /// this one boxes a copy of a struct, so a read refuses a struct with
-    /// SerializeError.ValueOutOfRange before any bits move.</summary>
+    /// SerializeError.ValueOutOfRange before any bits move, and a write or a measure
+    /// asserts it in debug.</summary>
     bool SerializeObject(ISerializer obj);
 
     /// <summary>Serializes an object that implements ISerializer, by ref. This is the
@@ -662,12 +663,14 @@ public static class SerializeUtil
     {
         Debug.Assert(min < max && resolution > 0, SerializeInternal.FloatParamsMessage);
 
-        delta = max - min;
+        // ECMA-334 permits float arithmetic wider than float32; the explicit (float)
+        // conversions pin every intermediate to float32, as STANDARD.md requires
+        delta = (float)(max - min);
 
         // finite min < max cannot produce NaN, only an infinite overflow
         Debug.Assert(!float.IsInfinity(delta), SerializeInternal.FloatDeltaAssertMessage);
 
-        float values = delta / resolution;
+        float values = (float)(delta / resolution);
 
         Debug.Assert(!float.IsInfinity(values), SerializeInternal.FloatValuesAssertMessage);
 
@@ -808,6 +811,7 @@ internal static class SerializeInternal
     internal const string FloatPrecomputedBitsMessage = "precomputed compressed float constants are the caller's contract: bits must equal BitsRequired(0, maxIntegerValue)";
     internal const string FloatPrecomputedDeltaMessage = "precomputed compressed float constants are the caller's contract: delta must be positive";
     internal const string FlushedWriterMessage = "flushed writer state: the scratch bit count must match the written bit position";
+    internal const string BoxedStructMessage = "a struct passed to SerializeObject(ISerializer) is boxed and refused on read: use SerializeObject<T>(ref T)";
 
     /// <summary>
     /// The difference buckets used by SerializeIntRelative. Each bucket costs one
@@ -896,7 +900,7 @@ internal static class SerializeInternal
         Debug.Assert(float.IsFinite(value), FloatValueAssertMessage);
         ValidateCompressedFloatTop(min, delta);
 
-        float normalizedValue = (value - min) / delta;
+        float normalizedValue = (float)((float)(value - min) / delta);
         if (!(normalizedValue >= 0.0f))
         {
             normalizedValue = 0.0f; // the !>= form of the clamp forces NaN into range too
@@ -919,7 +923,7 @@ internal static class SerializeInternal
         // quantum agree). Do not fold the product back into one expression, and do
         // not drop the casts. Matches serialize.h serialize_compressed_float_internal
         // (`const float scaled`) and serialize.c serialize_write_compressed_float.
-        float scaled = (float)(normalizedValue * maxIntegerValue);
+        float scaled = (float)(normalizedValue * (float)maxIntegerValue);
         uint integerValue = (uint)Math.Floor((double)(float)(scaled + 0.5f));
         // STANDARD.md: the integer clamp is normative (2026-08-23, schema#109). Once
         // maxIntegerValue >= 2^23 the float32 ulp at the top of the range reaches 1,
@@ -950,7 +954,7 @@ internal static class SerializeInternal
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static float DecodeCompressedFloat(uint integerValue, uint maxIntegerValue, float delta, float min)
     {
-        float normalizedValue = (float)integerValue / maxIntegerValue;
+        float normalizedValue = (float)((float)integerValue / (float)maxIntegerValue);
         // STANDARD.md pins the DECODE the same way it pins the write quantization:
         // "the quotient rounds, the product rounds BEFORE min is added, and the sum
         // rounds", and an implementation "must not contract the multiply and the add
@@ -1114,8 +1118,10 @@ internal static class SerializeInternal
         {
             return false;
         }
-        float delta = max - min;
-        return !float.IsInfinity(delta) && !float.IsInfinity(delta / resolution);
+        // float32 intermediates, as CompressedFloatParams: a wider evaluation would
+        // accept a declaration whose delta overflows float32
+        float delta = (float)(max - min);
+        return !float.IsInfinity(delta) && !float.IsInfinity((float)(delta / resolution));
     }
 
     /// <summary>Precomputed compressed float constants that can be right, checked
@@ -1268,6 +1274,10 @@ public sealed class BitWriter
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void WriteBitsUnchecked(uint value, int bits)
     {
+        // every write reaches this or WriteBytesUnchecked, so a write after a flush
+        // that stored a partial word is caught on every path (IMPLEMENTING.md U11)
+        Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
+
         value &= unchecked((uint)((1UL << bits) - 1));
 
         _scratch |= (ulong)value << _scratchBits;
@@ -1304,7 +1314,6 @@ public sealed class BitWriter
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteBits(uint value, int bits)
     {
-        Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
         Debug.Assert(bits >= 1 && bits <= 32, SerializeInternal.BitsRangeMessage);
         Debug.Assert(_bitsWritten + bits <= _numBits, SerializeInternal.WriteOverflowMessage);
         WriteBitsUnchecked(value, bits);
@@ -1331,6 +1340,8 @@ public sealed class BitWriter
     /// </summary>
     internal void WriteBytesUnchecked(ReadOnlySpan<byte> data)
     {
+        Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
+
         int n = data.Length;
 
         int headBytes = (int)((8 - (_bitsWritten % 64) / 8) % 8);
@@ -1369,7 +1380,6 @@ public sealed class BitWriter
     /// boundary: call WriteAlign first.</summary>
     public void WriteBytes(ReadOnlySpan<byte> data)
     {
-        Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
         Debug.Assert(_bitsWritten % 8 == 0, SerializeInternal.NotAlignedMessage);
         Debug.Assert(_bitsWritten + (long)data.Length * 8 <= _numBits, SerializeInternal.WriteOverflowMessage);
         WriteBytesUnchecked(data);
@@ -1382,7 +1392,8 @@ public sealed class BitWriter
     /// ever written as zeros.
     ///
     /// FlushBits ends the write: writing more bits after a mid-stream flush corrupts
-    /// the stream, because the flushed partial word cannot be resumed.
+    /// the stream, because the flushed partial word cannot be resumed. Every write
+    /// path asserts it in debug (IMPLEMENTING.md U11).
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void FlushBits()
@@ -1653,7 +1664,6 @@ public sealed class WriteStream : IBitStream
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool WriteBits(uint value, int bits)
     {
-        Debug.Assert(_writer.ScratchBits == (int)(_writer.BitsWritten % 64), SerializeInternal.FlushedWriterMessage);
         Debug.Assert(_writer.BitsWritten + bits <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
         _writer.WriteBitsUnchecked(value, bits);
         return true;
@@ -2032,6 +2042,8 @@ public sealed class WriteStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeObject(ISerializer obj)
     {
+        // a read refuses a struct here, so a write or a measure asserts it (U9)
+        Debug.Assert(!obj.GetType().IsValueType, SerializeInternal.BoxedStructMessage);
         // an object that returns false on a write or a measure makes this return
         // false and records nothing (IMPLEMENTING.md U6, U9): a write or measure
         // stream has no refusal state
@@ -3391,6 +3403,8 @@ public sealed class MeasureStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeObject(ISerializer obj)
     {
+        // a read refuses a struct here, so a write or a measure asserts it (U9)
+        Debug.Assert(!obj.GetType().IsValueType, SerializeInternal.BoxedStructMessage);
         // an object that returns false on a write or a measure makes this return
         // false and records nothing (IMPLEMENTING.md U6, U9): a write or measure
         // stream has no refusal state
@@ -3611,6 +3625,8 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void WriteBitsUnchecked(uint value, int bits)
     {
+        Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
+
         value &= unchecked((uint)((1UL << bits) - 1));
 
         _scratch |= (ulong)value << _scratchBits;
