@@ -149,9 +149,10 @@ public enum SerializeError
     /// the value they carry — through ReadStream.Reject(), or a nested object's
     /// Serialize returning false through SerializeObject with nothing latched. The
     /// one reason the caller decides rather than the wire (STANDARD.md 2.1). Appended
-    /// last, so no existing member's value moved. On a write or measure stream it is
-    /// what an object's Serialize returning false latches: the caller's own
-    /// abort.</summary>
+    /// last, so no existing member's value moved. Only a read stream latches it: on a
+    /// write or measure stream nothing latches, and an object's Serialize returning
+    /// false makes SerializeObject return false and records nothing (U9, since
+    /// 2.1.1).</summary>
     Rejected,
 }
 
@@ -4130,6 +4131,10 @@ public ref struct ReadBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool Fail(SerializeError error)
     {
+        if (_ended)
+        {
+            return _stream.Fail(error);
+        }
         if (_error == SerializeError.None)
         {
             _error = SerializeInternal.RefusalOrRejected(error);
@@ -4605,7 +4610,7 @@ public ref struct ReadBatch
     {
         if (!Sync())
         {
-            return false;
+            return _stream.Reject();
         }
         bool ok = _stream.Reject();
         Recapture();

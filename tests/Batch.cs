@@ -539,6 +539,26 @@ internal static partial class Program
             Check(stream.Error == SerializeError.ValueOutOfRange, $"expected ValueOutOfRange on the stream, got {stream.Error}");
         }
 
+        // a refusal on an ended read batch is recorded on the stream
+        {
+            ReadStream stream = new ReadStream(new byte[8]);
+            ReadBatch batch = stream.BeginBatch();
+            uint v = 0;
+            Check(batch.SerializeBits(ref v, 3), "the 3 bit read must succeed");
+            batch.End();
+            Check(!batch.Reject(), "Reject must return false");
+            Check(!stream.Ok && stream.Error == SerializeError.Rejected, $"expected Rejected on the stream, got {stream.Error}");
+        }
+        {
+            ReadStream stream = new ReadStream(new byte[8]);
+            ReadBatch batch = stream.BeginBatch();
+            uint v = 0;
+            Check(batch.SerializeBits(ref v, 3), "the 3 bit read must succeed");
+            batch.End();
+            Check(!batch.Fail(SerializeError.ValueOutOfRange), "Fail must return false");
+            Check(!stream.Ok && stream.Error == SerializeError.ValueOutOfRange, $"expected ValueOutOfRange on the stream, got {stream.Error}");
+        }
+
         TestBatchSentinelLoops();
     }
 
