@@ -347,6 +347,15 @@ jobs:
             exit 1
           fi
           echo "STANDARD.md matches upstream"
+          # IMPLEMENTING.md is vendored beside it: STANDARD.md links it as a
+          # sibling, and this port's code cites the uniform rules it states
+          curl -fsSL -o /tmp/upstream-IMPLEMENTING.md \
+            https://raw.githubusercontent.com/mas-bandwidth/serialize/main/IMPLEMENTING.md
+          if ! diff -u /tmp/upstream-IMPLEMENTING.md IMPLEMENTING.md; then
+            echo "::error::IMPLEMENTING.md has diverged from mas-bandwidth/serialize"
+            exit 1
+          fi
+          echo "IMPLEMENTING.md matches upstream"
 
       # conformance/ is a VERBATIM VENDORED COPY of the shared conformance corpus
       # that lives beside the spec in mas-bandwidth/serialize, vendored and checked

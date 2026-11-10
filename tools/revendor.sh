@@ -3,11 +3,11 @@
 #
 #   tools/revendor.sh <tag> [path-to-a-clone-of-mas-bandwidth/serialize]
 #
-# STANDARD.md, conformance/ and conformance-controls/ are copied from the clone
-# checked out at <tag>, replacing what is here, and the diff is printed so the
-# port can be read against what changed. Without a clone path the reference is
-# cloned into a temporary directory. Exit code is nonzero if the tag does not
-# exist.
+# STANDARD.md, IMPLEMENTING.md, conformance/ and conformance-controls/ are
+# copied from the clone checked out at <tag>, replacing what is here, and the
+# diff is printed so the port can be read against what changed. Without a clone
+# path the reference is cloned into a temporary directory. Exit code is nonzero
+# if the tag does not exist.
 
 set -e
 
@@ -32,9 +32,10 @@ git -C "$SOURCE" -c advice.detachedHead=false checkout --quiet "$TAG"
 echo "reference: mas-bandwidth/serialize $TAG @ $(git -C "$SOURCE" rev-parse HEAD)"
 
 cp "$SOURCE/STANDARD.md" STANDARD.md
+cp "$SOURCE/IMPLEMENTING.md" IMPLEMENTING.md
 rm -rf conformance conformance-controls
 cp -R "$SOURCE/conformance" conformance
 cp -R "$SOURCE/conformance-controls" conformance-controls
 
-git status --short -- STANDARD.md conformance conformance-controls
-git --no-pager diff --stat -- STANDARD.md conformance conformance-controls
+git status --short -- STANDARD.md IMPLEMENTING.md conformance conformance-controls
+git --no-pager diff --stat -- STANDARD.md IMPLEMENTING.md conformance conformance-controls
