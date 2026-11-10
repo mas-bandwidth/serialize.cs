@@ -523,6 +523,7 @@ internal static partial class Program
         RunTest("test_batch_end_idempotent", TestBatchEndIdempotent);
         RunTest("test_batch_allocation", TestBatchAllocation);
         RunTest("test_batch_properties", TestBatchProperties);
+        RunTest("test_batch_sync_and_generation", TestBatchSyncAndGeneration);
 
         RunTest("test_int128_pair_basics", TestInt128PairBasics);
 #if SERIALIZE_HAS_INT128
@@ -2336,6 +2337,24 @@ internal static partial class Program
             batch.SerializeBits64(ref v, 65);
             batch.End();
         }), "bits64 above range must assert in debug (batch)");
+
+        // (3) WriteBatch copied by value where both copies sync/end must assert in debug
+        Check(AssertFires(() =>
+        {
+            static void WriteOnByValueCopy(WriteBatch copy)
+            {
+                uint inner = 1;
+                copy.SerializeBits(ref inner, 4);
+                copy.End();
+            }
+
+            WriteStream stream = new WriteStream(new byte[8]);
+            WriteBatch batch = stream.BeginBatch();
+            uint outer = 2;
+            batch.SerializeBits(ref outer, 4);
+            WriteOnByValueCopy(batch);
+            batch.End();
+        }), "ending a WriteBatch after a by-value copy synced must assert in debug");
 
         // string buffer size below 1. The floor was 2 here and in Rust until 2026-08-23,
         // which made bufferSize 1 -- the buffer that holds exactly the empty string -- an

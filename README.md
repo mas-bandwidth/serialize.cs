@@ -244,7 +244,8 @@ batch.End();                              // always, on every path out
 ```
 
 The contract is small: the batch owns the stream between `BeginBatch` and `End`
-(stream calls or `Reset` while a batch is open are API misuse); always call `End`
+(stream calls or `Reset` while a batch is open are API misuse, and never pass a
+batch by value); always call `End`
 on every path out — it is idempotent, and it is what publishes the batch's work
 back to the stream. Fixed-size scalar operations up to 64 bits run
 register-resident; everything else — bulk and variable-size operations

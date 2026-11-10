@@ -810,6 +810,71 @@ internal static partial class Program
         Check(readStream.BitsProcessed == 3, $"expected the cursor to store back, got {readStream.BitsProcessed}");
     }
 
+    private static void TestBatchSyncAndGeneration()
+    {
+        // (1) a ReadBatch copied by value whose copy refuses PastEnd and ends before
+        // the original batch ends must keep the stream refused
+        {
+            static void ReadPastEndOnByValueCopy(ReadBatch copy)
+            {
+                uint overflow = 0;
+                Check(!copy.SerializeBits(ref overflow, 16), "expected 16-bit read on 1-byte stream to refuse");
+                Check(copy.Error == SerializeError.PastEnd, $"expected PastEnd on copy, got {copy.Error}");
+                copy.End();
+            }
+
+            ReadStream stream = new ReadStream(new byte[8], 1);
+            ReadBatch batch = stream.BeginBatch();
+            uint first = 0;
+            Check(batch.SerializeBits(ref first, 4), "the 4-bit read must succeed");
+            ReadPastEndOnByValueCopy(batch);
+            batch.End();
+            Check(stream.Error != SerializeError.None && !stream.Ok,
+                $"expected stream refusal to remain latched after outer End, got {stream.Error}");
+            uint after = 0;
+            Check(!stream.SerializeBits(ref after, 4), "subsequent stream reads must refuse");
+        }
+
+        // a ReadBatch copied by value whose copy reads and ends without refusing
+        // still mismatches the stream generation when the outer copy syncs or ends,
+        // latching ValueOutOfRange on the stream instead of rewinding the cursor
+        {
+            static void ReadAndEndByValueCopy(ReadBatch copy)
+            {
+                uint inner = 0;
+                Check(copy.SerializeBits(ref inner, 4), "inner 4-bit read must succeed");
+                copy.End();
+            }
+
+            byte[] buf = { 0xAB, 0xCD, 0, 0, 0, 0, 0, 0 };
+            ReadStream stream = new ReadStream(buf, 2);
+            ReadBatch batch = stream.BeginBatch();
+            uint outer = 0;
+            Check(batch.SerializeBits(ref outer, 4), "outer 4-bit read must succeed");
+            ReadAndEndByValueCopy(batch);
+            Check(stream.BitsProcessed == 8, $"expected 8 bits after inner End, got {stream.BitsProcessed}");
+            batch.End();
+            Check(stream.Error == SerializeError.ValueOutOfRange && !stream.Ok,
+                $"expected ValueOutOfRange on generation mismatch, got {stream.Error}");
+            Check(stream.BitsProcessed == 8, $"expected cursor not to rewind, got {stream.BitsProcessed}");
+        }
+
+        // (2) a stream refusal while a ReadBatch is open followed by batch.End()
+        // must keep the stream refusal latched
+        {
+            ReadStream stream = new ReadStream(new byte[8], 1);
+            ReadBatch batch = stream.BeginBatch();
+            uint first = 0;
+            Check(batch.SerializeBits(ref first, 4), "the 4-bit batch read must succeed");
+            uint directOverflow = 0;
+            Check(!stream.SerializeBits(ref directOverflow, 16), "direct 16-bit read on 1-byte stream must refuse");
+            Check(stream.Error == SerializeError.PastEnd, $"expected PastEnd on stream, got {stream.Error}");
+            batch.End();
+            Check(stream.Error == SerializeError.PastEnd && !stream.Ok,
+                $"expected PastEnd to remain latched after batch.End(), got {stream.Error}");
+        }
+    }
+
 #if DEBUG
     private static void TestBatchAfterEndInline()
     {

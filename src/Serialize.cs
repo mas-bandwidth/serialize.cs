@@ -1615,6 +1615,7 @@ public sealed class BitReader
 public sealed class WriteStream : IBitStream
 {
     private readonly BitWriter _writer;
+    private uint _batchGeneration;
 
     /// <summary>Creates a write stream that writes to the given buffer. The buffer size
     /// must be a multiple of 8 bytes, because the bit writer stores qwords to
@@ -1630,6 +1631,7 @@ public sealed class WriteStream : IBitStream
     public void Reset(byte[] buffer)
     {
         _writer.Reset(buffer);
+        unchecked { _batchGeneration++; }
     }
 
     /// <inheritdoc/>
@@ -2109,6 +2111,15 @@ public sealed class WriteStream : IBitStream
     /// <summary>The bit writer, for batch state capture and delegated calls.</summary>
     internal BitWriter Writer => _writer;
 
+    /// <summary>Monotonic batch sync generation, used to detect stale or copied batches.</summary>
+    internal uint BatchGeneration
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => _batchGeneration;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        set => _batchGeneration = value;
+    }
+
     /// <summary>The written portion of the buffer: the packet you should send.
     ///
     /// IMPORTANT: Call Flush first.</summary>
@@ -2150,6 +2161,7 @@ public sealed class ReadStream : IBitStream
 {
     private readonly BitReader _reader;
     private SerializeError _error;
+    private uint _batchGeneration;
 
     /// <summary>Creates a read stream over the first <paramref name="bytes"/> bytes of
     /// the given buffer. Buffer bytes past <paramref name="bytes"/> are slack: keeping
@@ -2180,6 +2192,7 @@ public sealed class ReadStream : IBitStream
         bool fits = unchecked((uint)bytes) <= (uint)buffer.Length;
         _reader.Reset(buffer, fits ? bytes : 0);
         _error = fits ? SerializeError.None : SerializeError.ValueOutOfRange;
+        unchecked { _batchGeneration++; }
     }
 
     /// <summary>Resets the stream over the whole buffer.</summary>
@@ -3079,6 +3092,15 @@ public sealed class ReadStream : IBitStream
         set => _error = value;
     }
 
+    /// <summary>Monotonic batch sync generation, used to detect stale or copied batches.</summary>
+    internal uint BatchGeneration
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => _batchGeneration;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        set => _batchGeneration = value;
+    }
+
     /// <summary>The number of bits still available to read, so callers can preflight a
     /// read without dropping to the BitReader layer. Returns -1 once the stream has
     /// failed.</summary>
@@ -3472,6 +3494,8 @@ public sealed class MeasureStream : IBitStream
 ///     back to the stream: a batch dropped without End
 ///     silently loses its writes. Serialize calls on an ended batch are API
 ///     misuse.
+///   - Never pass a batch by value: a batch is a mutable ref struct, and a
+///     by-value copy splits the cursor and state across two copies.
 ///   - Batches nest by sequence, not by scope: End one batch before beginning
 ///     the next. Stream and batch calls can be interleaved freely at batch
 ///     granularity.
@@ -3508,6 +3532,7 @@ public ref struct WriteBatch
     private long _bitsWritten;
     private long _wordIndex;
     private int _scratchBits;
+    private uint _generation;
     private bool _ended;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -3517,6 +3542,7 @@ public ref struct WriteBatch
         stream.Writer.CaptureState(out _data, out _scratch, out _numBits,
             out _bitsWritten, out _wordIndex, out _scratchBits);
         Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
+        _generation = stream.BatchGeneration;
         _ended = false;
     }
 
@@ -3547,13 +3573,17 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool Sync()
     {
-        // a batch used after End is write misuse (U9): asserted, and in release it
+        // a batch used after End, or a stale by-value copy after another copy
+        // synced or ended, is write misuse (U9): asserted, and in release it
         // writes nothing back, so a stale packer state never rewinds the stream
-        Debug.Assert(!_ended, SerializeInternal.BatchEndedMessage);
-        if (_ended)
+        Debug.Assert(!_ended && _generation == _stream.BatchGeneration, SerializeInternal.BatchEndedMessage);
+        if (_ended || _generation != _stream.BatchGeneration)
         {
             return false;
         }
+        uint next = unchecked(_generation + 1);
+        _generation = next;
+        _stream.BatchGeneration = next;
         _stream.Writer.RestoreState(_scratch, _bitsWritten, _wordIndex, _scratchBits);
         return true;
     }
@@ -3564,6 +3594,7 @@ public ref struct WriteBatch
     {
         _stream.Writer.CaptureState(out _data, out _scratch, out _numBits,
             out _bitsWritten, out _wordIndex, out _scratchBits);
+        _generation = _stream.BatchGeneration;
     }
 
     /// <summary>A refusal is read only: on a write batch there is nothing to refuse,
@@ -4051,7 +4082,8 @@ public ref struct WriteBatch
 /// can keep it in registers across calls. Same wire logic, same validation and
 /// hostile-data guarantees, same latched error model, identical decode results.
 /// The contract is WriteBatch's: the batch owns the stream between BeginBatch and
-/// End; always call End on every path out; End is idempotent.
+/// End; never pass a batch by value; always call End on every path out; End is
+/// idempotent.
 /// </summary>
 public ref struct ReadBatch
 {
@@ -4060,6 +4092,7 @@ public ref struct ReadBatch
     private long _numBits;
     private long _bitsRead;
     private SerializeError _error;
+    private uint _generation;
     private bool _ended;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -4068,6 +4101,7 @@ public ref struct ReadBatch
         _stream = stream;
         stream.Reader.CaptureState(out _data, out _numBits, out _bitsRead);
         _error = stream.BatchError;
+        _generation = stream.BatchGeneration;
         _ended = false;
     }
 
@@ -4111,8 +4145,21 @@ public ref struct ReadBatch
         {
             return false;
         }
+        if (_generation != _stream.BatchGeneration)
+        {
+            _stream.Fail(SerializeError.ValueOutOfRange);
+            _error = Dead;
+            _ended = true;
+            return false;
+        }
+        uint next = unchecked(_generation + 1);
+        _generation = next;
+        _stream.BatchGeneration = next;
         _stream.Reader.RestoreState(_bitsRead);
-        _stream.BatchError = _error;
+        if (_stream.BatchError == SerializeError.None)
+        {
+            _stream.BatchError = _error;
+        }
         return true;
     }
 
@@ -4122,6 +4169,7 @@ public ref struct ReadBatch
     {
         _stream.Reader.CaptureState(out _data, out _numBits, out _bitsRead);
         _error = _stream.BatchError;
+        _generation = _stream.BatchGeneration;
     }
 
     /// <summary>Refuses the read in progress with <paramref name="error"/>: the
