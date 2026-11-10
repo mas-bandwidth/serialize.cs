@@ -2289,6 +2289,14 @@ internal static partial class Program
 
         Check(AssertFires(() =>
         {
+            BitWriter writer = new BitWriter(new byte[64]);
+            writer.WriteBits(0xAB, 8);
+            writer.FlushBits();
+            writer.WriteBytes(ReadOnlySpan<byte>.Empty);
+        }), "a flushed BitWriter zero-length WriteBytes must assert in debug");
+
+        Check(AssertFires(() =>
+        {
             WriteStream stream = new WriteStream(new byte[64]);
             uint first = 0xAB;
             stream.SerializeBits(ref first, 8);
@@ -2308,7 +2316,8 @@ internal static partial class Program
         }), "a flushed WriteStream BeginBatch must assert in debug");
 
         // every other write path on a flushed WriteStream asserts too (U11): the
-        // wide integers, the 128 bit groups, fixed point, and an aligned byte run
+        // wide integers, the 128 bit groups, fixed point, an aligned byte run, a
+        // zero-length byte run, and the empty string (a 0 bit and a 4 bit length)
         foreach ((string name, Action<WriteStream> write) in new (string, Action<WriteStream>)[]
         {
             ("SerializeBits64", s => { ulong v = 0x12345; s.SerializeBits64(ref v, 40); }),
@@ -2317,6 +2326,9 @@ internal static partial class Program
             ("SerializeUInt128", s => { UInt128Value v = 0x77; s.SerializeUInt128(ref v); }),
             ("SerializeFixed", s => { long v = 0x66; s.SerializeFixed(ref v, 48, 16, -1000000, 1000000); }),
             ("SerializeBytes", s => s.SerializeBytes(new byte[] { 0xCD })),
+            ("SerializeBytes zero-length", s => s.SerializeBytes(Span<byte>.Empty)),
+            ("SerializeString empty, buffer size 1", s => { string t = ""; s.SerializeString(ref t, 1); }),
+            ("SerializeString empty, buffer size 16", s => { string t = ""; s.SerializeString(ref t, 16); }),
         })
         {
             Check(AssertFires(() =>
