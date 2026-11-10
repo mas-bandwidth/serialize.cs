@@ -4131,6 +4131,10 @@ public ref struct ReadBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool Fail(SerializeError error)
     {
+        if (_ended)
+        {
+            return _stream.Fail(error);
+        }
         if (_error == SerializeError.None)
         {
             _error = SerializeInternal.RefusalOrRejected(error);
@@ -4606,7 +4610,7 @@ public ref struct ReadBatch
     {
         if (!Sync())
         {
-            return false;
+            return _stream.Reject();
         }
         bool ok = _stream.Reject();
         Recapture();
