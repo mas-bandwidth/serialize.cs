@@ -1,6 +1,6 @@
 // The emulated 128 bit pair: Int128Value / UInt128Value.
 //
-// One API on every TFM (decision: Glenn, 2026-08-12, option b): the 128 bit
+// One API on every TFM: the 128 bit
 // serialize surface speaks THESE types everywhere, so netstandard2.1 (Unity-
 // class runtimes, no System.Int128) carries the full surface, and wire
 // behavior cannot diverge by framework — the same emulated arithmetic runs on

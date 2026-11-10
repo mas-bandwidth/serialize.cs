@@ -70,7 +70,7 @@ a format version, and two endpoints interoperate only when they carry the same o
 
 ## Format 2.0
 
-The principle 2.0 adopts (STANDARD.md, Glenn Fiedler, 2026-10-22): **the wire carries
+The principle 2.0 adopts (STANDARD.md): **the wire carries
 only integers and bytes, and every value has exactly one encoding.** Every finite
 value 1.1 could carry keeps its exact bytes. What changed for a C# caller:
 
