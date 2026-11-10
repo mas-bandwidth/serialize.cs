@@ -2342,6 +2342,20 @@ internal static partial class Program
             batch.End();
         }), "a WriteBatch inline write after a flush must assert in debug");
 
+        // a struct through the non-generic SerializeObject is refused on read, so a
+        // write and a measure assert it: the two sides agree
+        Check(AssertFires(() =>
+        {
+            ISerializer boxed = new StructPoint { X = 1, Y = 2 };
+            new WriteStream(new byte[16]).SerializeObject(boxed);
+        }), "a boxed struct written through SerializeObject(ISerializer) must assert in debug");
+
+        Check(AssertFires(() =>
+        {
+            ISerializer boxed = new StructPoint { X = 1, Y = 2 };
+            new MeasureStream().SerializeObject(boxed);
+        }), "a boxed struct measured through SerializeObject(ISerializer) must assert in debug");
+
         // reversed witness: a flush at a qword boundary leaves the writer
         // resumable, so the next write must not assert
         Check(!AssertFires(() =>

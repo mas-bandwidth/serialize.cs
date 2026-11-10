@@ -406,7 +406,8 @@ public interface IBitStream
     /// <summary>Serializes an object that implements ISerializer. For struct
     /// implementers use the generic SerializeObject&lt;T&gt;(ref T) overload instead:
     /// this one boxes a copy of a struct, so a read refuses a struct with
-    /// SerializeError.ValueOutOfRange before any bits move.</summary>
+    /// SerializeError.ValueOutOfRange before any bits move, and a write or a measure
+    /// asserts it in debug.</summary>
     bool SerializeObject(ISerializer obj);
 
     /// <summary>Serializes an object that implements ISerializer, by ref. This is the
@@ -810,6 +811,7 @@ internal static class SerializeInternal
     internal const string FloatPrecomputedBitsMessage = "precomputed compressed float constants are the caller's contract: bits must equal BitsRequired(0, maxIntegerValue)";
     internal const string FloatPrecomputedDeltaMessage = "precomputed compressed float constants are the caller's contract: delta must be positive";
     internal const string FlushedWriterMessage = "flushed writer state: the scratch bit count must match the written bit position";
+    internal const string BoxedStructMessage = "a struct passed to SerializeObject(ISerializer) is boxed and refused on read: use SerializeObject<T>(ref T)";
 
     /// <summary>
     /// The difference buckets used by SerializeIntRelative. Each bucket costs one
@@ -2040,6 +2042,8 @@ public sealed class WriteStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeObject(ISerializer obj)
     {
+        // a read refuses a struct here, so a write or a measure asserts it (U9)
+        Debug.Assert(!obj.GetType().IsValueType, SerializeInternal.BoxedStructMessage);
         // an object that returns false on a write or a measure makes this return
         // false and records nothing (IMPLEMENTING.md U6, U9): a write or measure
         // stream has no refusal state
@@ -3399,6 +3403,8 @@ public sealed class MeasureStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeObject(ISerializer obj)
     {
+        // a read refuses a struct here, so a write or a measure asserts it (U9)
+        Debug.Assert(!obj.GetType().IsValueType, SerializeInternal.BoxedStructMessage);
         // an object that returns false on a write or a measure makes this return
         // false and records nothing (IMPLEMENTING.md U6, U9): a write or measure
         // stream has no refusal state
