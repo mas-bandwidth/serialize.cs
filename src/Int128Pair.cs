@@ -8,10 +8,11 @@
 // System.UInt128 make the pair transparent at call boundaries (ref parameters
 // still need a pair-typed local — C# does not convert through ref).
 //
-// The operation set is exactly what the serialize paths need — add, subtract,
-// shifts, or, compares, word casts — implemented as two's-complement math on
-// (Hi, Lo) ulong halves. Nothing speculative: no mul/div/parse. ToString is
-// hex, for diagnostics.
+// The operation set is what the serialize paths and the test harnesses need —
+// add, subtract, shifts, or, compares, word casts, and the multiply and
+// divide/remainder the harnesses use for fixed point scaling and offset
+// generation — implemented as two's-complement math on (Hi, Lo) ulong halves.
+// There is no parse. ToString is hex, for diagnostics.
 
 #nullable enable
 
