@@ -1183,7 +1183,7 @@ internal static partial class Program
 
     private static void TestStringReaderZeroBufferSize()
     {
-        // security#33-F1: with bufferSize < 1 the length read saw the degenerate
+        // With bufferSize < 1 the length read saw the degenerate
         // range [0, -1]; the release range compare passed every value, so a hostile
         // 32-bit length with the top bit set decoded negative, slipped the payload
         // bound, and threw from AsSpan / new char[]. The read path must fail-latch
@@ -1636,9 +1636,10 @@ internal static partial class Program
 
     private static void TestCompressedFloatTopOfRangeClamp()
     {
-        // STANDARD.md's normative integer clamp (2026-08-23, schema#109; ruling:
-        // Glenn, live). In [2^23, 2^24) the float32 ulp is 1, so scaled + 0.5f lands
-        // on a tie and round-to-even can push the code past maxIntegerValue. Before
+        // STANDARD.md's normative integer clamp: a compressed float code must
+        // stay within [min, maxIntegerValue]. In [2^23, 2^24) the float32 ulp
+        // is 1, so scaled + 0.5f lands on a tie and round-to-even can push the
+        // code past maxIntegerValue. Before
         // the clamp, witness A wrote a top-of-range code its own reader rejected,
         // and witness B wrote a code one bit wider than the 24 bit field, which
         // this port's bitpacker masked to zero on the wire.
