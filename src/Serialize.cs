@@ -1268,6 +1268,10 @@ public sealed class BitWriter
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void WriteBitsUnchecked(uint value, int bits)
     {
+        // every write reaches this or WriteBytesUnchecked, so a write after a flush
+        // that stored a partial word is caught on every path (IMPLEMENTING.md U11)
+        Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
+
         value &= unchecked((uint)((1UL << bits) - 1));
 
         _scratch |= (ulong)value << _scratchBits;
@@ -1304,7 +1308,6 @@ public sealed class BitWriter
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteBits(uint value, int bits)
     {
-        Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
         Debug.Assert(bits >= 1 && bits <= 32, SerializeInternal.BitsRangeMessage);
         Debug.Assert(_bitsWritten + bits <= _numBits, SerializeInternal.WriteOverflowMessage);
         WriteBitsUnchecked(value, bits);
@@ -1331,6 +1334,8 @@ public sealed class BitWriter
     /// </summary>
     internal void WriteBytesUnchecked(ReadOnlySpan<byte> data)
     {
+        Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
+
         int n = data.Length;
 
         int headBytes = (int)((8 - (_bitsWritten % 64) / 8) % 8);
@@ -1369,7 +1374,6 @@ public sealed class BitWriter
     /// boundary: call WriteAlign first.</summary>
     public void WriteBytes(ReadOnlySpan<byte> data)
     {
-        Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
         Debug.Assert(_bitsWritten % 8 == 0, SerializeInternal.NotAlignedMessage);
         Debug.Assert(_bitsWritten + (long)data.Length * 8 <= _numBits, SerializeInternal.WriteOverflowMessage);
         WriteBytesUnchecked(data);
@@ -1382,7 +1386,8 @@ public sealed class BitWriter
     /// ever written as zeros.
     ///
     /// FlushBits ends the write: writing more bits after a mid-stream flush corrupts
-    /// the stream, because the flushed partial word cannot be resumed.
+    /// the stream, because the flushed partial word cannot be resumed. Every write
+    /// path asserts it in debug (IMPLEMENTING.md U11).
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void FlushBits()
@@ -1653,7 +1658,6 @@ public sealed class WriteStream : IBitStream
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool WriteBits(uint value, int bits)
     {
-        Debug.Assert(_writer.ScratchBits == (int)(_writer.BitsWritten % 64), SerializeInternal.FlushedWriterMessage);
         Debug.Assert(_writer.BitsWritten + bits <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
         _writer.WriteBitsUnchecked(value, bits);
         return true;
@@ -3611,6 +3615,8 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void WriteBitsUnchecked(uint value, int bits)
     {
+        Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
+
         value &= unchecked((uint)((1UL << bits) - 1));
 
         _scratch |= (ulong)value << _scratchBits;

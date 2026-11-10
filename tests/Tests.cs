@@ -1964,6 +1964,17 @@ internal static partial class Program
         }
     }
 
+    /// <summary>Flushes the write stream it is handed: write misuse, for the
+    /// flushed writer tests.</summary>
+    private sealed class FlushingObject : ISerializer
+    {
+        public bool Serialize(IBitStream stream)
+        {
+            ((WriteStream)stream).Flush();
+            return true;
+        }
+    }
+
     private static void TestWriteContractAsserts()
     {
         // The proof that a deliberately-invalid write still asserts: every write-side
@@ -2294,6 +2305,41 @@ internal static partial class Program
             WriteBatch batch = stream.BeginBatch();
             batch.End();
         }), "a flushed WriteStream BeginBatch must assert in debug");
+
+        // every other write path on a flushed WriteStream asserts too (U11): the
+        // wide integers, the 128 bit groups, fixed point, and an aligned byte run
+        foreach ((string name, Action<WriteStream> write) in new (string, Action<WriteStream>)[]
+        {
+            ("SerializeBits64", s => { ulong v = 0x12345; s.SerializeBits64(ref v, 40); }),
+            ("SerializeInt64", s => { long v = 0x55; s.SerializeInt64(ref v, long.MinValue, long.MaxValue); }),
+            ("SerializeUInt64", s => { ulong v = 0x88; s.SerializeUInt64(ref v); }),
+            ("SerializeUInt128", s => { UInt128Value v = 0x77; s.SerializeUInt128(ref v); }),
+            ("SerializeFixed", s => { long v = 0x66; s.SerializeFixed(ref v, 48, 16, -1000000, 1000000); }),
+            ("SerializeBytes", s => s.SerializeBytes(new byte[] { 0xCD })),
+        })
+        {
+            Check(AssertFires(() =>
+            {
+                WriteStream stream = new WriteStream(new byte[64]);
+                uint first = 0xAB;
+                stream.SerializeBits(ref first, 8);
+                stream.Flush();
+                write(stream);
+            }), $"a flushed WriteStream {name} must assert in debug");
+        }
+
+        // ...and a batch's inline writes, after a delegated object flushed the stream
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[64]);
+            WriteBatch batch = stream.BeginBatch();
+            uint first = 0xAB;
+            batch.SerializeBits(ref first, 8);
+            batch.SerializeObject(new FlushingObject());
+            uint second = 0xCD;
+            batch.SerializeBits(ref second, 8);
+            batch.End();
+        }), "a WriteBatch inline write after a flush must assert in debug");
 
         // reversed witness: a flush at a qword boundary leaves the writer
         // resumable, so the next write must not assert
