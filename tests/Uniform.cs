@@ -161,6 +161,8 @@ internal static partial class Program
         CheckDeclarationRefused("fixed min > max", s => { int v = 7; return s.SerializeFixed(ref v, 16, 16, 100, 0); });
         CheckDeclarationRefused("fixed bound past the Q format", s => { short v = 7; return s.SerializeFixed(ref v, 8, 8, 0, 1000); });
         CheckDeclarationRefused("fixed negative fraction bits", s => { int v = 7; return s.SerializeFixed(ref v, 33, -1, 0, 1); });
+        CheckDeclarationRefused("fixed integer bits int.MaxValue", s => { long v = 7; return s.SerializeFixed(ref v, int.MaxValue, 1, 0, 1); });
+        CheckBatchDeclarationRefused("batch fixed integer bits int.MaxValue", (ref ReadBatch b) => { long v = 7; return b.SerializeFixed(ref v, int.MaxValue, 1, 0, 1); });
         CheckDeclarationRefused("fixed unsigned negative bound", s => { uint v = 7; return s.SerializeFixed(ref v, 16, 16, -1, 1); });
         CheckDeclarationRefused("fixed 128 Q8.8", s => { Int128Value v = 7; return s.SerializeFixed(ref v, 8, 8, 0, 1); });
         CheckBatchDeclarationRefused("batch fixed Q16.8 in 64 bits", (ref ReadBatch b) => { long v = 7; return b.SerializeFixed(ref v, 16, 8, 0, 100); });

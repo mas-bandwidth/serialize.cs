@@ -1007,7 +1007,7 @@ internal static class SerializeInternal
     {
         Debug.Assert(integerBits >= 1, FixedIntegerBitsMessage);
         Debug.Assert(fractionBits >= 0, FixedFractionBitsMessage);
-        Debug.Assert(integerBits + fractionBits == storageBits, FixedWidthMessage);
+        Debug.Assert((long)integerBits + fractionBits == storageBits, FixedWidthMessage);
         Debug.Assert(minUnits <= maxUnits, MinMaxMessage);
 
         // the whole unit capacity of the Q format, in the 64 bit domain: with 65 or
@@ -1041,7 +1041,7 @@ internal static class SerializeInternal
     {
         // exactly the conditions ValidateFixedPointFormat asserts, as a value: the
         // read side refuses on it (U7, U16) where the write side asserts
-        if (integerBits < 1 || fractionBits < 0 || integerBits + fractionBits != storageBits || minUnits > maxUnits)
+        if (integerBits < 1 || fractionBits < 0 || (long)integerBits + fractionBits != storageBits || minUnits > maxUnits)
         {
             return false;
         }
