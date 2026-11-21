@@ -683,7 +683,7 @@ public static class SerializeUtil
             values = 4294967040.0f;
         }
 
-        maxIntegerValue = (uint)Math.Ceiling((double)values);
+        maxIntegerValue = (uint)global::System.Math.Ceiling((double)values);
 
         bits = BitsRequired(0, maxIntegerValue);
     }
@@ -924,7 +924,7 @@ internal static class SerializeInternal
         // not drop the casts. Matches serialize.h serialize_compressed_float_internal
         // (`const float scaled`) and serialize.c serialize_write_compressed_float.
         float scaled = (float)(normalizedValue * (float)maxIntegerValue);
-        uint integerValue = (uint)Math.Floor((double)(float)(scaled + 0.5f));
+        uint integerValue = (uint)global::System.Math.Floor((double)(float)(scaled + 0.5f));
         // STANDARD.md: the integer clamp is normative (2026-08-23, schema#109). Once
         // maxIntegerValue >= 2^23 the float32 ulp at the top of the range reaches 1,
         // so the rounded sum can exceed maxIntegerValue itself: the writer emits a
@@ -2006,7 +2006,7 @@ public sealed class WriteStream : IBitStream
         ReadOnlySpan<char> remaining = value.AsSpan();
         while (remaining.Length > 0)
         {
-            int take = Math.Min(remaining.Length, 128);
+            int take = global::System.Math.Min(remaining.Length, 128);
             if (take < remaining.Length && char.IsHighSurrogate(remaining[take - 1]))
             {
                 take--; // take >= 1 still: take < remaining.Length implies take == 128
