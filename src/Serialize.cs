@@ -4897,7 +4897,7 @@ internal static class SerializeCompat
         if ((value & 0x80000000u) == 0) { count += 1; }
         return count;
 #else
-        return System.Numerics.BitOperations.LeadingZeroCount(value);
+        return global::System.Numerics.BitOperations.LeadingZeroCount(value);
 #endif
     }
 
@@ -4909,7 +4909,7 @@ internal static class SerializeCompat
         uint high = unchecked(unchecked((uint)(value >> 32)));
         return high != 0 ? LeadingZeroCount(high) : 32 + LeadingZeroCount(unchecked((uint)value));
 #else
-        return System.Numerics.BitOperations.LeadingZeroCount(value);
+        return global::System.Numerics.BitOperations.LeadingZeroCount(value);
 #endif
     }
 

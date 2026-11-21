@@ -228,9 +228,9 @@ public struct UInt128Value : IEquatable<UInt128Value>
     public static explicit operator Int128Value(UInt128Value v) => new Int128Value(v.Hi, v.Lo);
 
 #if NET7_0_OR_GREATER
-    public static implicit operator System.UInt128(UInt128Value v) =>
-        new System.UInt128(v.Hi, v.Lo);
-    public static implicit operator UInt128Value(System.UInt128 v) =>
+    public static implicit operator global::System.UInt128(UInt128Value v) =>
+        new global::System.UInt128(v.Hi, v.Lo);
+    public static implicit operator UInt128Value(global::System.UInt128 v) =>
         new UInt128Value(unchecked((ulong)(v >> 64)), unchecked((ulong)v));
 #endif // NET7_0_OR_GREATER
 
@@ -355,9 +355,9 @@ public struct Int128Value : IEquatable<Int128Value>
     public static explicit operator UInt128Value(Int128Value v) => new UInt128Value(v.Hi, v.Lo);
 
 #if NET7_0_OR_GREATER
-    public static implicit operator System.Int128(Int128Value v) =>
-        new System.Int128(v.Hi, v.Lo);
-    public static implicit operator Int128Value(System.Int128 v) =>
+    public static implicit operator global::System.Int128(Int128Value v) =>
+        new global::System.Int128(v.Hi, v.Lo);
+    public static implicit operator Int128Value(global::System.Int128 v) =>
         new Int128Value(unchecked((ulong)(v >> 64)), unchecked((ulong)v));
 #endif // NET7_0_OR_GREATER
 
