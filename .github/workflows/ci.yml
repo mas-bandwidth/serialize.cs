@@ -62,6 +62,11 @@ jobs:
       # real in the cpp-interop job; the red team harness runs in its own job)
       - name: Build the compat harness
         run: dotnet build compat/Compat.csproj -c Release
+      # generated code compiles these sources beside the consumer's package
+      # namespaces: every System type the library names must be spelled so
+      # that no namespace can hide it (shadow/Shadow.csproj)
+      - name: Build beside namespaces named like System types
+        run: dotnet build shadow/Shadow.csproj -c Release
 
   # THE DEBUG LEG: the write-side contracts AND the API misuse checks are
   # Debug.Assert, compiled out of Release builds — so the Release-only job above

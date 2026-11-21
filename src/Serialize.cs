@@ -478,7 +478,7 @@ public static class SerializeUtil
 {
     /// <summary>Returns the number of bits required to serialize an integer in range
     /// [min,max]. The result is in [0,32].</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static int BitsRequired(uint min, uint max)
     {
         return min == max ? 0 : 32 - SerializeCompat.LeadingZeroCount(unchecked(max - min));
@@ -486,7 +486,7 @@ public static class SerializeUtil
 
     /// <summary>Returns the number of bits required to serialize a 64 bit integer in
     /// range [min,max]. The result is in [0,64].</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static int BitsRequired64(ulong min, ulong max)
     {
         // subtract in the unsigned domain: the range may be wider than 2^63
@@ -496,7 +496,7 @@ public static class SerializeUtil
     /// <summary>Returns the number of bits required to serialize a 128 bit integer in
     /// range [min,max]. The result is in [0,128]. The subtraction is performed in the
     /// unsigned domain, so ranges wider than 2^127 are exact.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static int BitsRequired128(UInt128Value min, UInt128Value max)
     {
         if (min == max)
@@ -548,8 +548,8 @@ public static class SerializeUtil
     /// </summary>
     public static string CopyString(string source, int bufferSize)
     {
-        Debug.Assert(bufferSize >= 1, SerializeInternal.BufferSizeMessage);
-        Debug.Assert(SerializeCompat.Utf16IsValid(source), SerializeInternal.WriteStringUtf16AssertMessage);
+        global::System.Diagnostics.Debug.Assert(bufferSize >= 1, SerializeInternal.BufferSizeMessage);
+        global::System.Diagnostics.Debug.Assert(SerializeCompat.Utf16IsValid(source), SerializeInternal.WriteStringUtf16AssertMessage);
         long room = (long)bufferSize - 1;
         int end = 0;
         long bytes = 0;
@@ -594,7 +594,7 @@ public static class SerializeUtil
     /// else, so every other pattern — negative zero and the subnormals included — is
     /// finite. Tested on the bits rather than on a converted value, so no conversion
     /// can quiet a signaling NaN on the way to the answer.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static bool FloatBitsAreFinite(uint bits)
     {
         return (bits & 0x7F800000u) != 0x7F800000u;
@@ -602,7 +602,7 @@ public static class SerializeUtil
 
     /// <summary>Is this float64 bit pattern finite? The double twin of
     /// FloatBitsAreFinite.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static bool DoubleBitsAreFinite(ulong bits)
     {
         return (bits & 0x7FF0000000000000UL) != 0x7FF0000000000000UL;
@@ -610,7 +610,7 @@ public static class SerializeUtil
 
     /// <summary>Converts a signed integer to an unsigned integer with zig-zag encoding.
     /// 0,-1,+1,-2,+2... becomes 0,1,2,3,4...</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static uint SignedToUnsigned(int n)
     {
         return unchecked(((uint)n << 1) ^ (0u - ((uint)n >> 31)));
@@ -618,7 +618,7 @@ public static class SerializeUtil
 
     /// <summary>Converts an unsigned integer to a signed integer with zig-zag encoding.
     /// 0,1,2,3,4... becomes 0,-1,+1,-2,+2...</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static int UnsignedToSigned(uint n)
     {
         return unchecked((int)((n >> 1) ^ (0u - (n & 1))));
@@ -661,18 +661,18 @@ public static class SerializeUtil
         float min, float max, float resolution,
         out uint maxIntegerValue, out int bits, out float delta)
     {
-        Debug.Assert(min < max && resolution > 0, SerializeInternal.FloatParamsMessage);
+        global::System.Diagnostics.Debug.Assert(min < max && resolution > 0, SerializeInternal.FloatParamsMessage);
 
         // ECMA-334 permits float arithmetic wider than float32; the explicit (float)
         // conversions pin every intermediate to float32, as STANDARD.md requires
         delta = (float)(max - min);
 
         // finite min < max cannot produce NaN, only an infinite overflow
-        Debug.Assert(!float.IsInfinity(delta), SerializeInternal.FloatDeltaAssertMessage);
+        global::System.Diagnostics.Debug.Assert(!float.IsInfinity(delta), SerializeInternal.FloatDeltaAssertMessage);
 
         float values = (float)(delta / resolution);
 
-        Debug.Assert(!float.IsInfinity(values), SerializeInternal.FloatValuesAssertMessage);
+        global::System.Diagnostics.Debug.Assert(!float.IsInfinity(values), SerializeInternal.FloatValuesAssertMessage);
 
         if (!(values >= 1.0f))
         {
@@ -757,7 +757,7 @@ static class SerializeConformanceControls
     internal static bool Keeps(string rule) => Deleted != rule;
 #else
     /// <summary>Always true: no rule is ever deleted in this build.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     internal static bool Keeps(string rule)
     {
         _ = rule;
@@ -842,11 +842,11 @@ internal static class SerializeInternal
     /// non-finite decode at runtime instead, in every build. Conditional("DEBUG"):
     /// the whole call compiles out of release builds.
     /// </summary>
-    [Conditional("DEBUG")]
+    [global::System.Diagnostics.Conditional("DEBUG")]
     internal static void ValidateCompressedFloatTop(float min, float delta)
     {
         float top = (float)(min + delta);
-        Debug.Assert(float.IsFinite(top), FloatTopDecodeAssertMessage);
+        global::System.Diagnostics.Debug.Assert(float.IsFinite(top), FloatTopDecodeAssertMessage);
     }
 
     /// <summary>
@@ -856,11 +856,11 @@ internal static class SerializeInternal
     /// every conforming reader refuses as embedded_nul. Conditional("DEBUG"): the
     /// whole call compiles out of release builds.
     /// </summary>
-    [Conditional("DEBUG")]
+    [global::System.Diagnostics.Conditional("DEBUG")]
     internal static void ValidateStringValue(string value)
     {
-        Debug.Assert(SerializeCompat.Utf16IsValid(value), WriteStringUtf16AssertMessage);
-        Debug.Assert(value.IndexOf('\0') < 0, WriteStringNulAssertMessage);
+        global::System.Diagnostics.Debug.Assert(SerializeCompat.Utf16IsValid(value), WriteStringUtf16AssertMessage);
+        global::System.Diagnostics.Debug.Assert(value.IndexOf('\0') < 0, WriteStringNulAssertMessage);
     }
 
     /// <summary>
@@ -873,13 +873,13 @@ internal static class SerializeInternal
     /// implementation of the declaration expects. Conditional("DEBUG"): the whole
     /// call compiles out of release builds.
     /// </summary>
-    [Conditional("DEBUG")]
+    [global::System.Diagnostics.Conditional("DEBUG")]
     internal static void ValidatePrecomputedFloatParams(uint maxIntegerValue, int bits, float delta)
     {
-        Debug.Assert(maxIntegerValue >= 1 && maxIntegerValue <= 4294967040u, FloatPrecomputedMaxIntegerValueMessage);
-        Debug.Assert(bits == SerializeUtil.BitsRequired(0, maxIntegerValue), FloatPrecomputedBitsMessage);
-        Debug.Assert(delta > 0.0f, FloatPrecomputedDeltaMessage);
-        Debug.Assert(!float.IsInfinity(delta), FloatDeltaAssertMessage);
+        global::System.Diagnostics.Debug.Assert(maxIntegerValue >= 1 && maxIntegerValue <= 4294967040u, FloatPrecomputedMaxIntegerValueMessage);
+        global::System.Diagnostics.Debug.Assert(bits == SerializeUtil.BitsRequired(0, maxIntegerValue), FloatPrecomputedBitsMessage);
+        global::System.Diagnostics.Debug.Assert(delta > 0.0f, FloatPrecomputedDeltaMessage);
+        global::System.Diagnostics.Debug.Assert(!float.IsInfinity(delta), FloatDeltaAssertMessage);
     }
 
     /// <summary>
@@ -887,7 +887,7 @@ internal static class SerializeInternal
     /// and batch write paths so the normative arithmetic exists in exactly one place.
     /// Returns the integer that goes on the wire.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     internal static uint QuantizeCompressedFloat(float value, float min, float delta, uint maxIntegerValue)
     {
         // Sending a non-finite value through compressed float is NON-CONFORMING —
@@ -897,7 +897,7 @@ internal static class SerializeInternal
         // assert covers both write paths; in release the clamp below still forces
         // non-finite values into range (NaN to the low end), which is the old
         // silent behavior the assert replaces in debug builds.
-        Debug.Assert(float.IsFinite(value), FloatValueAssertMessage);
+        global::System.Diagnostics.Debug.Assert(float.IsFinite(value), FloatValueAssertMessage);
         ValidateCompressedFloatTop(min, delta);
 
         float normalizedValue = (float)((float)(value - min) / delta);
@@ -951,7 +951,7 @@ internal static class SerializeInternal
     /// test_compressed_float_precomputed_differential holds it to bit identity
     /// against a frozen copy of the pre-split original.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     internal static float DecodeCompressedFloat(uint integerValue, uint maxIntegerValue, float delta, float min)
     {
         float normalizedValue = (float)((float)integerValue / (float)maxIntegerValue);
@@ -976,7 +976,7 @@ internal static class SerializeInternal
     /// <summary>Debug-asserts that a whole string write fits before any bit of it
     /// is written: the length field, the align after it and the payload (U10).
     /// Conditional("DEBUG"): the whole call compiles out of release builds.</summary>
-    [Conditional("DEBUG")]
+    [global::System.Diagnostics.Conditional("DEBUG")]
     internal static void ValidateStringWriteRoom(long bitsWritten, long numBits, int bufferSize, int byteCount)
     {
         if (bufferSize < 1)
@@ -985,15 +985,15 @@ internal static class SerializeInternal
         }
         long afterLength = bitsWritten + SerializeUtil.BitsRequired(0, unchecked((uint)(bufferSize - 1)));
         long align = (8 - afterLength % 8) % 8;
-        Debug.Assert(afterLength + align + (long)byteCount * 8 <= numBits, WriteRoomMessage);
+        global::System.Diagnostics.Debug.Assert(afterLength + align + (long)byteCount * 8 <= numBits, WriteRoomMessage);
     }
 
     /// <summary>Debug-asserts that a string buffer size can express a valid length
     /// range. Conditional("DEBUG"): the whole call compiles out of release builds.</summary>
-    [Conditional("DEBUG")]
+    [global::System.Diagnostics.Conditional("DEBUG")]
     internal static void ValidateBufferSize(int bufferSize)
     {
-        Debug.Assert(bufferSize >= 1, BufferSizeMessage);
+        global::System.Diagnostics.Debug.Assert(bufferSize >= 1, BufferSizeMessage);
     }
 
     /// <summary>
@@ -1005,15 +1005,15 @@ internal static class SerializeInternal
     /// capacity math runs in the unsigned domain so the widest formats (Q64.0 and
     /// friends) cannot overflow signed arithmetic.
     /// </summary>
-    [Conditional("DEBUG")]
+    [global::System.Diagnostics.Conditional("DEBUG")]
     private static void ValidateFixedPointFormat(
         int storageBits, bool storageSigned, int integerBits, int fractionBits,
         long minUnits, long maxUnits)
     {
-        Debug.Assert(integerBits >= 1, FixedIntegerBitsMessage);
-        Debug.Assert(fractionBits >= 0, FixedFractionBitsMessage);
-        Debug.Assert((long)integerBits + fractionBits == storageBits, FixedWidthMessage);
-        Debug.Assert(minUnits <= maxUnits, MinMaxMessage);
+        global::System.Diagnostics.Debug.Assert(integerBits >= 1, FixedIntegerBitsMessage);
+        global::System.Diagnostics.Debug.Assert(fractionBits >= 0, FixedFractionBitsMessage);
+        global::System.Diagnostics.Debug.Assert((long)integerBits + fractionBits == storageBits, FixedWidthMessage);
+        global::System.Diagnostics.Debug.Assert(minUnits <= maxUnits, MinMaxMessage);
 
         // the whole unit capacity of the Q format, in the 64 bit domain: with 65 or
         // more integer bits (128 bit storage) the capacity covers any long bound
@@ -1035,7 +1035,7 @@ internal static class SerializeInternal
                 ? long.MaxValue
                 : (long)((1UL << integerBits) - 1);
         }
-        Debug.Assert(minUnits >= minRepresentableUnits && maxUnits <= maxRepresentableUnits, FixedBoundsMessage);
+        global::System.Diagnostics.Debug.Assert(minUnits >= minRepresentableUnits && maxUnits <= maxRepresentableUnits, FixedBoundsMessage);
     }
 
     /// <summary>Whether a fixed point Q format fits its storage and bounds: the
@@ -1137,7 +1137,7 @@ internal static class SerializeInternal
 
     /// <summary>The reason a public Fail records: a reason from the closed list as
     /// given, and None or any value outside the list as Rejected (U14).</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     internal static SerializeError RefusalOrRejected(SerializeError error)
     {
         return error == SerializeError.None || unchecked((uint)error) > (uint)SerializeError.Rejected
@@ -1202,7 +1202,7 @@ internal static class SerializeInternal
 /// </summary>
 public sealed class BitWriter
 {
-    private byte[] _data = Array.Empty<byte>();
+    private byte[] _data = global::System.Array.Empty<byte>();
     private ulong _scratch;
     private long _numBits;
     private long _bitsWritten;
@@ -1219,10 +1219,10 @@ public sealed class BitWriter
     /// <summary>Points the bit writer at a buffer and clears all write state, allowing
     /// a single writer to be reused without allocation. The buffer size must be a
     /// multiple of 8 bytes.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public void Reset(byte[] buffer)
     {
-        Debug.Assert(buffer.Length % 8 == 0, SerializeInternal.BufferBytesMessage);
+        global::System.Diagnostics.Debug.Assert(buffer.Length % 8 == 0, SerializeInternal.BufferBytesMessage);
         _data = buffer;
         _scratch = 0;
         _numBits = (long)buffer.Length * 8;
@@ -1240,7 +1240,7 @@ public sealed class BitWriter
     /// against register-resident copies of these fields and stores them back once
     /// via RestoreState. See WriteBatch.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     internal void CaptureState(out byte[] data, out ulong scratch, out long numBits,
         out long bitsWritten, out long wordIndex, out int scratchBits)
     {
@@ -1257,7 +1257,7 @@ public sealed class BitWriter
     /// capacity cannot change while a batch is open (Reset mid-batch is API misuse),
     /// so only the mutable write state comes back.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     internal void RestoreState(ulong scratch, long bitsWritten, long wordIndex, int scratchBits)
     {
         _scratch = scratch;
@@ -1271,12 +1271,12 @@ public sealed class BitWriter
     /// own validation before calling it. bits must be in [1,32] and the write must fit
     /// in the buffer.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     internal void WriteBitsUnchecked(uint value, int bits)
     {
         // every write reaches this or WriteBytesUnchecked, so a write after a flush
         // that stored a partial word is caught on every path (IMPLEMENTING.md U11)
-        Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
+        global::System.Diagnostics.Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
 
         value &= unchecked((uint)((1UL << bits) - 1));
 
@@ -1286,7 +1286,7 @@ public sealed class BitWriter
 
         if (newScratchBits >= 64)
         {
-            BinaryPrimitives.WriteUInt64LittleEndian(_data.AsSpan((int)(_wordIndex * 8)), _scratch);
+            global::System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(_data.AsSpan((int)(_wordIndex * 8)), _scratch);
             _wordIndex++;
             // recover the bits that spilled past 64. newScratchBits >= 64 with
             // bits <= 32 implies the shift is in [1,32]
@@ -1311,18 +1311,18 @@ public sealed class BitWriter
     /// IMPORTANT: When you have finished writing, call FlushBits, otherwise the last
     /// word of data will not get flushed to memory!
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public void WriteBits(uint value, int bits)
     {
-        Debug.Assert(bits >= 1 && bits <= 32, SerializeInternal.BitsRangeMessage);
-        Debug.Assert(_bitsWritten + bits <= _numBits, SerializeInternal.WriteOverflowMessage);
+        global::System.Diagnostics.Debug.Assert(bits >= 1 && bits <= 32, SerializeInternal.BitsRangeMessage);
+        global::System.Diagnostics.Debug.Assert(_bitsWritten + bits <= _numBits, SerializeInternal.WriteOverflowMessage);
         WriteBitsUnchecked(value, bits);
     }
 
     /// <summary>Pads the bit stream with zeros so the bit index becomes a multiple
     /// of 8. If the current bit index is already a multiple of 8, nothing is
     /// written.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public void WriteAlign()
     {
         int remainderBits = (int)(_bitsWritten % 8);
@@ -1340,7 +1340,7 @@ public sealed class BitWriter
     /// </summary>
     internal void WriteBytesUnchecked(ReadOnlySpan<byte> data)
     {
-        Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
+        global::System.Diagnostics.Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
 
         int n = data.Length;
 
@@ -1380,8 +1380,8 @@ public sealed class BitWriter
     /// boundary: call WriteAlign first.</summary>
     public void WriteBytes(ReadOnlySpan<byte> data)
     {
-        Debug.Assert(_bitsWritten % 8 == 0, SerializeInternal.NotAlignedMessage);
-        Debug.Assert(_bitsWritten + (long)data.Length * 8 <= _numBits, SerializeInternal.WriteOverflowMessage);
+        global::System.Diagnostics.Debug.Assert(_bitsWritten % 8 == 0, SerializeInternal.NotAlignedMessage);
+        global::System.Diagnostics.Debug.Assert(_bitsWritten + (long)data.Length * 8 <= _numBits, SerializeInternal.WriteOverflowMessage);
         WriteBytesUnchecked(data);
     }
 
@@ -1395,12 +1395,12 @@ public sealed class BitWriter
     /// the stream, because the flushed partial word cannot be resumed. Every write
     /// path asserts it in debug (IMPLEMENTING.md U11).
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public void FlushBits()
     {
         if (_scratchBits != 0)
         {
-            BinaryPrimitives.WriteUInt64LittleEndian(_data.AsSpan((int)(_wordIndex * 8)), _scratch);
+            global::System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(_data.AsSpan((int)(_wordIndex * 8)), _scratch);
             _scratch = 0;
             _scratchBits = 0;
             _wordIndex++;
@@ -1449,7 +1449,7 @@ public sealed class BitWriter
 /// </summary>
 public sealed class BitReader
 {
-    private byte[] _data = Array.Empty<byte>();
+    private byte[] _data = global::System.Array.Empty<byte>();
     private long _numBits;
     private long _bitsRead;
 
@@ -1469,10 +1469,10 @@ public sealed class BitReader
 
     /// <summary>Points the bit reader at a buffer and clears all read state, allowing a
     /// single reader to be reused without allocation.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public void Reset(byte[] buffer, int bytes)
     {
-        Debug.Assert(bytes >= 0 && bytes <= buffer.Length, SerializeInternal.ReaderBytesMessage);
+        global::System.Diagnostics.Debug.Assert(bytes >= 0 && bytes <= buffer.Length, SerializeInternal.ReaderBytesMessage);
         _data = buffer;
         _numBits = (long)bytes * 8;
         _bitsRead = 0;
@@ -1485,7 +1485,7 @@ public sealed class BitReader
     /// register-resident copies of these fields and stores the cursor back once via
     /// RestoreState. See ReadBatch.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     internal void CaptureState(out byte[] data, out long numBits, out long bitsRead)
     {
         data = _data;
@@ -1498,7 +1498,7 @@ public sealed class BitReader
     /// length cannot change while a batch is open (Reset mid-batch is API misuse),
     /// so only the cursor comes back.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     internal void RestoreState(long bitsRead)
     {
         _bitsRead = bitsRead;
@@ -1509,7 +1509,7 @@ public sealed class BitReader
     /// own validation before calling it. bits must be in [1,32] and must not read past
     /// the end of the data.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     internal uint ReadBitsUnchecked(int bits)
     {
         int byteIndex = (int)(_bitsRead >> 3);
@@ -1517,7 +1517,7 @@ public sealed class BitReader
         ulong window;
         if (byteIndex + 8 <= _data.Length)
         {
-            window = BinaryPrimitives.ReadUInt64LittleEndian(_data.AsSpan(byteIndex));
+            window = global::System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(_data.AsSpan(byteIndex));
         }
         else
         {
@@ -1539,7 +1539,7 @@ public sealed class BitReader
 
     /// <summary>True if reading the given number of bits would read past the end of the
     /// data.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool WouldReadPastEnd(int bits)
     {
         return _bitsRead + bits > _numBits;
@@ -1550,11 +1550,11 @@ public sealed class BitReader
     /// caller's contract on this raw API: Debug.Assert in debug builds, unchecked in
     /// release — check WouldReadPastEnd first when reading untrusted data, or use
     /// ReadStream, which performs all checks in every build and latches errors.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public uint ReadBits(int bits)
     {
-        Debug.Assert(bits >= 1 && bits <= 32, SerializeInternal.BitsRangeMessage);
-        Debug.Assert(_bitsRead + bits <= _numBits, SerializeInternal.ReadOverflowMessage);
+        global::System.Diagnostics.Debug.Assert(bits >= 1 && bits <= 32, SerializeInternal.BitsRangeMessage);
+        global::System.Diagnostics.Debug.Assert(_bitsRead + bits <= _numBits, SerializeInternal.ReadOverflowMessage);
         return ReadBitsUnchecked(bits);
     }
 
@@ -1562,7 +1562,7 @@ public sealed class BitReader
     /// written, and skips ahead to the next byte boundary. As a safety check, it
     /// verifies that the padding bits are zero and returns false if they are not; this
     /// typically aborts the packet read.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool ReadAlign()
     {
         int remainderBits = (int)(_bitsRead % 8);
@@ -1596,8 +1596,8 @@ public sealed class BitReader
     /// when reading untrusted data, or use ReadStream.</summary>
     public void ReadBytes(Span<byte> data)
     {
-        Debug.Assert(_bitsRead % 8 == 0, SerializeInternal.NotAlignedMessage);
-        Debug.Assert(_bitsRead + (long)data.Length * 8 <= _numBits, SerializeInternal.ReadOverflowMessage);
+        global::System.Diagnostics.Debug.Assert(_bitsRead % 8 == 0, SerializeInternal.NotAlignedMessage);
+        global::System.Diagnostics.Debug.Assert(_bitsRead + (long)data.Length * 8 <= _numBits, SerializeInternal.ReadOverflowMessage);
         ReadSliceUnchecked(data.Length).CopyTo(data);
     }
 
@@ -1638,7 +1638,7 @@ public sealed class WriteStream : IBitStream
 
     /// <summary>Points the stream at a buffer and clears all write state, allowing a
     /// single stream to be reused without allocation. The context is kept.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public void Reset(byte[] buffer)
     {
         _writer.Reset(buffer);
@@ -1661,42 +1661,42 @@ public sealed class WriteStream : IBitStream
 
     /// <summary>Writes bits that have already been validated to [1,32]. Capacity is
     /// the writer's contract: asserted in debug, unchecked in release.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private bool WriteBits(uint value, int bits)
     {
-        Debug.Assert(_writer.BitsWritten + bits <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
+        global::System.Diagnostics.Debug.Assert(_writer.BitsWritten + bits <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
         _writer.WriteBitsUnchecked(value, bits);
         return true;
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private bool WriteBool(bool value)
     {
         return WriteBits(value ? 1u : 0u, 1);
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeBits(ref uint value, int bits)
     {
-        Debug.Assert(bits >= 1 && bits <= 32, SerializeInternal.BitsRangeMessage);
+        global::System.Diagnostics.Debug.Assert(bits >= 1 && bits <= 32, SerializeInternal.BitsRangeMessage);
         // U8: an over-wide value is caught in the checked build, never masked
-        Debug.Assert(bits >= 32 || value >> bits == 0, SerializeInternal.ValueFitsMessage);
+        global::System.Diagnostics.Debug.Assert(bits >= 32 || value >> bits == 0, SerializeInternal.ValueFitsMessage);
         return WriteBits(value, bits);
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeBits64(ref ulong value, int bits)
     {
-        Debug.Assert(bits >= 1 && bits <= 64, SerializeInternal.BitsRange64Message);
+        global::System.Diagnostics.Debug.Assert(bits >= 1 && bits <= 64, SerializeInternal.BitsRange64Message);
         // U8: an over-wide value is caught in the checked build, never masked
-        Debug.Assert(bits >= 64 || value >> bits == 0, SerializeInternal.ValueFitsMessage);
+        global::System.Diagnostics.Debug.Assert(bits >= 64 || value >> bits == 0, SerializeInternal.ValueFitsMessage);
         if (bits <= 32)
         {
             return WriteBits(unchecked((uint)value), bits);
         }
-        Debug.Assert(_writer.BitsWritten + bits <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
+        global::System.Diagnostics.Debug.Assert(_writer.BitsWritten + bits <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
         // low dword first, then the high remainder
         _writer.WriteBitsUnchecked(unchecked((uint)value), 32);
         _writer.WriteBitsUnchecked(unchecked((uint)(value >> 32)), bits - 32);
@@ -1704,24 +1704,24 @@ public sealed class WriteStream : IBitStream
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt(ref int value, int min, int max)
     {
-        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
+        global::System.Diagnostics.Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         int v = value;
-        Debug.Assert(v >= min && v <= max, SerializeInternal.WriteRangeAssertMessage);
+        global::System.Diagnostics.Debug.Assert(v >= min && v <= max, SerializeInternal.WriteRangeAssertMessage);
         int bits = SerializeUtil.BitsRequired(unchecked((uint)min), unchecked((uint)max));
         // subtract in the unsigned domain: the range may be wider than 2^31
         return WriteBits(unchecked((uint)v - (uint)min), bits);
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt64(ref long value, long min, long max)
     {
-        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
+        global::System.Diagnostics.Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         long v = value;
-        Debug.Assert(v >= min && v <= max, SerializeInternal.WriteRangeAssertMessage);
+        global::System.Diagnostics.Debug.Assert(v >= min && v <= max, SerializeInternal.WriteRangeAssertMessage);
         int bits = SerializeUtil.BitsRequired64(unchecked((ulong)min), unchecked((ulong)max));
         // subtract in the unsigned domain: the range may be wider than 2^63
         ulong unsigned = unchecked((ulong)v - (ulong)min);
@@ -1729,7 +1729,7 @@ public sealed class WriteStream : IBitStream
         {
             return WriteBits(unchecked((uint)unsigned), bits);
         }
-        Debug.Assert(_writer.BitsWritten + bits <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
+        global::System.Diagnostics.Debug.Assert(_writer.BitsWritten + bits <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
         // low dword first, then the high remainder: same convention as SerializeBits64
         _writer.WriteBitsUnchecked(unchecked((uint)unsigned), 32);
         _writer.WriteBitsUnchecked(unchecked((uint)(unsigned >> 32)), bits - 32);
@@ -1769,23 +1769,23 @@ public sealed class WriteStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeInt128(ref Int128Value value, Int128Value min, Int128Value max)
     {
-        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
+        global::System.Diagnostics.Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         Int128Value v = value;
-        Debug.Assert(v >= min && v <= max, SerializeInternal.WriteRangeAssertMessage);
+        global::System.Diagnostics.Debug.Assert(v >= min && v <= max, SerializeInternal.WriteRangeAssertMessage);
         int bits = SerializeUtil.BitsRequired128((UInt128Value)min, (UInt128Value)max);
         // subtract in the unsigned domain: the range may be wider than 2^127
         UInt128Value unsigned = (UInt128Value)v - (UInt128Value)min;
-        Debug.Assert(_writer.BitsWritten + bits <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
+        global::System.Diagnostics.Debug.Assert(_writer.BitsWritten + bits <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
         WriteGroups128(unsigned, bits);
         return true;
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeByte(ref byte value) => WriteBits(value, 8);
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeUInt16(ref ushort value)
     {
 #if SERIALIZE_FUZZ_SABOTAGE
@@ -1802,14 +1802,14 @@ public sealed class WriteStream : IBitStream
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeUInt32(ref uint value) => WriteBits(value, 32);
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeUInt64(ref ulong value)
     {
-        Debug.Assert(_writer.BitsWritten + 64 <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
+        global::System.Diagnostics.Debug.Assert(_writer.BitsWritten + 64 <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
         _writer.WriteBitsUnchecked(unchecked((uint)value), 32);
         _writer.WriteBitsUnchecked(unchecked((uint)(value >> 32)), 32);
         return true;
@@ -1818,36 +1818,36 @@ public sealed class WriteStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeUInt128(ref UInt128Value value)
     {
-        Debug.Assert(_writer.BitsWritten + 128 <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
+        global::System.Diagnostics.Debug.Assert(_writer.BitsWritten + 128 <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
         // the low 64 bit half first, then the high half, each half low dword first
         WriteGroups128(value, 128);
         return true;
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeBool(ref bool value) => WriteBool(value);
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeFloat(ref float value)
     {
         uint bits = SerializeCompat.SingleToUInt32Bits(value);
-        Debug.Assert(SerializeUtil.FloatBitsAreFinite(bits), SerializeInternal.WriteFloatFiniteAssertMessage);
+        global::System.Diagnostics.Debug.Assert(SerializeUtil.FloatBitsAreFinite(bits), SerializeInternal.WriteFloatFiniteAssertMessage);
         return WriteBits(bits, 32);
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeDouble(ref double value)
     {
         ulong bits = SerializeCompat.DoubleToUInt64Bits(value);
-        Debug.Assert(SerializeUtil.DoubleBitsAreFinite(bits), SerializeInternal.WriteFloatFiniteAssertMessage);
+        global::System.Diagnostics.Debug.Assert(SerializeUtil.DoubleBitsAreFinite(bits), SerializeInternal.WriteFloatFiniteAssertMessage);
         return SerializeUInt64(ref bits);
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeCompressedFloat(ref float value, float min, float max, float resolution)
     {
         SerializeUtil.CompressedFloatParams(min, max, resolution,
@@ -1857,7 +1857,7 @@ public sealed class WriteStream : IBitStream
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeCompressedFloatPrecomputed(ref float value, uint maxIntegerValue, int bits, float delta, float min)
     {
         SerializeInternal.ValidatePrecomputedFloatParams(maxIntegerValue, bits, delta);
@@ -1873,8 +1873,8 @@ public sealed class WriteStream : IBitStream
     {
         // subtract in the unsigned domain: the raw range may be wider than 2^63
         ulong offset = unchecked(raw - rawMin);
-        Debug.Assert(offset <= unchecked(rawMax - rawMin), SerializeInternal.WriteRangeAssertMessage);
-        Debug.Assert(_writer.BitsWritten + bits <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
+        global::System.Diagnostics.Debug.Assert(offset <= unchecked(rawMax - rawMin), SerializeInternal.WriteRangeAssertMessage);
+        global::System.Diagnostics.Debug.Assert(_writer.BitsWritten + bits <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
         if (bits <= 32)
         {
             _writer.WriteBitsUnchecked(unchecked((uint)offset), bits);
@@ -1894,8 +1894,8 @@ public sealed class WriteStream : IBitStream
     {
         // subtract in the unsigned domain: the raw range may be wider than 2^127
         UInt128Value offset = raw - rawMin;
-        Debug.Assert(offset <= rawMax - rawMin, SerializeInternal.WriteRangeAssertMessage);
-        Debug.Assert(_writer.BitsWritten + bits <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
+        global::System.Diagnostics.Debug.Assert(offset <= rawMax - rawMin, SerializeInternal.WriteRangeAssertMessage);
+        global::System.Diagnostics.Debug.Assert(_writer.BitsWritten + bits <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
         WriteGroups128(offset, bits);
         return true;
     }
@@ -1968,12 +1968,12 @@ public sealed class WriteStream : IBitStream
     public bool SerializeBytes(Span<byte> data)
     {
         // U10: the align and the payload together, before the first bit
-        Debug.Assert(_writer.BitsWritten + _writer.AlignBits + (long)data.Length * 8 <= _writer.NumBits, SerializeInternal.WriteRoomMessage);
+        global::System.Diagnostics.Debug.Assert(_writer.BitsWritten + _writer.AlignBits + (long)data.Length * 8 <= _writer.NumBits, SerializeInternal.WriteRoomMessage);
         if (!SerializeAlign())
         {
             return false;
         }
-        Debug.Assert(_writer.BitsWritten + (long)data.Length * 8 <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
+        global::System.Diagnostics.Debug.Assert(_writer.BitsWritten + (long)data.Length * 8 <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
         _writer.WriteBytesUnchecked(data);
         return true;
     }
@@ -1983,8 +1983,8 @@ public sealed class WriteStream : IBitStream
     {
         SerializeInternal.ValidateBufferSize(bufferSize);
         SerializeInternal.ValidateStringValue(value);
-        int byteCount = Encoding.UTF8.GetByteCount(value);
-        Debug.Assert(byteCount < bufferSize, SerializeInternal.WriteStringAssertMessage);
+        int byteCount = global::System.Text.Encoding.UTF8.GetByteCount(value);
+        global::System.Diagnostics.Debug.Assert(byteCount < bufferSize, SerializeInternal.WriteStringAssertMessage);
         // U10: the length field, the align and the payload together, before the
         // first bit (compiled out of release with the whole call)
         SerializeInternal.ValidateStringWriteRoom(_writer.BitsWritten, _writer.NumBits, bufferSize, byteCount);
@@ -1997,7 +1997,7 @@ public sealed class WriteStream : IBitStream
         {
             return false;
         }
-        Debug.Assert(_writer.BitsWritten + (long)byteCount * 8 <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
+        global::System.Diagnostics.Debug.Assert(_writer.BitsWritten + (long)byteCount * 8 <= _writer.NumBits, SerializeInternal.WriteOverflowMessage);
         // encode through a bounded stackalloc buffer in chunks so strings of any
         // length allocate nothing on the write path. chunks split only at code point
         // boundaries (never inside a surrogate pair), so the bytes are identical to a
@@ -2011,7 +2011,7 @@ public sealed class WriteStream : IBitStream
             {
                 take--; // take >= 1 still: take < remaining.Length implies take == 128
             }
-            int encoded = Encoding.UTF8.GetBytes(remaining[..take], utf8);
+            int encoded = global::System.Text.Encoding.UTF8.GetBytes(remaining[..take], utf8);
             _writer.WriteBytesUnchecked(utf8[..encoded]);
             remaining = remaining[take..];
         }
@@ -2019,7 +2019,7 @@ public sealed class WriteStream : IBitStream
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeAlign()
     {
         int alignBits = _writer.AlignBits;
@@ -2031,7 +2031,7 @@ public sealed class WriteStream : IBitStream
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeEnd()
     {
         // a writer's end emits nothing: the object ends at the bit index after its
@@ -2043,7 +2043,7 @@ public sealed class WriteStream : IBitStream
     public bool SerializeObject(ISerializer obj)
     {
         // a read refuses a struct here, so a write or a measure asserts it (U9)
-        Debug.Assert(!obj.GetType().IsValueType, SerializeInternal.BoxedStructMessage);
+        global::System.Diagnostics.Debug.Assert(!obj.GetType().IsValueType, SerializeInternal.BoxedStructMessage);
         // an object that returns false on a write or a measure makes this return
         // false and records nothing (IMPLEMENTING.md U6, U9): a write or measure
         // stream has no refusal state
@@ -2064,14 +2064,14 @@ public sealed class WriteStream : IBitStream
     {
         // read only (IMPLEMENTING.md U2, U9): caller error here, asserted in debug,
         // and false without latching anything in release
-        Debug.Assert(false, SerializeInternal.RejectOnWriteMessage);
+        global::System.Diagnostics.Debug.Assert(false, SerializeInternal.RejectOnWriteMessage);
         return false;
     }
 
     /// <inheritdoc/>
     public bool SerializeIntRelative(int previous, ref int current)
     {
-        Debug.Assert(previous >= 0 && previous < current, SerializeInternal.WriteIntRelativeAssertMessage);
+        global::System.Diagnostics.Debug.Assert(previous >= 0 && previous < current, SerializeInternal.WriteIntRelativeAssertMessage);
         // difference in the unsigned domain: exact for every gap the domain admits,
         // and gaps past the last bucket fall through to the absolute 32 bit encoding
         uint difference = unchecked((uint)current - (uint)previous);
@@ -2102,7 +2102,7 @@ public sealed class WriteStream : IBitStream
     /// <summary>Flushes the last word of bits to memory. Always call this after you
     /// finish writing and before you use Data, or you risk truncating the last word of
     /// data. The flush ends the write: do not serialize more values after it.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public void Flush()
     {
         _writer.FlushBits();
@@ -2114,7 +2114,7 @@ public sealed class WriteStream : IBitStream
     /// on every path out. See WriteBatch for the contract and the reason it is
     /// faster.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public WriteBatch BeginBatch()
     {
         return new WriteBatch(this);
@@ -2126,9 +2126,9 @@ public sealed class WriteStream : IBitStream
     /// <summary>Monotonic batch sync generation, used to detect stale or copied batches.</summary>
     internal uint BatchGeneration
     {
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         get => _batchGeneration;
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         set => _batchGeneration = value;
     }
 
@@ -2197,7 +2197,7 @@ public sealed class ReadStream : IBitStream
     /// <summary>Points the stream at a buffer and clears all read state including any
     /// latched error, allowing a single stream to be reused without allocation. The
     /// context is kept.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public void Reset(byte[] buffer, int bytes)
     {
         // U7: as the constructor, a byte count outside the buffer refuses here
@@ -2223,7 +2223,7 @@ public sealed class ReadStream : IBitStream
     /// first reason wins and the stream is failed from here on. None, or a value
     /// outside the closed list, records SerializeError.Rejected, so a refused stream
     /// never reports none (IMPLEMENTING.md U14). Always returns false.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool Fail(SerializeError error)
     {
         if (_error == SerializeError.None)
@@ -2234,7 +2234,7 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <summary>Bounds checks and reads bits that have already been validated to [1,32].</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private bool ReadBits(ref uint value, int bits)
     {
         if (_error != SerializeError.None)
@@ -2250,7 +2250,7 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeBits(ref uint value, int bits)
     {
         // U7, U16: a bit count outside [1,32] is a bad declaration, refused on read
@@ -2262,7 +2262,7 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeBits64(ref ulong value, int bits)
     {
         // U7, U16: a bit count outside [1,64] is a bad declaration, refused on read
@@ -2291,7 +2291,7 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt(ref int value, int min, int max)
     {
         // U7, U16: min > max is a bad declaration, refused on read
@@ -2328,7 +2328,7 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt64(ref long value, long min, long max)
     {
         // U7, U16: min > max is a bad declaration, refused on read
@@ -2436,7 +2436,7 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeByte(ref byte value)
     {
         uint v = 0;
@@ -2449,7 +2449,7 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeUInt16(ref ushort value)
     {
         uint v = 0;
@@ -2462,11 +2462,11 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeUInt32(ref uint value) => ReadBits(ref value, 32);
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeUInt64(ref ulong value)
     {
         if (_error != SerializeError.None)
@@ -2500,7 +2500,7 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeBool(ref bool value)
     {
         uint v = 0;
@@ -2513,7 +2513,7 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeFloat(ref float value)
     {
         uint v = 0;
@@ -2533,7 +2533,7 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeDouble(ref double value)
     {
         ulong v = 0;
@@ -2550,7 +2550,7 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeCompressedFloat(ref float value, float min, float max, float resolution)
     {
         // U7, U16: a declaration CompressedFloatParams would assert on is refused
@@ -2583,7 +2583,7 @@ public sealed class ReadStream : IBitStream
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeCompressedFloatPrecomputed(ref float value, uint maxIntegerValue, int bits, float delta, float min)
     {
         // U7, U16: precomputed constants that cannot be right are refused
@@ -2868,12 +2868,12 @@ public sealed class ReadStream : IBitStream
         }
         // the payload is well-formed UTF-8 with no NUL, so this decode is exact: no
         // replacement character can appear, and a byte order mark is kept as U+FEFF
-        value = Encoding.UTF8.GetString(utf8);
+        value = global::System.Text.Encoding.UTF8.GetString(utf8);
         return true;
     }
 
     /// <inheritdoc/>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeAlign()
     {
         if (_error != SerializeError.None)
@@ -3051,7 +3051,7 @@ public sealed class ReadStream : IBitStream
     /// The destination is written only once every check passes: a refused read
     /// leaves it exactly as the caller left it.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private bool AcceptRelative(int previous, long reconstructed, ref int current, bool absolute)
     {
         if (reconstructed > int.MaxValue || reconstructed <= previous)
@@ -3082,7 +3082,7 @@ public sealed class ReadStream : IBitStream
     /// on every path out. See ReadBatch for the contract and the reason it is
     /// faster.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public ReadBatch BeginBatch()
     {
         return new ReadBatch(this);
@@ -3098,18 +3098,18 @@ public sealed class ReadStream : IBitStream
     /// </summary>
     internal SerializeError BatchError
     {
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         get => _error;
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         set => _error = value;
     }
 
     /// <summary>Monotonic batch sync generation, used to detect stale or copied batches.</summary>
     internal uint BatchGeneration
     {
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         get => _batchGeneration;
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         set => _batchGeneration = value;
     }
 
@@ -3173,7 +3173,7 @@ public sealed class MeasureStream : IBitStream
 
     /// <summary>Adds bits to the measured count. The count is 64 bit like the other
     /// streams, so bulk byte measurements never overflow.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private bool Measure(long bits)
     {
         _bitsWritten += bits;
@@ -3183,42 +3183,42 @@ public sealed class MeasureStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeBits(ref uint value, int bits)
     {
-        Debug.Assert(bits >= 1 && bits <= 32, SerializeInternal.BitsRangeMessage);
+        global::System.Diagnostics.Debug.Assert(bits >= 1 && bits <= 32, SerializeInternal.BitsRangeMessage);
         // U8: an over-wide value is caught in the checked build, never masked
-        Debug.Assert(bits >= 32 || value >> bits == 0, SerializeInternal.ValueFitsMessage);
+        global::System.Diagnostics.Debug.Assert(bits >= 32 || value >> bits == 0, SerializeInternal.ValueFitsMessage);
         return Measure(bits);
     }
 
     /// <inheritdoc/>
     public bool SerializeBits64(ref ulong value, int bits)
     {
-        Debug.Assert(bits >= 1 && bits <= 64, SerializeInternal.BitsRange64Message);
+        global::System.Diagnostics.Debug.Assert(bits >= 1 && bits <= 64, SerializeInternal.BitsRange64Message);
         // U8: an over-wide value is caught in the checked build, never masked
-        Debug.Assert(bits >= 64 || value >> bits == 0, SerializeInternal.ValueFitsMessage);
+        global::System.Diagnostics.Debug.Assert(bits >= 64 || value >> bits == 0, SerializeInternal.ValueFitsMessage);
         return Measure(bits);
     }
 
     /// <inheritdoc/>
     public bool SerializeInt(ref int value, int min, int max)
     {
-        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
-        Debug.Assert(value >= min && value <= max, SerializeInternal.WriteRangeAssertMessage);
+        global::System.Diagnostics.Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
+        global::System.Diagnostics.Debug.Assert(value >= min && value <= max, SerializeInternal.WriteRangeAssertMessage);
         return Measure(SerializeUtil.BitsRequired(unchecked((uint)min), unchecked((uint)max)));
     }
 
     /// <inheritdoc/>
     public bool SerializeInt64(ref long value, long min, long max)
     {
-        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
-        Debug.Assert(value >= min && value <= max, SerializeInternal.WriteRangeAssertMessage);
+        global::System.Diagnostics.Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
+        global::System.Diagnostics.Debug.Assert(value >= min && value <= max, SerializeInternal.WriteRangeAssertMessage);
         return Measure(SerializeUtil.BitsRequired64(unchecked((ulong)min), unchecked((ulong)max)));
     }
 
     /// <inheritdoc/>
     public bool SerializeInt128(ref Int128Value value, Int128Value min, Int128Value max)
     {
-        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
-        Debug.Assert(value >= min && value <= max, SerializeInternal.WriteRangeAssertMessage);
+        global::System.Diagnostics.Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
+        global::System.Diagnostics.Debug.Assert(value >= min && value <= max, SerializeInternal.WriteRangeAssertMessage);
         return Measure(SerializeUtil.BitsRequired128((UInt128Value)min, (UInt128Value)max));
     }
 
@@ -3243,14 +3243,14 @@ public sealed class MeasureStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeFloat(ref float value)
     {
-        Debug.Assert(SerializeUtil.FloatBitsAreFinite(SerializeCompat.SingleToUInt32Bits(value)), SerializeInternal.WriteFloatFiniteAssertMessage);
+        global::System.Diagnostics.Debug.Assert(SerializeUtil.FloatBitsAreFinite(SerializeCompat.SingleToUInt32Bits(value)), SerializeInternal.WriteFloatFiniteAssertMessage);
         return Measure(32);
     }
 
     /// <inheritdoc/>
     public bool SerializeDouble(ref double value)
     {
-        Debug.Assert(SerializeUtil.DoubleBitsAreFinite(SerializeCompat.DoubleToUInt64Bits(value)), SerializeInternal.WriteFloatFiniteAssertMessage);
+        global::System.Diagnostics.Debug.Assert(SerializeUtil.DoubleBitsAreFinite(SerializeCompat.DoubleToUInt64Bits(value)), SerializeInternal.WriteFloatFiniteAssertMessage);
         return Measure(64);
     }
 
@@ -3261,7 +3261,7 @@ public sealed class MeasureStream : IBitStream
             out _, out int bits, out float delta);
         // a measure makes every check a write makes (IMPLEMENTING.md U6, U9): a
         // non-finite value traps as it does in QuantizeCompressedFloat
-        Debug.Assert(float.IsFinite(value), SerializeInternal.FloatValueAssertMessage);
+        global::System.Diagnostics.Debug.Assert(float.IsFinite(value), SerializeInternal.FloatValueAssertMessage);
         SerializeInternal.ValidateCompressedFloatTop(min, delta);
         return Measure(bits);
     }
@@ -3270,7 +3270,7 @@ public sealed class MeasureStream : IBitStream
     public bool SerializeCompressedFloatPrecomputed(ref float value, uint maxIntegerValue, int bits, float delta, float min)
     {
         SerializeInternal.ValidatePrecomputedFloatParams(maxIntegerValue, bits, delta);
-        Debug.Assert(float.IsFinite(value), SerializeInternal.FloatValueAssertMessage);
+        global::System.Diagnostics.Debug.Assert(float.IsFinite(value), SerializeInternal.FloatValueAssertMessage);
         SerializeInternal.ValidateCompressedFloatTop(min, delta);
         return Measure(bits);
     }
@@ -3282,7 +3282,7 @@ public sealed class MeasureStream : IBitStream
     private bool MeasureFixed(ulong raw, ulong rawMin, ulong rawMax, int bits)
     {
         // compare in the unsigned domain: the raw range may be wider than 2^63
-        Debug.Assert(unchecked(raw - rawMin) <= unchecked(rawMax - rawMin), SerializeInternal.WriteRangeAssertMessage);
+        global::System.Diagnostics.Debug.Assert(unchecked(raw - rawMin) <= unchecked(rawMax - rawMin), SerializeInternal.WriteRangeAssertMessage);
         return Measure(bits);
     }
 
@@ -3290,7 +3290,7 @@ public sealed class MeasureStream : IBitStream
     private bool MeasureFixed128(UInt128Value raw, UInt128Value rawMin, UInt128Value rawMax, int bits)
     {
         // compare in the unsigned domain: the raw range may be wider than 2^127
-        Debug.Assert(unchecked(raw - rawMin) <= unchecked(rawMax - rawMin), SerializeInternal.WriteRangeAssertMessage);
+        global::System.Diagnostics.Debug.Assert(unchecked(raw - rawMin) <= unchecked(rawMax - rawMin), SerializeInternal.WriteRangeAssertMessage);
         return Measure(bits);
     }
 
@@ -3373,8 +3373,8 @@ public sealed class MeasureStream : IBitStream
     {
         SerializeInternal.ValidateBufferSize(bufferSize);
         SerializeInternal.ValidateStringValue(value);
-        int byteCount = Encoding.UTF8.GetByteCount(value);
-        Debug.Assert(byteCount < bufferSize, SerializeInternal.WriteStringAssertMessage);
+        int byteCount = global::System.Text.Encoding.UTF8.GetByteCount(value);
+        global::System.Diagnostics.Debug.Assert(byteCount < bufferSize, SerializeInternal.WriteStringAssertMessage);
         int length = byteCount;
         if (!SerializeInt(ref length, 0, bufferSize - 1))
         {
@@ -3404,7 +3404,7 @@ public sealed class MeasureStream : IBitStream
     public bool SerializeObject(ISerializer obj)
     {
         // a read refuses a struct here, so a write or a measure asserts it (U9)
-        Debug.Assert(!obj.GetType().IsValueType, SerializeInternal.BoxedStructMessage);
+        global::System.Diagnostics.Debug.Assert(!obj.GetType().IsValueType, SerializeInternal.BoxedStructMessage);
         // an object that returns false on a write or a measure makes this return
         // false and records nothing (IMPLEMENTING.md U6, U9): a write or measure
         // stream has no refusal state
@@ -3425,14 +3425,14 @@ public sealed class MeasureStream : IBitStream
     {
         // read only (IMPLEMENTING.md U2, U9): caller error here, asserted in debug,
         // and false without latching anything in release
-        Debug.Assert(false, SerializeInternal.RejectOnWriteMessage);
+        global::System.Diagnostics.Debug.Assert(false, SerializeInternal.RejectOnWriteMessage);
         return false;
     }
 
     /// <inheritdoc/>
     public bool SerializeIntRelative(int previous, ref int current)
     {
-        Debug.Assert(previous >= 0 && previous < current, SerializeInternal.WriteIntRelativeAssertMessage);
+        global::System.Diagnostics.Debug.Assert(previous >= 0 && previous < current, SerializeInternal.WriteIntRelativeAssertMessage);
         uint difference = unchecked((uint)current - (uint)previous);
         int bits = 1;
         if (difference != 1)
@@ -3549,13 +3549,13 @@ public ref struct WriteBatch
     private uint _generation;
     private bool _ended;
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     internal WriteBatch(WriteStream stream)
     {
         _stream = stream;
         stream.Writer.CaptureState(out _data, out _scratch, out _numBits,
             out _bitsWritten, out _wordIndex, out _scratchBits);
-        Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
+        global::System.Diagnostics.Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
         _generation = stream.BatchGeneration;
         _ended = false;
     }
@@ -3571,7 +3571,7 @@ public ref struct WriteBatch
     /// stream. Idempotent. Always call this on every path out; the batch's writes
     /// are not visible to the stream until it runs.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public void End()
     {
         if (_ended)
@@ -3584,13 +3584,13 @@ public ref struct WriteBatch
 
     /// <summary>Stores the batch state down to the stream so a class-path call can
     /// run against current state.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private bool Sync()
     {
         // a batch used after End, or a stale by-value copy after another copy
         // synced or ended, is write misuse (U9): asserted, and in release it
         // writes nothing back, so a stale packer state never rewinds the stream
-        Debug.Assert(!_ended && _generation == _stream.BatchGeneration, SerializeInternal.BatchEndedMessage);
+        global::System.Diagnostics.Debug.Assert(!_ended && _generation == _stream.BatchGeneration, SerializeInternal.BatchEndedMessage);
         if (_ended || _generation != _stream.BatchGeneration)
         {
             return false;
@@ -3603,7 +3603,7 @@ public ref struct WriteBatch
     }
 
     /// <summary>Recaptures the stream state after a delegated class-path call.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private void Recapture()
     {
         _stream.Writer.CaptureState(out _data, out _scratch, out _numBits,
@@ -3622,10 +3622,10 @@ public ref struct WriteBatch
 
     /// <summary>The BitWriter hot path against batch-local state: bit-identical logic
     /// to BitWriter.WriteBitsUnchecked.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private void WriteBitsUnchecked(uint value, int bits)
     {
-        Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
+        global::System.Diagnostics.Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
 
         value &= unchecked((uint)((1UL << bits) - 1));
 
@@ -3635,7 +3635,7 @@ public ref struct WriteBatch
 
         if (newScratchBits >= 64)
         {
-            BinaryPrimitives.WriteUInt64LittleEndian(_data.AsSpan((int)(_wordIndex * 8)), _scratch);
+            global::System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(_data.AsSpan((int)(_wordIndex * 8)), _scratch);
             _wordIndex++;
             // recover the bits that spilled past 64. newScratchBits >= 64 with
             // bits <= 32 implies the shift is in [1,32]
@@ -3653,40 +3653,40 @@ public ref struct WriteBatch
     /// <summary>Writes bits that have already been validated to [1,32]. Capacity is
     /// the writer's contract: asserted in debug, unchecked in release — identical to
     /// WriteStream.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private bool WriteBits(uint value, int bits)
     {
-        Debug.Assert(!_ended, SerializeInternal.BatchEndedMessage);
-        Debug.Assert(_bitsWritten + bits <= _numBits, SerializeInternal.WriteOverflowMessage);
+        global::System.Diagnostics.Debug.Assert(!_ended, SerializeInternal.BatchEndedMessage);
+        global::System.Diagnostics.Debug.Assert(_bitsWritten + bits <= _numBits, SerializeInternal.WriteOverflowMessage);
         WriteBitsUnchecked(value, bits);
         return true;
     }
 
     /// <summary>Serializes the low order bits of an unsigned integer. bits must be in
     /// [1,32]. Identical semantics to WriteStream.SerializeBits.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeBits(ref uint value, int bits)
     {
-        Debug.Assert(bits >= 1 && bits <= 32, SerializeInternal.BitsRangeMessage);
+        global::System.Diagnostics.Debug.Assert(bits >= 1 && bits <= 32, SerializeInternal.BitsRangeMessage);
         // U8: an over-wide value is caught in the checked build, never masked
-        Debug.Assert(bits >= 32 || value >> bits == 0, SerializeInternal.ValueFitsMessage);
+        global::System.Diagnostics.Debug.Assert(bits >= 32 || value >> bits == 0, SerializeInternal.ValueFitsMessage);
         return WriteBits(value, bits);
     }
 
     /// <summary>Serializes the low order bits of a 64 bit unsigned integer. bits must
     /// be in [1,64]. Identical semantics to WriteStream.SerializeBits64.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeBits64(ref ulong value, int bits)
     {
-        Debug.Assert(!_ended, SerializeInternal.BatchEndedMessage);
-        Debug.Assert(bits >= 1 && bits <= 64, SerializeInternal.BitsRange64Message);
+        global::System.Diagnostics.Debug.Assert(!_ended, SerializeInternal.BatchEndedMessage);
+        global::System.Diagnostics.Debug.Assert(bits >= 1 && bits <= 64, SerializeInternal.BitsRange64Message);
         // U8: an over-wide value is caught in the checked build, never masked
-        Debug.Assert(bits >= 64 || value >> bits == 0, SerializeInternal.ValueFitsMessage);
+        global::System.Diagnostics.Debug.Assert(bits >= 64 || value >> bits == 0, SerializeInternal.ValueFitsMessage);
         if (bits <= 32)
         {
             return WriteBits(unchecked((uint)value), bits);
         }
-        Debug.Assert(_bitsWritten + bits <= _numBits, SerializeInternal.WriteOverflowMessage);
+        global::System.Diagnostics.Debug.Assert(_bitsWritten + bits <= _numBits, SerializeInternal.WriteOverflowMessage);
         // low dword first, then the high remainder
         WriteBitsUnchecked(unchecked((uint)value), 32);
         WriteBitsUnchecked(unchecked((uint)(value >> 32)), bits - 32);
@@ -3695,12 +3695,12 @@ public ref struct WriteBatch
 
     /// <summary>Serializes a signed integer in [min,max]. Identical semantics to
     /// WriteStream.SerializeInt.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt(ref int value, int min, int max)
     {
-        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
+        global::System.Diagnostics.Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         int v = value;
-        Debug.Assert(v >= min && v <= max, SerializeInternal.WriteRangeAssertMessage);
+        global::System.Diagnostics.Debug.Assert(v >= min && v <= max, SerializeInternal.WriteRangeAssertMessage);
         int bits = SerializeUtil.BitsRequired(unchecked((uint)min), unchecked((uint)max));
         // subtract in the unsigned domain: the range may be wider than 2^31
         return WriteBits(unchecked((uint)v - (uint)min), bits);
@@ -3708,13 +3708,13 @@ public ref struct WriteBatch
 
     /// <summary>Serializes a signed 64 bit integer in [min,max]. Identical semantics
     /// to WriteStream.SerializeInt64.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt64(ref long value, long min, long max)
     {
-        Debug.Assert(!_ended, SerializeInternal.BatchEndedMessage);
-        Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
+        global::System.Diagnostics.Debug.Assert(!_ended, SerializeInternal.BatchEndedMessage);
+        global::System.Diagnostics.Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         long v = value;
-        Debug.Assert(v >= min && v <= max, SerializeInternal.WriteRangeAssertMessage);
+        global::System.Diagnostics.Debug.Assert(v >= min && v <= max, SerializeInternal.WriteRangeAssertMessage);
         int bits = SerializeUtil.BitsRequired64(unchecked((ulong)min), unchecked((ulong)max));
         // subtract in the unsigned domain: the range may be wider than 2^63
         ulong unsigned = unchecked((ulong)v - (ulong)min);
@@ -3722,7 +3722,7 @@ public ref struct WriteBatch
         {
             return WriteBits(unchecked((uint)unsigned), bits);
         }
-        Debug.Assert(_bitsWritten + bits <= _numBits, SerializeInternal.WriteOverflowMessage);
+        global::System.Diagnostics.Debug.Assert(_bitsWritten + bits <= _numBits, SerializeInternal.WriteOverflowMessage);
         // low dword first, then the high remainder: same convention as SerializeBits64
         WriteBitsUnchecked(unchecked((uint)unsigned), 32);
         WriteBitsUnchecked(unchecked((uint)(unsigned >> 32)), bits - 32);
@@ -3730,26 +3730,26 @@ public ref struct WriteBatch
     }
 
     /// <summary>Serializes a byte. Identical semantics to WriteStream.SerializeByte.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeByte(ref byte value) => WriteBits(value, 8);
 
     /// <summary>Serializes an unsigned 16 bit integer. Identical semantics to
     /// WriteStream.SerializeUInt16.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeUInt16(ref ushort value) => WriteBits(value, 16);
 
     /// <summary>Serializes an unsigned 32 bit integer. Identical semantics to
     /// WriteStream.SerializeUInt32.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeUInt32(ref uint value) => WriteBits(value, 32);
 
     /// <summary>Serializes an unsigned 64 bit integer (low dword first). Identical
     /// semantics to WriteStream.SerializeUInt64.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeUInt64(ref ulong value)
     {
-        Debug.Assert(!_ended, SerializeInternal.BatchEndedMessage);
-        Debug.Assert(_bitsWritten + 64 <= _numBits, SerializeInternal.WriteOverflowMessage);
+        global::System.Diagnostics.Debug.Assert(!_ended, SerializeInternal.BatchEndedMessage);
+        global::System.Diagnostics.Debug.Assert(_bitsWritten + 64 <= _numBits, SerializeInternal.WriteOverflowMessage);
         WriteBitsUnchecked(unchecked((uint)value), 32);
         WriteBitsUnchecked(unchecked((uint)(value >> 32)), 32);
         return true;
@@ -3757,42 +3757,42 @@ public ref struct WriteBatch
 
     /// <summary>Serializes a boolean value with one bit. Identical semantics to
     /// WriteStream.SerializeBool.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeBool(ref bool value) => WriteBits(value ? 1u : 0u, 1);
 
     /// <summary>Serializes a continuation bit and reports whether a sentinel-driven
     /// loop should proceed. Identical semantics to SerializeUtil.Continue.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool Continue(ref bool more) => SerializeBool(ref more) && more;
 
     /// <summary>Serializes a termination bit and reports whether a sentinel-driven
     /// loop should proceed. Identical semantics to SerializeUtil.Until.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool Until(ref bool done) => SerializeBool(ref done) && !done;
 
     /// <summary>Serializes an uncompressed 32 bit floating point value. Identical
     /// semantics to WriteStream.SerializeFloat.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeFloat(ref float value)
     {
         uint bits = SerializeCompat.SingleToUInt32Bits(value);
-        Debug.Assert(SerializeUtil.FloatBitsAreFinite(bits), SerializeInternal.WriteFloatFiniteAssertMessage);
+        global::System.Diagnostics.Debug.Assert(SerializeUtil.FloatBitsAreFinite(bits), SerializeInternal.WriteFloatFiniteAssertMessage);
         return WriteBits(bits, 32);
     }
 
     /// <summary>Serializes an uncompressed 64 bit floating point value. Identical
     /// semantics to WriteStream.SerializeDouble.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeDouble(ref double value)
     {
         ulong bits = SerializeCompat.DoubleToUInt64Bits(value);
-        Debug.Assert(SerializeUtil.DoubleBitsAreFinite(bits), SerializeInternal.WriteFloatFiniteAssertMessage);
+        global::System.Diagnostics.Debug.Assert(SerializeUtil.DoubleBitsAreFinite(bits), SerializeInternal.WriteFloatFiniteAssertMessage);
         return SerializeUInt64(ref bits);
     }
 
     /// <summary>Serializes a floating point value in [min,max] with the given
     /// resolution. Identical semantics to WriteStream.SerializeCompressedFloat.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeCompressedFloat(ref float value, float min, float max, float resolution)
     {
         SerializeUtil.CompressedFloatParams(min, max, resolution,
@@ -3803,7 +3803,7 @@ public ref struct WriteBatch
 
     /// <summary>Serializes a compressed float from precomputed wire constants.
     /// Identical semantics to WriteStream.SerializeCompressedFloatPrecomputed.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeCompressedFloatPrecomputed(ref float value, uint maxIntegerValue, int bits, float delta, float min)
     {
         SerializeInternal.ValidatePrecomputedFloatParams(maxIntegerValue, bits, delta);
@@ -3813,7 +3813,7 @@ public ref struct WriteBatch
 
     /// <summary>Pads the stream with zero bits to the next byte boundary. Identical
     /// semantics to WriteStream.SerializeAlign.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeAlign()
     {
         int alignBits = (int)((8 - _bitsWritten % 8) % 8);
@@ -3827,7 +3827,7 @@ public ref struct WriteBatch
     /// <summary>The end of the object: a writer's end emits nothing. Identical
     /// semantics to WriteStream.SerializeEnd. Not to be confused with End, which ends
     /// the batch.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeEnd()
     {
         return true;
@@ -3836,7 +3836,7 @@ public ref struct WriteBatch
     /// <summary>Serializes an array of bytes, aligning first. Delegated: syncs state
     /// down, runs WriteStream.SerializeBytes, recaptures — byte identical to the
     /// stream call.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeBytes(Span<byte> data)
     {
         if (!Sync())
@@ -3850,7 +3850,7 @@ public ref struct WriteBatch
 
     /// <summary>Serializes a string of fewer than bufferSize UTF-8 bytes. Delegated:
     /// syncs state down, runs WriteStream.SerializeString, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeString(ref string value, int bufferSize)
     {
         if (!Sync())
@@ -3865,7 +3865,7 @@ public ref struct WriteBatch
     /// <summary>Serializes an object that implements ISerializer. Delegated: the
     /// object's Serialize function runs against the underlying stream. For struct
     /// implementers use the generic overload, which does not box.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeObject(ISerializer obj)
     {
         if (!Sync())
@@ -3880,7 +3880,7 @@ public ref struct WriteBatch
     /// <summary>Serializes an object that implements ISerializer, by ref, without
     /// boxing. Delegated: the object's Serialize function runs against the underlying
     /// stream.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeObject<T>(ref T obj) where T : ISerializer
     {
         if (!Sync())
@@ -3894,7 +3894,7 @@ public ref struct WriteBatch
 
     /// <summary>The caller's own refusal. Delegated: syncs state down, runs
     /// WriteStream.Reject, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool Reject()
     {
         if (!Sync())
@@ -3908,7 +3908,7 @@ public ref struct WriteBatch
 
     /// <summary>Serializes an integer relative to a previous integer. Delegated:
     /// syncs state down, runs WriteStream.SerializeIntRelative, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeIntRelative(int previous, ref int current)
     {
         if (!Sync())
@@ -3923,7 +3923,7 @@ public ref struct WriteBatch
     /// <summary>Serializes a signed 128 bit integer in [min,max]. Delegated: syncs
     /// state down, runs WriteStream.SerializeInt128, recaptures — byte identical to
     /// the stream call.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt128(ref Int128Value value, Int128Value min, Int128Value max)
     {
         if (!Sync())
@@ -3937,7 +3937,7 @@ public ref struct WriteBatch
 
     /// <summary>Serializes an unsigned 128 bit integer as a full 128 bits. Delegated:
     /// syncs state down, runs WriteStream.SerializeUInt128, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeUInt128(ref UInt128Value value)
     {
         if (!Sync())
@@ -3951,7 +3951,7 @@ public ref struct WriteBatch
 
     /// <summary>Serializes a fixed point value with signed 64 bit storage. Delegated:
     /// syncs state down, runs the WriteStream overload, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeFixed(ref long value, int integerBits, int fractionBits, long min, long max)
     {
         if (!Sync())
@@ -3965,7 +3965,7 @@ public ref struct WriteBatch
 
     /// <summary>Serializes a fixed point value with unsigned 64 bit storage. Delegated:
     /// syncs state down, runs the WriteStream overload, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeFixed(ref ulong value, int integerBits, int fractionBits, long min, long max)
     {
         if (!Sync())
@@ -3979,7 +3979,7 @@ public ref struct WriteBatch
 
     /// <summary>Serializes a fixed point value with signed 32 bit storage. Delegated:
     /// syncs state down, runs the WriteStream overload, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeFixed(ref int value, int integerBits, int fractionBits, long min, long max)
     {
         if (!Sync())
@@ -3993,7 +3993,7 @@ public ref struct WriteBatch
 
     /// <summary>Serializes a fixed point value with unsigned 32 bit storage. Delegated:
     /// syncs state down, runs the WriteStream overload, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeFixed(ref uint value, int integerBits, int fractionBits, long min, long max)
     {
         if (!Sync())
@@ -4007,7 +4007,7 @@ public ref struct WriteBatch
 
     /// <summary>Serializes a fixed point value with signed 16 bit storage. Delegated:
     /// syncs state down, runs the WriteStream overload, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeFixed(ref short value, int integerBits, int fractionBits, long min, long max)
     {
         if (!Sync())
@@ -4021,7 +4021,7 @@ public ref struct WriteBatch
 
     /// <summary>Serializes a fixed point value with unsigned 16 bit storage. Delegated:
     /// syncs state down, runs the WriteStream overload, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeFixed(ref ushort value, int integerBits, int fractionBits, long min, long max)
     {
         if (!Sync())
@@ -4035,7 +4035,7 @@ public ref struct WriteBatch
 
     /// <summary>Serializes a fixed point value with signed 128 bit storage. Delegated:
     /// syncs state down, runs the WriteStream overload, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeFixed(ref Int128Value value, int integerBits, int fractionBits, long min, long max)
     {
         if (!Sync())
@@ -4049,7 +4049,7 @@ public ref struct WriteBatch
 
     /// <summary>Serializes a fixed point value with unsigned 128 bit storage. Delegated:
     /// syncs state down, runs the WriteStream overload, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeFixed(ref UInt128Value value, int integerBits, int fractionBits, long min, long max)
     {
         if (!Sync())
@@ -4111,7 +4111,7 @@ public ref struct ReadBatch
     private uint _generation;
     private bool _ended;
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     internal ReadBatch(ReadStream stream)
     {
         _stream = stream;
@@ -4132,7 +4132,7 @@ public ref struct ReadBatch
     /// stream. Idempotent. Always call this on every path out; the batch's reads
     /// are not visible to the stream until it runs.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public void End()
     {
         if (_ended)
@@ -4154,7 +4154,7 @@ public ref struct ReadBatch
 
     /// <summary>Stores the batch state down to the stream so a class-path call can
     /// run against current state.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private bool Sync()
     {
         if (_ended)
@@ -4180,7 +4180,7 @@ public ref struct ReadBatch
     }
 
     /// <summary>Recaptures the stream state after a delegated class-path call.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private void Recapture()
     {
         _stream.Reader.CaptureState(out _data, out _numBits, out _bitsRead);
@@ -4192,7 +4192,7 @@ public ref struct ReadBatch
     /// first reason wins and the batch is failed from here on. None, or a value
     /// outside the closed list, records SerializeError.Rejected, so a refused stream
     /// never reports none (IMPLEMENTING.md U14). Always returns false.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool Fail(SerializeError error)
     {
         if (_ended)
@@ -4209,7 +4209,7 @@ public ref struct ReadBatch
     /// <summary>The BitReader hot path against batch-local state: bit-identical logic
     /// to BitReader.ReadBitsUnchecked, including the slack-free window assembly near
     /// the end of the buffer.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private uint ReadBitsUnchecked(int bits)
     {
         int byteIndex = (int)(_bitsRead >> 3);
@@ -4217,7 +4217,7 @@ public ref struct ReadBatch
         ulong window;
         if (byteIndex + 8 <= _data.Length)
         {
-            window = BinaryPrimitives.ReadUInt64LittleEndian(_data.AsSpan(byteIndex));
+            window = global::System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(_data.AsSpan(byteIndex));
         }
         else
         {
@@ -4238,7 +4238,7 @@ public ref struct ReadBatch
     }
 
     /// <summary>Bounds checks and reads bits that have already been validated to [1,32].</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private bool ReadBits(ref uint value, int bits)
     {
         if (_error != SerializeError.None)
@@ -4255,7 +4255,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes the low order bits of an unsigned integer. bits must be in
     /// [1,32]. Identical semantics to ReadStream.SerializeBits.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeBits(ref uint value, int bits)
     {
         // U7, U16: a bit count outside [1,32] is a bad declaration, refused on read
@@ -4268,7 +4268,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes the low order bits of a 64 bit unsigned integer. bits must
     /// be in [1,64]. Identical semantics to ReadStream.SerializeBits64.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeBits64(ref ulong value, int bits)
     {
         // U7, U16: a bit count outside [1,64] is a bad declaration, refused on read
@@ -4298,7 +4298,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes a signed integer in [min,max]. Identical semantics to
     /// ReadStream.SerializeInt: on success the value is guaranteed in range.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt(ref int value, int min, int max)
     {
         // U7, U16: min > max is a bad declaration, refused on read
@@ -4336,7 +4336,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes a signed 64 bit integer in [min,max]. Identical semantics
     /// to ReadStream.SerializeInt64: on success the value is guaranteed in range.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt64(ref long value, long min, long max)
     {
         // U7, U16: min > max is a bad declaration, refused on read
@@ -4385,7 +4385,7 @@ public ref struct ReadBatch
     }
 
     /// <summary>Serializes a byte. Identical semantics to ReadStream.SerializeByte.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeByte(ref byte value)
     {
         uint v = 0;
@@ -4399,7 +4399,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes an unsigned 16 bit integer. Identical semantics to
     /// ReadStream.SerializeUInt16.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeUInt16(ref ushort value)
     {
         uint v = 0;
@@ -4413,12 +4413,12 @@ public ref struct ReadBatch
 
     /// <summary>Serializes an unsigned 32 bit integer. Identical semantics to
     /// ReadStream.SerializeUInt32.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeUInt32(ref uint value) => ReadBits(ref value, 32);
 
     /// <summary>Serializes an unsigned 64 bit integer (low dword first). Identical
     /// semantics to ReadStream.SerializeUInt64.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeUInt64(ref ulong value)
     {
         if (_error != SerializeError.None)
@@ -4437,7 +4437,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes a boolean value with one bit. Identical semantics to
     /// ReadStream.SerializeBool.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeBool(ref bool value)
     {
         uint v = 0;
@@ -4453,19 +4453,19 @@ public ref struct ReadBatch
     /// loop should proceed: false as soon as the batch has an error, so the loop
     /// always ends on a truncated packet. Identical semantics to
     /// SerializeUtil.Continue.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool Continue(ref bool more) => SerializeBool(ref more) && more;
 
     /// <summary>Serializes a termination bit and reports whether a sentinel-driven
     /// loop should proceed: false as soon as the batch has an error, so the loop
     /// always ends on a truncated packet. Identical semantics to
     /// SerializeUtil.Until.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool Until(ref bool done) => SerializeBool(ref done) && !done;
 
     /// <summary>Serializes an uncompressed 32 bit floating point value. Identical
     /// semantics to ReadStream.SerializeFloat.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeFloat(ref float value)
     {
         uint v = 0;
@@ -4486,7 +4486,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes an uncompressed 64 bit floating point value. Identical
     /// semantics to ReadStream.SerializeDouble.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeDouble(ref double value)
     {
         ulong v = 0;
@@ -4504,7 +4504,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes a floating point value in [min,max] with the given
     /// resolution. Identical semantics to ReadStream.SerializeCompressedFloat.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeCompressedFloat(ref float value, float min, float max, float resolution)
     {
         // U7, U16: a declaration CompressedFloatParams would assert on is refused
@@ -4538,7 +4538,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes a compressed float from precomputed wire constants.
     /// Identical semantics to ReadStream.SerializeCompressedFloatPrecomputed.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeCompressedFloatPrecomputed(ref float value, uint maxIntegerValue, int bits, float delta, float min)
     {
         // U7, U16: precomputed constants that cannot be right are refused
@@ -4570,7 +4570,7 @@ public ref struct ReadBatch
 
     /// <summary>Reads an align, verifying the padding bits are zero. Identical
     /// semantics to ReadStream.SerializeAlign.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeAlign()
     {
         if (_error != SerializeError.None)
@@ -4597,7 +4597,7 @@ public ref struct ReadBatch
     /// ReadStream.SerializeEnd, recaptures — the same trailing data and padding
     /// rules, in the same order. Not to be confused with End, which ends the
     /// batch.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeEnd()
     {
         if (!Sync())
@@ -4611,7 +4611,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes an array of bytes, aligning first. Delegated: syncs state
     /// down, runs ReadStream.SerializeBytes, recaptures — identical decode.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeBytes(Span<byte> data)
     {
         if (!Sync())
@@ -4625,7 +4625,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes a string of fewer than bufferSize UTF-8 bytes. Delegated:
     /// syncs state down, runs ReadStream.SerializeString, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeString(ref string value, int bufferSize)
     {
         if (!Sync())
@@ -4640,7 +4640,7 @@ public ref struct ReadBatch
     /// <summary>Serializes an object that implements ISerializer. Delegated: the
     /// object's Serialize function runs against the underlying stream. For struct
     /// implementers use the generic overload, which does not box.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeObject(ISerializer obj)
     {
         if (!Sync())
@@ -4655,7 +4655,7 @@ public ref struct ReadBatch
     /// <summary>Serializes an object that implements ISerializer, by ref, without
     /// boxing. Delegated: the object's Serialize function runs against the underlying
     /// stream.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeObject<T>(ref T obj) where T : ISerializer
     {
         if (!Sync())
@@ -4669,7 +4669,7 @@ public ref struct ReadBatch
 
     /// <summary>The caller's own refusal. Delegated: syncs state down, runs
     /// ReadStream.Reject, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool Reject()
     {
         if (!Sync())
@@ -4683,7 +4683,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes an integer relative to a previous integer. Delegated:
     /// syncs state down, runs ReadStream.SerializeIntRelative, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeIntRelative(int previous, ref int current)
     {
         if (!Sync())
@@ -4697,7 +4697,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes a signed 128 bit integer in [min,max]. Delegated: syncs
     /// state down, runs ReadStream.SerializeInt128, recaptures — identical decode.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt128(ref Int128Value value, Int128Value min, Int128Value max)
     {
         if (!Sync())
@@ -4711,7 +4711,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes an unsigned 128 bit integer as a full 128 bits. Delegated:
     /// syncs state down, runs ReadStream.SerializeUInt128, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeUInt128(ref UInt128Value value)
     {
         if (!Sync())
@@ -4725,7 +4725,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes a fixed point value with signed 64 bit storage. Delegated:
     /// syncs state down, runs the ReadStream overload, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeFixed(ref long value, int integerBits, int fractionBits, long min, long max)
     {
         if (!Sync())
@@ -4739,7 +4739,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes a fixed point value with unsigned 64 bit storage. Delegated:
     /// syncs state down, runs the ReadStream overload, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeFixed(ref ulong value, int integerBits, int fractionBits, long min, long max)
     {
         if (!Sync())
@@ -4753,7 +4753,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes a fixed point value with signed 32 bit storage. Delegated:
     /// syncs state down, runs the ReadStream overload, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeFixed(ref int value, int integerBits, int fractionBits, long min, long max)
     {
         if (!Sync())
@@ -4767,7 +4767,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes a fixed point value with unsigned 32 bit storage. Delegated:
     /// syncs state down, runs the ReadStream overload, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeFixed(ref uint value, int integerBits, int fractionBits, long min, long max)
     {
         if (!Sync())
@@ -4781,7 +4781,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes a fixed point value with signed 16 bit storage. Delegated:
     /// syncs state down, runs the ReadStream overload, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeFixed(ref short value, int integerBits, int fractionBits, long min, long max)
     {
         if (!Sync())
@@ -4795,7 +4795,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes a fixed point value with unsigned 16 bit storage. Delegated:
     /// syncs state down, runs the ReadStream overload, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeFixed(ref ushort value, int integerBits, int fractionBits, long min, long max)
     {
         if (!Sync())
@@ -4809,7 +4809,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes a fixed point value with signed 128 bit storage. Delegated:
     /// syncs state down, runs the ReadStream overload, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeFixed(ref Int128Value value, int integerBits, int fractionBits, long min, long max)
     {
         if (!Sync())
@@ -4823,7 +4823,7 @@ public ref struct ReadBatch
 
     /// <summary>Serializes a fixed point value with unsigned 128 bit storage. Delegated:
     /// syncs state down, runs the ReadStream overload, recaptures.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public bool SerializeFixed(ref UInt128Value value, int integerBits, int fractionBits, long min, long max)
     {
         if (!Sync())
@@ -4877,7 +4877,7 @@ public ref struct ReadBatch
 internal static class SerializeCompat
 {
     /// <summary>Leading zero count of a 32 bit value; 32 when the value is zero.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static int LeadingZeroCount(uint value)
     {
         // inverted sense on purpose: the intrinsic only where it is GUARANTEED
@@ -4902,7 +4902,7 @@ internal static class SerializeCompat
     }
 
     /// <summary>Leading zero count of a 64 bit value; 64 when the value is zero.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static int LeadingZeroCount(ulong value)
     {
 #if !NET7_0_OR_GREATER
@@ -4916,17 +4916,17 @@ internal static class SerializeCompat
     // The unsigned float bit casts are .NET 6+; the signed ones are
     // netstandard2.1. unchecked reinterpret casts between the two are exact.
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static uint SingleToUInt32Bits(float value) => unchecked((uint)BitConverter.SingleToInt32Bits(value));
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public static uint SingleToUInt32Bits(float value) => unchecked((uint)global::System.BitConverter.SingleToInt32Bits(value));
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static float UInt32BitsToSingle(uint value) => BitConverter.Int32BitsToSingle(unchecked((int)value));
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public static float UInt32BitsToSingle(uint value) => global::System.BitConverter.Int32BitsToSingle(unchecked((int)value));
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static ulong DoubleToUInt64Bits(double value) => unchecked((ulong)BitConverter.DoubleToInt64Bits(value));
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public static ulong DoubleToUInt64Bits(double value) => unchecked((ulong)global::System.BitConverter.DoubleToInt64Bits(value));
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static double UInt64BitsToDouble(ulong value) => BitConverter.Int64BitsToDouble(unchecked((long)value));
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public static double UInt64BitsToDouble(ulong value) => global::System.BitConverter.Int64BitsToDouble(unchecked((long)value));
 
     /// <summary>Well-formed UTF-16: every high surrogate is immediately followed
     /// by a low surrogate, and no low surrogate stands alone. The string writer's

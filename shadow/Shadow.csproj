@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- THE SHADOWING GATE. Generated code compiles this library's two source
+       files into the consumer's own assembly, beside namespaces named after
+       the consumer's schema packages, and a top-level namespace hides a
+       System type of the same name from every bare use: a package named Math
+       broke Math.Floor here. So the library spells every System type it names
+       global::System..., and this project holds that: it compiles the sources
+       beside Namespaces.cs, a namespace named after each of those types, on
+       the current TFM and on the Unity-class one, warnings as errors. A bare
+       use added later fails this build by name. -->
+  <PropertyGroup>
+    <TargetFrameworks>net10.0;netstandard2.1</TargetFrameworks>
+    <LangVersion Condition="'$(TargetFramework)' == 'netstandard2.1'">9.0</LangVersion>
+    <OutputType>Library</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../src/*.cs" />
+    <Compile Include="Namespaces.cs" />
+  </ItemGroup>
+
+</Project>

@@ -51,7 +51,7 @@ public struct UInt128Value : IEquatable<UInt128Value>
     public static readonly UInt128Value MaxValue = new UInt128Value(ulong.MaxValue, ulong.MaxValue);
     public static readonly UInt128Value MinValue = new UInt128Value(0, 0);
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static UInt128Value operator +(UInt128Value a, UInt128Value b)
     {
         ulong lo = unchecked(a.Lo + b.Lo);
@@ -59,7 +59,7 @@ public struct UInt128Value : IEquatable<UInt128Value>
         return new UInt128Value(unchecked(a.Hi + b.Hi + carry), lo);
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static UInt128Value operator -(UInt128Value a, UInt128Value b)
     {
         ulong lo = unchecked(a.Lo - b.Lo);
@@ -69,7 +69,7 @@ public struct UInt128Value : IEquatable<UInt128Value>
 
     /// <summary>Logical left shift. The count is masked to 0..127, matching
     /// System.UInt128's shift semantics.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static UInt128Value operator <<(UInt128Value v, int count)
     {
         count &= 127;
@@ -86,7 +86,7 @@ public struct UInt128Value : IEquatable<UInt128Value>
 
     /// <summary>Logical right shift. The count is masked to 0..127, matching
     /// System.UInt128's shift semantics.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static UInt128Value operator >>(UInt128Value v, int count)
     {
         count &= 127;
@@ -103,7 +103,7 @@ public struct UInt128Value : IEquatable<UInt128Value>
 
     /// <summary>The high 64 bits of a 64x64 multiply, by 32 bit limbs —
     /// netstandard2.1 has no Math.BigMul(ulong, ulong).</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private static ulong MulHi64(ulong a, ulong b)
     {
         unchecked
@@ -143,7 +143,7 @@ public struct UInt128Value : IEquatable<UInt128Value>
     {
         if (b == Zero)
         {
-            throw new DivideByZeroException();
+            throw new global::System.DivideByZeroException();
         }
         if (a < b)
         {
@@ -178,11 +178,11 @@ public struct UInt128Value : IEquatable<UInt128Value>
 
     public static UInt128Value operator -(UInt128Value v) => Zero - v;
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static UInt128Value operator |(UInt128Value a, UInt128Value b) =>
         new UInt128Value(a.Hi | b.Hi, a.Lo | b.Lo);
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static UInt128Value operator &(UInt128Value a, UInt128Value b) =>
         new UInt128Value(a.Hi & b.Hi, a.Lo & b.Lo);
 
@@ -265,11 +265,11 @@ public struct Int128Value : IEquatable<Int128Value>
     public static readonly Int128Value MinValue = new Int128Value(0x8000_0000_0000_0000, 0);
 
     // two's complement: same bit math as unsigned
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static Int128Value operator +(Int128Value a, Int128Value b) =>
         (Int128Value)((UInt128Value)a + (UInt128Value)b);
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static Int128Value operator -(Int128Value a, Int128Value b) =>
         (Int128Value)((UInt128Value)a - (UInt128Value)b);
 
