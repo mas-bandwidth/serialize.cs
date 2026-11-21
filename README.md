@@ -16,6 +16,11 @@ whole message, and CI runs a live interop harness against the real
 `serialize.h`, compiled with clang++ from a pinned C++ release — on every push to
 `main`, on every pull request targeting `main`, and on manual dispatch.
 
+If you would rather not write serialize functions by hand,
+[Schema](https://github.com/mas-bandwidth/schema) generates them for C# and many other
+languages from one definition of your data. The packet code it generates for C# uses this
+library as its runtime.
+
 Family values: zero third-party dependencies (including test frameworks); malicious
 packet data never throws — reads fail cleanly with a sticky latched error, and the
 library throws no exceptions of its own; API misuse — writer contract violations
