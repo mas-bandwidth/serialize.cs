@@ -194,6 +194,16 @@ jobs:
           fi
           cat replay.log
           grep -q "FUZZ CHECK FAILED: roundtrip uint16" replay.log
+      - name: Harness negative controls and two-sentinel hostile-read sabotage self-test
+        run: |
+          dotnet run -c Debug --project fuzz/Fuzz.csproj -- --controls
+          if dotnet run -c Debug --project fuzz/Fuzz.csproj -p:SerializeFuzzReadSabotage=true -- --replay-corpus > read-sabotage.log 2>&1; then
+            cat read-sabotage.log
+            echo "::error::two-sentinel hostile-read pass did not catch SerializeFuzzReadSabotage"
+            exit 1
+          fi
+          cat read-sabotage.log
+          grep -q "FUZZ CHECK FAILED: read bits: a refused read wrote its destination" read-sabotage.log
 
   checked-arithmetic:
     name: checked arithmetic (a reader must not trap)
