@@ -76,6 +76,8 @@
     WriteBatch / ReadBatch (register-resident hot paths over the same streams).
 */
 
+#nullable enable
+
 using System;
 using System.Buffers.Binary;
 using System.Diagnostics;
@@ -147,9 +149,10 @@ public enum SerializeError
     /// the value they carry — through ReadStream.Reject(), or a nested object's
     /// Serialize returning false through SerializeObject with nothing latched. The
     /// one reason the caller decides rather than the wire (STANDARD.md 2.1). Appended
-    /// last, so no existing member's value moved. On a write or measure stream it is
-    /// what an object's Serialize returning false latches: the caller's own
-    /// abort.</summary>
+    /// last, so no existing member's value moved. Only a read stream latches it: on a
+    /// write or measure stream nothing latches, and an object's Serialize returning
+    /// false makes SerializeObject return false and records nothing (U9, since
+    /// 2.1.1).</summary>
     Rejected,
 }
 
@@ -162,8 +165,8 @@ public enum SerializeError
 ///
 /// Struct implementers must be serialized through the generic
 /// SerializeObject&lt;T&gt;(ref T) overload: passing a struct to the non-generic
-/// SerializeObject(ISerializer) boxes a copy, the read fills the box, and the caller's
-/// struct is silently left unchanged.
+/// SerializeObject(ISerializer) boxes a copy, so a read refuses it with
+/// SerializeError.ValueOutOfRange before any bits move.
 ///
 /// IMPORTANT: A value that controls how much more work your serialize function does —
 /// a loop count or a continuation bit — must have its serialize result checked before
@@ -402,8 +405,9 @@ public interface IBitStream
 
     /// <summary>Serializes an object that implements ISerializer. For struct
     /// implementers use the generic SerializeObject&lt;T&gt;(ref T) overload instead:
-    /// this one boxes a copy of a struct and the caller's struct is silently left
-    /// unchanged on read.</summary>
+    /// this one boxes a copy of a struct, so a read refuses a struct with
+    /// SerializeError.ValueOutOfRange before any bits move, and a write or a measure
+    /// asserts it in debug.</summary>
     bool SerializeObject(ISerializer obj);
 
     /// <summary>Serializes an object that implements ISerializer, by ref. This is the
@@ -659,12 +663,14 @@ public static class SerializeUtil
     {
         Debug.Assert(min < max && resolution > 0, SerializeInternal.FloatParamsMessage);
 
-        delta = max - min;
+        // ECMA-334 permits float arithmetic wider than float32; the explicit (float)
+        // conversions pin every intermediate to float32, as STANDARD.md requires
+        delta = (float)(max - min);
 
         // finite min < max cannot produce NaN, only an infinite overflow
         Debug.Assert(!float.IsInfinity(delta), SerializeInternal.FloatDeltaAssertMessage);
 
-        float values = delta / resolution;
+        float values = (float)(delta / resolution);
 
         Debug.Assert(!float.IsInfinity(values), SerializeInternal.FloatValuesAssertMessage);
 
@@ -677,7 +683,7 @@ public static class SerializeUtil
             values = 4294967040.0f;
         }
 
-        maxIntegerValue = (uint)Math.Ceiling((double)values);
+        maxIntegerValue = (uint)global::System.Math.Ceiling((double)values);
 
         bits = BitsRequired(0, maxIntegerValue);
     }
@@ -804,6 +810,8 @@ internal static class SerializeInternal
     internal const string FloatPrecomputedMaxIntegerValueMessage = "precomputed compressed float constants are the caller's contract: maxIntegerValue must be at least 1";
     internal const string FloatPrecomputedBitsMessage = "precomputed compressed float constants are the caller's contract: bits must equal BitsRequired(0, maxIntegerValue)";
     internal const string FloatPrecomputedDeltaMessage = "precomputed compressed float constants are the caller's contract: delta must be positive";
+    internal const string FlushedWriterMessage = "flushed writer state: the scratch bit count must match the written bit position";
+    internal const string BoxedStructMessage = "a struct passed to SerializeObject(ISerializer) is boxed and refused on read: use SerializeObject<T>(ref T)";
 
     /// <summary>
     /// The difference buckets used by SerializeIntRelative. Each bucket costs one
@@ -892,7 +900,7 @@ internal static class SerializeInternal
         Debug.Assert(float.IsFinite(value), FloatValueAssertMessage);
         ValidateCompressedFloatTop(min, delta);
 
-        float normalizedValue = (value - min) / delta;
+        float normalizedValue = (float)((float)(value - min) / delta);
         if (!(normalizedValue >= 0.0f))
         {
             normalizedValue = 0.0f; // the !>= form of the clamp forces NaN into range too
@@ -915,8 +923,8 @@ internal static class SerializeInternal
         // quantum agree). Do not fold the product back into one expression, and do
         // not drop the casts. Matches serialize.h serialize_compressed_float_internal
         // (`const float scaled`) and serialize.c serialize_write_compressed_float.
-        float scaled = (float)(normalizedValue * maxIntegerValue);
-        uint integerValue = (uint)Math.Floor((double)(float)(scaled + 0.5f));
+        float scaled = (float)(normalizedValue * (float)maxIntegerValue);
+        uint integerValue = (uint)global::System.Math.Floor((double)(float)(scaled + 0.5f));
         // STANDARD.md: the integer clamp is normative (2026-08-23, schema#109). Once
         // maxIntegerValue >= 2^23 the float32 ulp at the top of the range reaches 1,
         // so the rounded sum can exceed maxIntegerValue itself: the writer emits a
@@ -946,7 +954,7 @@ internal static class SerializeInternal
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static float DecodeCompressedFloat(uint integerValue, uint maxIntegerValue, float delta, float min)
     {
-        float normalizedValue = (float)integerValue / maxIntegerValue;
+        float normalizedValue = (float)((float)integerValue / (float)maxIntegerValue);
         // STANDARD.md pins the DECODE the same way it pins the write quantization:
         // "the quotient rounds, the product rounds BEFORE min is added, and the sum
         // rounds", and an implementation "must not contract the multiply and the add
@@ -1004,7 +1012,7 @@ internal static class SerializeInternal
     {
         Debug.Assert(integerBits >= 1, FixedIntegerBitsMessage);
         Debug.Assert(fractionBits >= 0, FixedFractionBitsMessage);
-        Debug.Assert(integerBits + fractionBits == storageBits, FixedWidthMessage);
+        Debug.Assert((long)integerBits + fractionBits == storageBits, FixedWidthMessage);
         Debug.Assert(minUnits <= maxUnits, MinMaxMessage);
 
         // the whole unit capacity of the Q format, in the 64 bit domain: with 65 or
@@ -1038,7 +1046,7 @@ internal static class SerializeInternal
     {
         // exactly the conditions ValidateFixedPointFormat asserts, as a value: the
         // read side refuses on it (U7, U16) where the write side asserts
-        if (integerBits < 1 || fractionBits < 0 || integerBits + fractionBits != storageBits || minUnits > maxUnits)
+        if (integerBits < 1 || fractionBits < 0 || (long)integerBits + fractionBits != storageBits || minUnits > maxUnits)
         {
             return false;
         }
@@ -1110,8 +1118,10 @@ internal static class SerializeInternal
         {
             return false;
         }
-        float delta = max - min;
-        return !float.IsInfinity(delta) && !float.IsInfinity(delta / resolution);
+        // float32 intermediates, as CompressedFloatParams: a wider evaluation would
+        // accept a declaration whose delta overflows float32
+        float delta = (float)(max - min);
+        return !float.IsInfinity(delta) && !float.IsInfinity((float)(delta / resolution));
     }
 
     /// <summary>Precomputed compressed float constants that can be right, checked
@@ -1223,6 +1233,8 @@ public sealed class BitWriter
 
     internal long NumBits => _numBits;
 
+    internal int ScratchBits => _scratchBits;
+
     /// <summary>
     /// Lifts the packer state out into locals for a WriteBatch, which serializes
     /// against register-resident copies of these fields and stores them back once
@@ -1262,6 +1274,10 @@ public sealed class BitWriter
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void WriteBitsUnchecked(uint value, int bits)
     {
+        // every write reaches this or WriteBytesUnchecked, so a write after a flush
+        // that stored a partial word is caught on every path (IMPLEMENTING.md U11)
+        Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
+
         value &= unchecked((uint)((1UL << bits) - 1));
 
         _scratch |= (ulong)value << _scratchBits;
@@ -1324,6 +1340,8 @@ public sealed class BitWriter
     /// </summary>
     internal void WriteBytesUnchecked(ReadOnlySpan<byte> data)
     {
+        Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
+
         int n = data.Length;
 
         int headBytes = (int)((8 - (_bitsWritten % 64) / 8) % 8);
@@ -1374,7 +1392,8 @@ public sealed class BitWriter
     /// ever written as zeros.
     ///
     /// FlushBits ends the write: writing more bits after a mid-stream flush corrupts
-    /// the stream, because the flushed partial word cannot be resumed.
+    /// the stream, because the flushed partial word cannot be resumed. Every write
+    /// path asserts it in debug (IMPLEMENTING.md U11).
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void FlushBits()
@@ -1607,6 +1626,7 @@ public sealed class BitReader
 public sealed class WriteStream : IBitStream
 {
     private readonly BitWriter _writer;
+    private uint _batchGeneration;
 
     /// <summary>Creates a write stream that writes to the given buffer. The buffer size
     /// must be a multiple of 8 bytes, because the bit writer stores qwords to
@@ -1622,6 +1642,7 @@ public sealed class WriteStream : IBitStream
     public void Reset(byte[] buffer)
     {
         _writer.Reset(buffer);
+        unchecked { _batchGeneration++; }
     }
 
     /// <inheritdoc/>
@@ -1985,7 +2006,7 @@ public sealed class WriteStream : IBitStream
         ReadOnlySpan<char> remaining = value.AsSpan();
         while (remaining.Length > 0)
         {
-            int take = Math.Min(remaining.Length, 128);
+            int take = global::System.Math.Min(remaining.Length, 128);
             if (take < remaining.Length && char.IsHighSurrogate(remaining[take - 1]))
             {
                 take--; // take >= 1 still: take < remaining.Length implies take == 128
@@ -2021,6 +2042,8 @@ public sealed class WriteStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeObject(ISerializer obj)
     {
+        // a read refuses a struct here, so a write or a measure asserts it (U9)
+        Debug.Assert(!obj.GetType().IsValueType, SerializeInternal.BoxedStructMessage);
         // an object that returns false on a write or a measure makes this return
         // false and records nothing (IMPLEMENTING.md U6, U9): a write or measure
         // stream has no refusal state
@@ -2100,6 +2123,15 @@ public sealed class WriteStream : IBitStream
     /// <summary>The bit writer, for batch state capture and delegated calls.</summary>
     internal BitWriter Writer => _writer;
 
+    /// <summary>Monotonic batch sync generation, used to detect stale or copied batches.</summary>
+    internal uint BatchGeneration
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => _batchGeneration;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        set => _batchGeneration = value;
+    }
+
     /// <summary>The written portion of the buffer: the packet you should send.
     ///
     /// IMPORTANT: Call Flush first.</summary>
@@ -2141,6 +2173,7 @@ public sealed class ReadStream : IBitStream
 {
     private readonly BitReader _reader;
     private SerializeError _error;
+    private uint _batchGeneration;
 
     /// <summary>Creates a read stream over the first <paramref name="bytes"/> bytes of
     /// the given buffer. Buffer bytes past <paramref name="bytes"/> are slack: keeping
@@ -2171,6 +2204,7 @@ public sealed class ReadStream : IBitStream
         bool fits = unchecked((uint)bytes) <= (uint)buffer.Length;
         _reader.Reset(buffer, fits ? bytes : 0);
         _error = fits ? SerializeError.None : SerializeError.ValueOutOfRange;
+        unchecked { _batchGeneration++; }
     }
 
     /// <summary>Resets the stream over the whole buffer.</summary>
@@ -2805,7 +2839,6 @@ public sealed class ReadStream : IBitStream
         {
             return Fail(SerializeError.ValueOutOfRange);
         }
-        SerializeInternal.ValidateBufferSize(bufferSize);
         if (_error != SerializeError.None)
         {
             return false;
@@ -2909,6 +2942,12 @@ public sealed class ReadStream : IBitStream
         if (_error != SerializeError.None && SerializeConformanceControls.Keeps("object-terminal"))
         {
             return false;
+        }
+        // a struct arrives here boxed: the read would fill the box, not the
+        // caller's value, so it is refused before any bits move
+        if (obj.GetType().IsValueType)
+        {
+            return Fail(SerializeError.ValueOutOfRange);
         }
         if (!obj.Serialize(this))
         {
@@ -3072,9 +3111,19 @@ public sealed class ReadStream : IBitStream
         set => _error = value;
     }
 
+    /// <summary>Monotonic batch sync generation, used to detect stale or copied batches.</summary>
+    internal uint BatchGeneration
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => _batchGeneration;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        set => _batchGeneration = value;
+    }
+
     /// <summary>The number of bits still available to read, so callers can preflight a
-    /// read without dropping to the BitReader layer.</summary>
-    public long BitsRemaining => _reader.BitsRemaining;
+    /// read without dropping to the BitReader layer. Returns -1 once the stream has
+    /// failed.</summary>
+    public long BitsRemaining => _error == SerializeError.None ? _reader.BitsRemaining : -1;
 
     /// <inheritdoc/>
     public SerializeError Error => _error;
@@ -3361,6 +3410,8 @@ public sealed class MeasureStream : IBitStream
     /// <inheritdoc/>
     public bool SerializeObject(ISerializer obj)
     {
+        // a read refuses a struct here, so a write or a measure asserts it (U9)
+        Debug.Assert(!obj.GetType().IsValueType, SerializeInternal.BoxedStructMessage);
         // an object that returns false on a write or a measure makes this return
         // false and records nothing (IMPLEMENTING.md U6, U9): a write or measure
         // stream has no refusal state
@@ -3464,6 +3515,8 @@ public sealed class MeasureStream : IBitStream
 ///     back to the stream: a batch dropped without End
 ///     silently loses its writes. Serialize calls on an ended batch are API
 ///     misuse.
+///   - Never pass a batch by value: a batch is a mutable ref struct, and a
+///     by-value copy splits the cursor and state across two copies.
 ///   - Batches nest by sequence, not by scope: End one batch before beginning
 ///     the next. Stream and batch calls can be interleaved freely at batch
 ///     granularity.
@@ -3500,6 +3553,7 @@ public ref struct WriteBatch
     private long _bitsWritten;
     private long _wordIndex;
     private int _scratchBits;
+    private uint _generation;
     private bool _ended;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -3508,6 +3562,8 @@ public ref struct WriteBatch
         _stream = stream;
         stream.Writer.CaptureState(out _data, out _scratch, out _numBits,
             out _bitsWritten, out _wordIndex, out _scratchBits);
+        Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
+        _generation = stream.BatchGeneration;
         _ended = false;
     }
 
@@ -3538,13 +3594,17 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool Sync()
     {
-        // a batch used after End is write misuse (U9): asserted, and in release it
+        // a batch used after End, or a stale by-value copy after another copy
+        // synced or ended, is write misuse (U9): asserted, and in release it
         // writes nothing back, so a stale packer state never rewinds the stream
-        Debug.Assert(!_ended, SerializeInternal.BatchEndedMessage);
-        if (_ended)
+        Debug.Assert(!_ended && _generation == _stream.BatchGeneration, SerializeInternal.BatchEndedMessage);
+        if (_ended || _generation != _stream.BatchGeneration)
         {
             return false;
         }
+        uint next = unchecked(_generation + 1);
+        _generation = next;
+        _stream.BatchGeneration = next;
         _stream.Writer.RestoreState(_scratch, _bitsWritten, _wordIndex, _scratchBits);
         return true;
     }
@@ -3555,6 +3615,7 @@ public ref struct WriteBatch
     {
         _stream.Writer.CaptureState(out _data, out _scratch, out _numBits,
             out _bitsWritten, out _wordIndex, out _scratchBits);
+        _generation = _stream.BatchGeneration;
     }
 
     /// <summary>A refusal is read only: on a write batch there is nothing to refuse,
@@ -3571,6 +3632,8 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void WriteBitsUnchecked(uint value, int bits)
     {
+        Debug.Assert(_scratchBits == (int)(_bitsWritten % 64), SerializeInternal.FlushedWriterMessage);
+
         value &= unchecked((uint)((1UL << bits) - 1));
 
         _scratch |= (ulong)value << _scratchBits;
@@ -3600,6 +3663,7 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool WriteBits(uint value, int bits)
     {
+        Debug.Assert(!_ended, SerializeInternal.BatchEndedMessage);
         Debug.Assert(_bitsWritten + bits <= _numBits, SerializeInternal.WriteOverflowMessage);
         WriteBitsUnchecked(value, bits);
         return true;
@@ -3621,6 +3685,7 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeBits64(ref ulong value, int bits)
     {
+        Debug.Assert(!_ended, SerializeInternal.BatchEndedMessage);
         Debug.Assert(bits >= 1 && bits <= 64, SerializeInternal.BitsRange64Message);
         // U8: an over-wide value is caught in the checked build, never masked
         Debug.Assert(bits >= 64 || value >> bits == 0, SerializeInternal.ValueFitsMessage);
@@ -3653,6 +3718,7 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeInt64(ref long value, long min, long max)
     {
+        Debug.Assert(!_ended, SerializeInternal.BatchEndedMessage);
         Debug.Assert(min <= max, SerializeInternal.MinMaxMessage);
         long v = value;
         Debug.Assert(v >= min && v <= max, SerializeInternal.WriteRangeAssertMessage);
@@ -3689,6 +3755,7 @@ public ref struct WriteBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeUInt64(ref ulong value)
     {
+        Debug.Assert(!_ended, SerializeInternal.BatchEndedMessage);
         Debug.Assert(_bitsWritten + 64 <= _numBits, SerializeInternal.WriteOverflowMessage);
         WriteBitsUnchecked(unchecked((uint)value), 32);
         WriteBitsUnchecked(unchecked((uint)(value >> 32)), 32);
@@ -3699,6 +3766,16 @@ public ref struct WriteBatch
     /// WriteStream.SerializeBool.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SerializeBool(ref bool value) => WriteBits(value ? 1u : 0u, 1);
+
+    /// <summary>Serializes a continuation bit and reports whether a sentinel-driven
+    /// loop should proceed. Identical semantics to SerializeUtil.Continue.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool Continue(ref bool more) => SerializeBool(ref more) && more;
+
+    /// <summary>Serializes a termination bit and reports whether a sentinel-driven
+    /// loop should proceed. Identical semantics to SerializeUtil.Until.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool Until(ref bool done) => SerializeBool(ref done) && !done;
 
     /// <summary>Serializes an uncompressed 32 bit floating point value. Identical
     /// semantics to WriteStream.SerializeFloat.</summary>
@@ -4028,7 +4105,8 @@ public ref struct WriteBatch
 /// can keep it in registers across calls. Same wire logic, same validation and
 /// hostile-data guarantees, same latched error model, identical decode results.
 /// The contract is WriteBatch's: the batch owns the stream between BeginBatch and
-/// End; always call End on every path out; End is idempotent.
+/// End; never pass a batch by value; always call End on every path out; End is
+/// idempotent.
 /// </summary>
 public ref struct ReadBatch
 {
@@ -4037,6 +4115,7 @@ public ref struct ReadBatch
     private long _numBits;
     private long _bitsRead;
     private SerializeError _error;
+    private uint _generation;
     private bool _ended;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -4045,6 +4124,7 @@ public ref struct ReadBatch
         _stream = stream;
         stream.Reader.CaptureState(out _data, out _numBits, out _bitsRead);
         _error = stream.BatchError;
+        _generation = stream.BatchGeneration;
         _ended = false;
     }
 
@@ -4088,8 +4168,21 @@ public ref struct ReadBatch
         {
             return false;
         }
+        if (_generation != _stream.BatchGeneration)
+        {
+            _stream.Fail(SerializeError.ValueOutOfRange);
+            _error = Dead;
+            _ended = true;
+            return false;
+        }
+        uint next = unchecked(_generation + 1);
+        _generation = next;
+        _stream.BatchGeneration = next;
         _stream.Reader.RestoreState(_bitsRead);
-        _stream.BatchError = _error;
+        if (_stream.BatchError == SerializeError.None)
+        {
+            _stream.BatchError = _error;
+        }
         return true;
     }
 
@@ -4099,6 +4192,7 @@ public ref struct ReadBatch
     {
         _stream.Reader.CaptureState(out _data, out _numBits, out _bitsRead);
         _error = _stream.BatchError;
+        _generation = _stream.BatchGeneration;
     }
 
     /// <summary>Refuses the read in progress with <paramref name="error"/>: the
@@ -4108,6 +4202,10 @@ public ref struct ReadBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool Fail(SerializeError error)
     {
+        if (_ended)
+        {
+            return _stream.Fail(error);
+        }
         if (_error == SerializeError.None)
         {
             _error = SerializeInternal.RefusalOrRejected(error);
@@ -4358,6 +4456,20 @@ public ref struct ReadBatch
         return true;
     }
 
+    /// <summary>Serializes a continuation bit and reports whether a sentinel-driven
+    /// loop should proceed: false as soon as the batch has an error, so the loop
+    /// always ends on a truncated packet. Identical semantics to
+    /// SerializeUtil.Continue.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool Continue(ref bool more) => SerializeBool(ref more) && more;
+
+    /// <summary>Serializes a termination bit and reports whether a sentinel-driven
+    /// loop should proceed: false as soon as the batch has an error, so the loop
+    /// always ends on a truncated packet. Identical semantics to
+    /// SerializeUtil.Until.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool Until(ref bool done) => SerializeBool(ref done) && !done;
+
     /// <summary>Serializes an uncompressed 32 bit floating point value. Identical
     /// semantics to ReadStream.SerializeFloat.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -4569,7 +4681,7 @@ public ref struct ReadBatch
     {
         if (!Sync())
         {
-            return false;
+            return _stream.Reject();
         }
         bool ok = _stream.Reject();
         Recapture();
@@ -4741,8 +4853,9 @@ public ref struct ReadBatch
     /// batch's own reads.</summary>
     public long BytesProcessed => (_bitsRead + 7) / 8;
 
-    /// <summary>The number of bits still available to read.</summary>
-    public long BitsRemaining => _numBits - _bitsRead;
+    /// <summary>The number of bits still available to read. Returns -1 once the batch
+    /// has failed.</summary>
+    public long BitsRemaining => _error == SerializeError.None ? _numBits - _bitsRead : -1;
 
     /// <summary>The first error latched on the batch or carried in from the stream,
     /// or SerializeError.None.</summary>

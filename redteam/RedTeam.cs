@@ -2132,6 +2132,7 @@ internal static class RedTeam
             catch (Exception e)
             {
                 BitReaderAlignThrows.Add($"bytes={bytes}: {e.GetType().Name}: {e.Message}");
+                Finding($"BitReader.ReadAlign THREW: bytes={bytes} {e.GetType().Name}: {e.Message}");
             }
         }
     }
@@ -2171,8 +2172,8 @@ internal static class RedTeam
                 if (ok != shouldPass || (ok && (value < min || value > max)))
                 {
                     reported++;
-                    Console.WriteLine($"  int64[{min},{max}] bits={bits} span={legalSpan} raw={raw}: " +
-                                      $"ok={ok} (expected {shouldPass}) value={value}");
+                    Finding($"int64[{min},{max}] bits={bits} span={legalSpan} raw={raw}: " +
+                            $"ok={ok} (expected {shouldPass}) value={value}");
                 }
             }
         }

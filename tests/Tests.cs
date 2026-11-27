@@ -449,6 +449,9 @@ internal static partial class Program
         RunTest("test_read_stream_bytes_outside_buffer", TestReadStreamBytesOutsideBuffer);
         RunTest("test_public_fail", TestPublicFail);
         RunTest("test_batch_after_end", TestBatchAfterEnd);
+#if DEBUG
+        RunTest("test_batch_after_end_inline", TestBatchAfterEndInline);
+#endif
         RunTest("test_copy_string", TestCopyString);
         // IMPLEMENTING.md 2.1.1's rulings U6 and U9 (Uniform.cs)
         RunTest("test_write_misuse_never_latches", TestWriteMisuseNeverLatches);
@@ -470,6 +473,7 @@ internal static partial class Program
         RunTest("test_compressed_float_validation", TestCompressedFloatValidation);
         RunTest("test_compressed_float_top_of_range_clamp", TestCompressedFloatTopOfRangeClamp);
         RunTest("test_compressed_float_quantization_boundaries", TestCompressedFloatQuantizationBoundaries);
+        RunTest("test_compressed_float_float32_intermediates", TestCompressedFloatFloat32Intermediates);
         RunTest("test_compressed_float_precomputed_validation", TestCompressedFloatPrecomputedValidation);
         RunTest("test_compressed_float_precomputed_conformance", TestCompressedFloatPrecomputedConformance);
         RunTest("test_compressed_float_precomputed_differential", TestCompressedFloatPrecomputedDifferential);
@@ -520,6 +524,7 @@ internal static partial class Program
         RunTest("test_batch_end_idempotent", TestBatchEndIdempotent);
         RunTest("test_batch_allocation", TestBatchAllocation);
         RunTest("test_batch_properties", TestBatchProperties);
+        RunTest("test_batch_sync_and_generation", TestBatchSyncAndGeneration);
 
         RunTest("test_int128_pair_basics", TestInt128PairBasics);
 #if SERIALIZE_HAS_INT128
@@ -1180,7 +1185,7 @@ internal static partial class Program
 
     private static void TestStringReaderZeroBufferSize()
     {
-        // security#33-F1: with bufferSize < 1 the length read saw the degenerate
+        // With bufferSize < 1 the length read saw the degenerate
         // range [0, -1]; the release range compare passed every value, so a hostile
         // 32-bit length with the top bit set decoded negative, slipped the payload
         // bound, and threw from AsSpan / new char[]. The read path must fail-latch
@@ -1633,9 +1638,10 @@ internal static partial class Program
 
     private static void TestCompressedFloatTopOfRangeClamp()
     {
-        // STANDARD.md's normative integer clamp (2026-08-23, schema#109; ruling:
-        // Glenn, live). In [2^23, 2^24) the float32 ulp is 1, so scaled + 0.5f lands
-        // on a tie and round-to-even can push the code past maxIntegerValue. Before
+        // STANDARD.md's normative integer clamp: a compressed float code must
+        // stay within [min, maxIntegerValue]. In [2^23, 2^24) the float32 ulp
+        // is 1, so scaled + 0.5f lands on a tie and round-to-even can push the
+        // code past maxIntegerValue. Before
         // the clamp, witness A wrote a top-of-range code its own reader rejected,
         // and witness B wrote a code one bit wider than the 24 bit field, which
         // this port's bitpacker masked to zero on the wire.
@@ -1959,6 +1965,17 @@ internal static partial class Program
         }
     }
 
+    /// <summary>Flushes the write stream it is handed: write misuse, for the
+    /// flushed writer tests.</summary>
+    private sealed class FlushingObject : ISerializer
+    {
+        public bool Serialize(IBitStream stream)
+        {
+            ((WriteStream)stream).Flush();
+            return true;
+        }
+    }
+
     private static void TestWriteContractAsserts()
     {
         // The proof that a deliberately-invalid write still asserts: every write-side
@@ -2251,6 +2268,117 @@ internal static partial class Program
             float v = 0.0f;
             stream.SerializeCompressedFloat(ref v, -3.4e38f, +3.4e38f, 1.0f);
         }), "a non-finite compressed float declaration must assert in debug");
+
+        // flushed writer state: further writes through each entry point must
+        // assert in debug
+        Check(AssertFires(() =>
+        {
+            BitWriter writer = new BitWriter(new byte[64]);
+            writer.WriteBits(0xAB, 8);
+            writer.FlushBits();
+            writer.WriteBits(0xCD, 8);
+        }), "a flushed BitWriter WriteBits must assert in debug");
+
+        Check(AssertFires(() =>
+        {
+            BitWriter writer = new BitWriter(new byte[64]);
+            writer.WriteBits(0xAB, 8);
+            writer.FlushBits();
+            writer.WriteBytes(new byte[] { 0xCD });
+        }), "a flushed BitWriter WriteBytes must assert in debug");
+
+        Check(AssertFires(() =>
+        {
+            BitWriter writer = new BitWriter(new byte[64]);
+            writer.WriteBits(0xAB, 8);
+            writer.FlushBits();
+            writer.WriteBytes(ReadOnlySpan<byte>.Empty);
+        }), "a flushed BitWriter zero-length WriteBytes must assert in debug");
+
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[64]);
+            uint first = 0xAB;
+            stream.SerializeBits(ref first, 8);
+            stream.Flush();
+            uint second = 0xCD;
+            stream.SerializeBits(ref second, 8);
+        }), "a flushed WriteStream write must assert in debug");
+
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[64]);
+            uint first = 0xAB;
+            stream.SerializeBits(ref first, 8);
+            stream.Flush();
+            WriteBatch batch = stream.BeginBatch();
+            batch.End();
+        }), "a flushed WriteStream BeginBatch must assert in debug");
+
+        // every other write path on a flushed WriteStream asserts too (U11): the
+        // wide integers, the 128 bit groups, fixed point, an aligned byte run, a
+        // zero-length byte run, and the empty string (a 0 bit and a 4 bit length)
+        foreach ((string name, Action<WriteStream> write) in new (string, Action<WriteStream>)[]
+        {
+            ("SerializeBits64", s => { ulong v = 0x12345; s.SerializeBits64(ref v, 40); }),
+            ("SerializeInt64", s => { long v = 0x55; s.SerializeInt64(ref v, long.MinValue, long.MaxValue); }),
+            ("SerializeUInt64", s => { ulong v = 0x88; s.SerializeUInt64(ref v); }),
+            ("SerializeUInt128", s => { UInt128Value v = 0x77; s.SerializeUInt128(ref v); }),
+            ("SerializeFixed", s => { long v = 0x66; s.SerializeFixed(ref v, 48, 16, -1000000, 1000000); }),
+            ("SerializeBytes", s => s.SerializeBytes(new byte[] { 0xCD })),
+            ("SerializeBytes zero-length", s => s.SerializeBytes(Span<byte>.Empty)),
+            ("SerializeString empty, buffer size 1", s => { string t = ""; s.SerializeString(ref t, 1); }),
+            ("SerializeString empty, buffer size 16", s => { string t = ""; s.SerializeString(ref t, 16); }),
+        })
+        {
+            Check(AssertFires(() =>
+            {
+                WriteStream stream = new WriteStream(new byte[64]);
+                uint first = 0xAB;
+                stream.SerializeBits(ref first, 8);
+                stream.Flush();
+                write(stream);
+            }), $"a flushed WriteStream {name} must assert in debug");
+        }
+
+        // ...and a batch's inline writes, after a delegated object flushed the stream
+        Check(AssertFires(() =>
+        {
+            WriteStream stream = new WriteStream(new byte[64]);
+            WriteBatch batch = stream.BeginBatch();
+            uint first = 0xAB;
+            batch.SerializeBits(ref first, 8);
+            batch.SerializeObject(new FlushingObject());
+            uint second = 0xCD;
+            batch.SerializeBits(ref second, 8);
+            batch.End();
+        }), "a WriteBatch inline write after a flush must assert in debug");
+
+        // a struct through the non-generic SerializeObject is refused on read, so a
+        // write and a measure assert it: the two sides agree
+        Check(AssertFires(() =>
+        {
+            ISerializer boxed = new StructPoint { X = 1, Y = 2 };
+            new WriteStream(new byte[16]).SerializeObject(boxed);
+        }), "a boxed struct written through SerializeObject(ISerializer) must assert in debug");
+
+        Check(AssertFires(() =>
+        {
+            ISerializer boxed = new StructPoint { X = 1, Y = 2 };
+            new MeasureStream().SerializeObject(boxed);
+        }), "a boxed struct measured through SerializeObject(ISerializer) must assert in debug");
+
+        // reversed witness: a flush at a qword boundary leaves the writer
+        // resumable, so the next write must not assert
+        Check(!AssertFires(() =>
+        {
+            BitWriter writer = new BitWriter(new byte[64]);
+            writer.WriteBits(0xAB, 32);
+            writer.WriteBits(0xCD, 32);
+            writer.FlushBits();
+            writer.WriteBits(0xEF, 8);
+            writer.FlushBits();
+        }), "a qword-boundary flush must not assert on the next write");
     }
 
     private static void TestApiMisuseAsserts()
@@ -2282,6 +2410,24 @@ internal static partial class Program
             batch.SerializeBits64(ref v, 65);
             batch.End();
         }), "bits64 above range must assert in debug (batch)");
+
+        // (3) WriteBatch copied by value where both copies sync/end must assert in debug
+        Check(AssertFires(() =>
+        {
+            static void WriteOnByValueCopy(WriteBatch copy)
+            {
+                uint inner = 1;
+                copy.SerializeBits(ref inner, 4);
+                copy.End();
+            }
+
+            WriteStream stream = new WriteStream(new byte[8]);
+            WriteBatch batch = stream.BeginBatch();
+            uint outer = 2;
+            batch.SerializeBits(ref outer, 4);
+            WriteOnByValueCopy(batch);
+            batch.End();
+        }), "ending a WriteBatch after a by-value copy synced must assert in debug");
 
         // string buffer size below 1. The floor was 2 here and in Rust until 2026-08-23,
         // which made bufferSize 1 -- the buffer that holds exactly the empty string -- an
@@ -2746,6 +2892,15 @@ internal static partial class Program
         FailingStruct failing = default;
         Check(!failStream.SerializeObject(ref failing), "expected the struct serialize to fail");
         Check(failStream.Ok, "and records nothing on a write (IMPLEMENTING.md U9)");
+
+        // a struct passed to the non-generic read overload is refused before any
+        // bits move, so the caller's struct is never left default behind a success
+        ReadStream boxedStream = new ReadStream(buffer, (int)writeStream.BytesProcessed);
+        StructPoint boxed = default;
+        Check(!boxedStream.SerializeObject(boxed), "a struct read through the non-generic overload must refuse");
+        Check(boxedStream.Error == SerializeError.ValueOutOfRange,
+            $"expected ValueOutOfRange, got {boxedStream.Error}");
+        Check(boxedStream.BitsProcessed == 0, $"the refusal consumed {boxedStream.BitsProcessed} bits, expected 0");
     }
 
     private struct FailingStruct : ISerializer
@@ -2956,6 +3111,8 @@ internal static partial class Program
         {
             ReadStream stream = prepare();
             Check(!stream.Ok, $"{name}: the failure must have latched");
+            Check(stream.BitsRemaining == -1,
+                $"{name}: expected BitsRemaining -1 on a failed stream, got {stream.BitsRemaining}");
             SerializeError latched = stream.Error;
             long position = stream.BitsProcessed;
 
@@ -3033,8 +3190,8 @@ internal static partial class Program
         for (int i = 0; i < numChunks; i++)
         {
             Check(readStream.SerializeBytes(readChunk), "bulk read failed");
+            Check(readChunk.AsSpan().SequenceEqual(chunk), "the final chunk did not round trip");
         }
-        Check(readChunk.AsSpan().SequenceEqual(chunk), "the final chunk did not round trip");
         uint readSentinel = 0;
         Check(readStream.SerializeBits(ref readSentinel, 32), "sentinel read failed");
         Check(readSentinel == sentinel, $"expected sentinel {sentinel:x}, got {readSentinel:x}");

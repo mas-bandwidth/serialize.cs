@@ -1,6 +1,6 @@
 // The emulated 128 bit pair: Int128Value / UInt128Value.
 //
-// One API on every TFM (decision: Glenn, 2026-08-12, option b): the 128 bit
+// One API on every TFM: the 128 bit
 // serialize surface speaks THESE types everywhere, so netstandard2.1 (Unity-
 // class runtimes, no System.Int128) carries the full surface, and wire
 // behavior cannot diverge by framework — the same emulated arithmetic runs on
@@ -8,10 +8,13 @@
 // System.UInt128 make the pair transparent at call boundaries (ref parameters
 // still need a pair-typed local — C# does not convert through ref).
 //
-// The operation set is exactly what the serialize paths need — add, subtract,
-// shifts, or, compares, word casts — implemented as two's-complement math on
-// (Hi, Lo) ulong halves. Nothing speculative: no mul/div/parse. ToString is
-// hex, for diagnostics.
+// The operation set is what the serialize paths and the test harnesses need —
+// add, subtract, shifts, or, compares, word casts, and the multiply and
+// divide/remainder the harnesses use for fixed point scaling and offset
+// generation — implemented as two's-complement math on (Hi, Lo) ulong halves.
+// There is no parse. ToString is hex, for diagnostics.
+
+#nullable enable
 
 using System;
 using System.Runtime.CompilerServices;

@@ -16,6 +16,11 @@ whole message, and CI runs a live interop harness against the real
 `serialize.h`, compiled with clang++ from a pinned C++ release — on every push to
 `main`, on every pull request targeting `main`, and on manual dispatch.
 
+If you would rather not write serialize functions by hand,
+[Schema](https://github.com/mas-bandwidth/schema) generates them for C# and many other
+languages from one definition of your data. The packet code it generates for C# uses this
+library as its runtime.
+
 Family values: zero third-party dependencies (including test frameworks); malicious
 packet data never throws — reads fail cleanly with a sticky latched error, and the
 library throws no exceptions of its own; API misuse — writer contract violations
@@ -31,7 +36,10 @@ library's `serialize_assert`; on read a bad call-site parameter is refused as
 stream has no refusal state (`Error` is always `None`), and release output after
 misuse is unspecified. `Fail` on a write or measure returns false and records
 nothing; a nested object's `Serialize` returning false on a write or measure makes
-`SerializeObject` return false and records nothing. A build with the `DEBUG` constant is what STANDARD.md
+`SerializeObject` return false and records nothing. Since 2.2.0 a write after a
+`Flush` that stored a partial word asserts on every write path (U11), and a struct
+passed to the boxing `SerializeObject(ISerializer)` asserts on write and measure, as
+a read refuses it with `ValueOutOfRange`; use `SerializeObject<T>(ref T)` for structs. A build with the `DEBUG` constant is what STANDARD.md
 calls a **checked build**, and every check that page makes conditional on the build
 is conditional on that constant here (STANDARD.md "Writes assume trusted data",
 enacted for C# per serialize#52; parameters joined per the 2026-08-16 check-model audit,
@@ -70,7 +78,7 @@ a format version, and two endpoints interoperate only when they carry the same o
 
 ## Format 2.0
 
-The principle 2.0 adopts (STANDARD.md, Glenn Fiedler, 2026-10-22): **the wire carries
+The principle 2.0 adopts (STANDARD.md): **the wire carries
 only integers and bytes, and every value has exactly one encoding.** Every finite
 value 1.1 could carry keeps its exact bytes. What changed for a C# caller:
 
@@ -192,7 +200,7 @@ value 1.1 could carry keeps its exact bytes. What changed for a C# caller:
   every build), and for each refusal rule a reader with that one rule deleted must fail
   exactly the vectors its `<rule>.expected` names. `-p:SerializeConformanceControls=true`
   compiles the switch that deletes one rule at a time, and `test_conformance_controls`
-  runs all fifteen, through the stream and through the batch; CI runs it in its own
+  runs all eighteen, through the stream and through the batch; CI runs it in its own
   job. Without the property the switch is a constant the JIT folds away.
 - `SECURITY.md` — how to report a vulnerability privately, and what is in scope.
 
@@ -214,16 +222,16 @@ The library targets `net8.0` (LTS game servers), `net10.0`, and `netstandard2.1`
 for Unity-class runtimes (Unity 2021+ through Unity 6) — `LangVersion` is pinned
 to C# 9 on that target, so anything Unity's compiler would refuse fails here, in
 CI, rather than in the editor. The 2.1 target is not a reduced library: shims for
-`BitOperations`, the unsigned `BitConverter` bit casts, `Rune` enumeration and
-`Utf8.IsValid` sit at the bottom of `Serialize.cs` as the single implementation
+`BitOperations`, the unsigned `BitConverter` bit casts, a UTF-16 well-formedness
+check (`Utf16IsValid`) and `Utf8.IsValid` sit at the bottom of `Serialize.cs` as the single implementation
 every TFM shares — unconditional except `LeadingZeroCount`, which keeps the
 hardware intrinsic where it is guaranteed and takes a bit-identical software
 fallback everywhere else — and the 128 bit surface runs there too, on the
 emulated pair (see below). CI runs the whole suite against the netstandard2.1
 assembly, golden wire pins included, which is what proves the shims wire-neutral.
 The only tests that leg skips are the two `System.Int128` oracle cross-checks,
-which need the framework type they check the pair against (61 tests there, 63 on
-`net8.0`/`net10.0`).
+which need the framework type they check the pair against; each run prints the
+number of tests it ran when it finishes.
 
 ## Batches: the hot path for tiny messages
 
@@ -244,7 +252,8 @@ batch.End();                              // always, on every path out
 ```
 
 The contract is small: the batch owns the stream between `BeginBatch` and `End`
-(stream calls or `Reset` while a batch is open are API misuse); always call `End`
+(stream calls or `Reset` while a batch is open are API misuse, and never pass a
+batch by value); always call `End`
 on every path out — it is idempotent, and it is what publishes the batch's work
 back to the stream. Fixed-size scalar operations up to 64 bits run
 register-resident; everything else — bulk and variable-size operations
@@ -300,7 +309,7 @@ proves derive-per-call equals C++; routing this one field through it is what clo
 the triangle against the reference directly.
 
 CI runs this gate in its own job, with `CXX=clang++` and the C++ clone checked out
-at release tag `v2.1.1` (format 2.0, first carried by `v2.0.0`) — the family's one
+at release tag `v2.1.4` (format 2.0, first carried by `v2.0.0`) — the family's one
 interop pin: one policy, one version,
 every port's gate against the same current C++ release. Under the four different
 pins this replaced (`v1.6.2` here and in the Go port, `v1.4.3` in Rust, upstream
@@ -493,8 +502,9 @@ Two further rules:
   C++ `serialize_copy_string`: the longest prefix a string field of that size
   carries, cut at a character boundary and at the first NUL (U15).
 - **A batch is dead after `End`.** Every read on an ended `ReadBatch` refuses and
-  nothing is written back to its stream; an ended `WriteBatch` is write misuse,
-  asserted in debug, and writes nothing back in release.
+  nothing is written back to its stream. Delegated writes on an ended `WriteBatch`
+  are misuse, asserted in debug, and write nothing back in release. Inline writes
+  on an ended `WriteBatch` are misuse, asserted in debug, and unspecified in release.
 - **Compressed float declarations must decode finite.** When `max - min` overflows to
   infinity (e.g. `[-3.4e38, +3.4e38]`), or the top integer decodes past `FLT_MAX`, the
   declaration is non-conforming: it asserts in debug, and in release a read refuses
